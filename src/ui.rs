@@ -13,6 +13,14 @@ pub const DOCK_GAP: f32 = 14.0;
 /// Space at the top/bottom of the window taken by the two docks.
 pub const RESERVED: f32 = DOCK_GAP + DOCK_H + 10.0;
 
+#[derive(Clone, Copy)]
+enum FileAction {
+    Open,
+    Save,
+    SaveAs,
+    ExportDocx,
+}
+
 impl App {
     fn dock_rect(area: Rect, top: bool) -> Rect {
         let width = (area.width() - 48.0).min(940.0);
@@ -82,8 +90,22 @@ impl App {
         let find = ui.button("Find").on_hover_text("Search (Ctrl+F)").clicked();
 
         ui.add_space(4.0);
-        let save = ui.button("Save").clicked();
-        let open = ui.button("Open").clicked();
+        let mut file_action = None;
+        egui::containers::menu::MenuButton::new("File").ui(ui, |ui| {
+            ui.set_min_width(210.0);
+            let items = [
+                ("Open…", "Ctrl+O", FileAction::Open),
+                ("Save", "Ctrl+S", FileAction::Save),
+                ("Save as…", "", FileAction::SaveAs),
+                ("Export as Word (.docx)…", "", FileAction::ExportDocx),
+            ];
+            for (label, shortcut, action) in items {
+                let button = egui::Button::new(label).shortcut_text(shortcut).frame(false);
+                if ui.add(button).clicked() {
+                    file_action = Some(action);
+                }
+            }
+        });
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let name = self
@@ -117,11 +139,12 @@ impl App {
         if find {
             self.open_search();
         }
-        if save {
-            self.save(false);
-        }
-        if open {
-            self.open(&ctx);
+        match file_action {
+            Some(FileAction::Open) => self.open(&ctx),
+            Some(FileAction::Save) => self.save(false),
+            Some(FileAction::SaveAs) => self.save(true),
+            Some(FileAction::ExportDocx) => self.export_docx(),
+            None => {}
         }
     }
 

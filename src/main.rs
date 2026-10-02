@@ -1,5 +1,6 @@
 mod edit;
 mod editor;
+mod export;
 mod fileio;
 mod fonts;
 mod layout;

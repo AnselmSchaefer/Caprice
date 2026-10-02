@@ -130,6 +130,24 @@ impl App {
         };
     }
 
+    /// Write the document as a Word file (`.docx`) next to wherever the user chooses.
+    pub fn export_docx(&mut self) {
+        let stem = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map_or("Untitled".to_owned(), |s| s.to_string_lossy().into_owned());
+        let dialog = rfd::FileDialog::new()
+            .add_filter("Word document", &["docx"])
+            .set_file_name(format!("{stem}.docx"));
+        let Some(path) = dialog.save_file() else { return };
+        let written = crate::export::to_docx(&self.doc).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string()));
+        self.status = match written {
+            Ok(()) => format!("- exported {}", path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned())),
+            Err(e) => format!("- export failed: {e}"),
+        };
+    }
+
     pub fn open(&mut self, ctx: &egui::Context) {
         let Some(path) = rfd::FileDialog::new().add_filter("Caprice document", &["caprice"]).pick_file() else {
             return;
