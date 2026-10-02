@@ -184,6 +184,28 @@ impl App {
                 used = ui.min_rect().width();
             },
         );
+        // The document name sits at the right end, but only in room the tools leave over, so it can
+        // never be the reason for the arrows (it is shortened, and hidden if there is hardly any room).
+        if !overflow {
+            let spare = inner.right() - (view.left() + self.toolbar_w) - 24.0;
+            if spare > 70.0 {
+                let name = self
+                    .path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned());
+                let mut job = egui::text::LayoutJob::simple_singleline(name, FontId::proportional(13.0), TEXT_DIM);
+                job.wrap.max_width = spare;
+                job.wrap.max_rows = 1;
+                job.wrap.break_anywhere = true;
+                job.wrap.overflow_character = Some('\u{2026}');
+                job.halign = egui::Align::RIGHT;
+                let galley = ui.painter().layout_job(job);
+                let at = pos2(inner.right(), rect.center().y - galley.size().y / 2.0);
+                ui.painter().galley(at, galley, TEXT_DIM);
+            }
+        }
+
         // Measured this frame, used the next; a changed width asks for one more frame.
         if (used - self.toolbar_w).abs() > 0.5 {
             self.toolbar_w = used;
