@@ -157,6 +157,21 @@ impl Span {
     }
 }
 
+/// A sticky note attached to a stretch of text without being part of it. `start..end` are flow
+/// positions (chars); `start == end` is a point note. The edit layer keeps them in place as the text changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Note {
+    pub id: u64,
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
+    /// Index into `NOTE_COLORS`.
+    pub color: usize,
+}
+
+pub const NOTE_COLORS: [(u8, u8, u8); 5] =
+    [(255, 214, 90), (255, 150, 185), (130, 215, 140), (120, 195, 255), (255, 175, 100)];
+
 pub struct Flow {
     pub text: String,
     /// One style per char of `text`.
@@ -169,6 +184,9 @@ pub struct Doc {
     pub spans: Vec<Span>,
     /// Bumped on every change, so views can tell when they are stale.
     pub version: u64,
+    pub notes: Vec<Note>,
+    pub next_note_id: u64,
+    pub history: crate::edit::History,
 }
 
 impl Doc {
@@ -178,6 +196,9 @@ impl Doc {
             setup: PageSetup::default(),
             spans: vec![Span::default()],
             version: 0,
+            notes: Vec::new(),
+            next_note_id: 1,
+            history: Default::default(),
         }
     }
 
@@ -205,23 +226,6 @@ impl Doc {
 
     pub fn char_at(&self, c: usize) -> Option<char> {
         self.flow.text.chars().nth(c)
-    }
-
-    pub fn insert(&mut self, at: usize, text: &str, style: &Style) {
-        let b = self.char_to_byte(at);
-        self.flow.text.insert_str(b, text);
-        let n = text.chars().count();
-        self.flow.styles.splice(at..at, std::iter::repeat_n(style.clone(), n));
-        self.version += 1;
-    }
-
-    pub fn remove_char(&mut self, at: usize) {
-        let b = self.char_to_byte(at);
-        if b < self.flow.text.len() {
-            self.flow.text.remove(b);
-            self.flow.styles.remove(at);
-            self.version += 1;
-        }
     }
 }
 

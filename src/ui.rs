@@ -78,6 +78,9 @@ impl App {
         ui.add_space(4.0);
         let new_setup = self.page_menu(ui);
 
+        let add_note = ui.button("Note").on_hover_text("Attach a note to the selection or line (Ctrl+Alt+N)").clicked();
+        let find = ui.button("Find").on_hover_text("Search (Ctrl+F)").clicked();
+
         ui.add_space(4.0);
         let save = ui.button("Save").clicked();
         let open = ui.button("Open").clicked();
@@ -107,6 +110,12 @@ impl App {
         }
         if let Some(setup) = new_setup {
             self.set_setup(&ctx, setup);
+        }
+        if add_note {
+            self.add_note(&ctx);
+        }
+        if find {
+            self.open_search();
         }
         if save {
             self.save(false);

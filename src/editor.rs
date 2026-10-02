@@ -6,6 +6,7 @@ use egui::text::{CCursor, CCursorRange};
 use egui::widgets::text_edit::TextEditState;
 
 use crate::App;
+use crate::edit::{Edit, Piece};
 use crate::layout::build_job;
 use crate::model::{EditBuf, FONT_SIZE, PAGE_BREAK, PageSetup, Style};
 use crate::theme::INK;
@@ -67,7 +68,8 @@ impl App {
         let follows = self.doc.char_at(g);
         let breaks = if follows.is_none() || follows == Some(PAGE_BREAK) { 1 } else { 2 };
         let text: String = std::iter::repeat_n(PAGE_BREAK, breaks).collect();
-        self.doc.insert(g, &text, &self.typing);
+        let now = ctx.input(|inp| inp.time);
+        self.doc.apply(Edit::insert(g, &text, &self.typing), now);
         self.doc.full_paginate(ctx, &self.typing);
         self.view_for = None;
         self.target = (i + 1).min(self.last());
@@ -85,7 +87,11 @@ impl App {
             if ctx.input(|inp| inp.key_pressed(Key::Backspace)) && consume(Key::Backspace) {
                 // Delete whatever sits before this page: a page break, or the last char of the page above.
                 let g = self.doc.spans[i].start;
-                self.doc.remove_char(g - 1);
+                let b = self.doc.char_to_byte(g - 1);
+                let ch = self.doc.flow.text[b..].chars().next().unwrap_or(PAGE_BREAK);
+                let old = Piece { text: ch.to_string(), styles: vec![self.doc.flow.styles[g - 1].clone()] };
+                let now = ctx.input(|inp| inp.time);
+                self.doc.apply(Edit::Replace { at: g - 1, old, new: Piece::default() }, now);
                 self.doc.full_paginate(ctx, &self.typing);
                 let (pg, local) = self.locate(g - 1, i - 1);
                 self.view_for = None;
@@ -128,18 +134,19 @@ impl App {
                 ctx.memory_mut(|m| m.request_focus(id));
                 self.cursor_req = None;
             }
-        } else if !ctx.memory(|m| m.has_focus(id)) && !self.scrubbing {
+        } else if !ctx.memory(|m| m.has_focus(id)) && !self.scrubbing && !Self::ui_field_focused(&ctx) {
             ctx.memory_mut(|m| m.request_focus(id));
         }
 
         let typing = self.typing.clone();
         let wrap_w = content.width();
+        let marks = self.page_marks(i);
         let EditBuf { text, rich } = &mut self.view;
         let rich = &*rich;
         let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
             let mut r = rich.borrow_mut();
             r.sync(buf.as_str(), &typing);
-            let job = build_job(buf.as_str(), &r.styles, &typing, sc, wrap_w);
+            let job = build_job(buf.as_str(), &r.styles, &typing, sc, wrap_w, &marks);
             ui.fonts_mut(|f| f.layout_job(job))
         };
         let edit = TextEdit::multiline(text)
@@ -184,29 +191,52 @@ impl App {
         }
     }
 
-    /// Write the edited page back into the flow and recompute the pages.
+    /// Write the edited page back into the flow (as one edit) and recompute the pages.
     fn commit_view(&mut self, ctx: &egui::Context, i: usize) {
         let sp = self.doc.spans[i];
-        let new_text = self.view.text.clone();
-        let new_chars = new_text.chars().count();
+        let new_chars: Vec<char> = self.view.text.chars().collect();
         let mut new_styles = self.view.rich.get_mut().styles.clone();
-        new_styles.resize(new_chars, self.typing.clone());
-        let cursor = Self::cursor_of(ctx, i).unwrap_or(new_chars).min(new_chars);
+        new_styles.resize(new_chars.len(), self.typing.clone());
+        let cursor = Self::cursor_of(ctx, i).unwrap_or(new_chars.len()).min(new_chars.len());
 
-        let dchars = new_chars as isize - sp.chars() as isize;
-        let dbytes = new_text.len() as isize - (sp.bend - sp.bstart) as isize;
-        self.doc.flow.text.replace_range(sp.bstart..sp.bend, &new_text);
-        self.doc.flow.styles.splice(sp.start..sp.end, new_styles);
-        self.doc.version += 1;
+        // Only the part that actually differs becomes the edit.
+        let old_chars: Vec<char> = self.doc.page_text(i).chars().collect();
+        let max = old_chars.len().min(new_chars.len());
+        let p = old_chars.iter().zip(&new_chars).take_while(|(a, b)| a == b).count();
+        let s = old_chars[p..].iter().rev().zip(new_chars[p..].iter().rev()).take(max - p).take_while(|(a, b)| a == b).count();
+        let (old_end, new_end) = (old_chars.len() - s, new_chars.len() - s);
+        let edit = Edit::Replace {
+            at: sp.start + p,
+            old: Piece {
+                text: old_chars[p..old_end].iter().collect(),
+                styles: self.doc.page_styles(i)[p..old_end].to_vec(),
+            },
+            new: Piece { text: new_chars[p..new_end].iter().collect(), styles: new_styles[p..new_end].to_vec() },
+        };
+        let (dchars, dbytes) = edit.delta();
+        let now = ctx.input(|inp| inp.time);
+        self.doc.apply(edit, now);
         self.doc.paginate_from(ctx, &self.typing, i, dchars, dbytes);
         self.view_for = None;
 
         // Text typed past the end of the page flows on to the next one, and the cursor with it.
-        let (p, local) = self.locate(sp.start + cursor, i);
-        if p != i {
-            self.cursor_req = Some((p, local));
-            self.target = p;
+        let (pg, local) = self.locate(sp.start + cursor, i);
+        if pg != i {
+            self.cursor_req = Some((pg, local));
+            self.target = pg;
         }
+        ctx.request_repaint();
+    }
+
+    /// Undo or redo one step and put the caret where the change happened.
+    pub fn step_history(&mut self, ctx: &egui::Context, redo: bool) {
+        let caret = if redo { self.doc.redo() } else { self.doc.undo() };
+        let Some(caret) = caret else { return };
+        self.doc.full_paginate(ctx, &self.typing);
+        let (p, local) = self.locate(caret.min(self.doc.total_chars()), self.target.min(self.last()));
+        self.view_for = None;
+        self.target = p;
+        self.cursor_req = Some((p, local));
         ctx.request_repaint();
     }
 
@@ -219,11 +249,15 @@ impl App {
         if a == b {
             return;
         }
-        let start = self.doc.spans[i].start;
-        for st in self.doc.flow.styles[start + a..start + b].iter_mut() {
-            edit(st);
+        let at = self.doc.spans[i].start + a;
+        let old = self.doc.flow.styles[at..at + (b - a)].to_vec();
+        let mut new = old.clone();
+        new.iter_mut().for_each(&edit);
+        if new == old {
+            return;
         }
-        self.doc.version += 1;
+        let now = ctx.input(|inp| inp.time);
+        self.doc.apply(Edit::Restyle { at, old, new }, now);
         self.doc.paginate_from(ctx, &self.typing, i, 0, 0);
         self.view_for = None;
         ctx.request_repaint();

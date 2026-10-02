@@ -72,7 +72,7 @@ impl Doc {
             if wchars == 0 && complete {
                 return (Span { start: c, end: c, bstart: b, bend: b }, after_break(0));
             }
-            let job = build_job(&text[b..wend_b], &styles[c..c + wchars], fallback, 1.0, content.x);
+            let job = build_job(&text[b..wend_b], &styles[c..c + wchars], fallback, 1.0, content.x, &[]);
             let galley = layout(ctx, job);
             let bad = galley.rows.iter().position(|r| r.pos.y + r.row.size.y > content.y + 0.5);
             match bad {
@@ -100,6 +100,7 @@ impl Doc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edit::Edit;
 
     fn with_ctx(f: impl FnOnce(&egui::Context)) {
         let ctx = egui::Context::default();
@@ -157,9 +158,11 @@ mod tests {
             d.full_paginate(ctx, &st);
             // Type some text into the middle of page 1.
             let at = d.spans[1].start + 20;
-            d.insert(at, "inserted words here\nand a new line\n", &st);
             let added = "inserted words here\nand a new line\n";
-            let mut inc = Doc { flow: crate::model::Flow { text: d.flow.text.clone(), styles: d.flow.styles.clone() }, setup: d.setup.clone(), spans: d.spans.clone(), version: 0 };
+            d.apply(Edit::insert(at, added, &st), 0.0);
+            let mut inc = Doc::new();
+            inc.flow = crate::model::Flow { text: d.flow.text.clone(), styles: d.flow.styles.clone() };
+            inc.spans = d.spans.clone();
             inc.paginate_from(ctx, &st, 1, added.chars().count() as isize, added.len() as isize);
             d.full_paginate(ctx, &st);
             assert_eq!(inc.spans, d.spans);

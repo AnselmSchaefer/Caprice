@@ -61,7 +61,7 @@ impl App {
     pub fn static_page(&self, ui: &egui::Ui, rect: Rect, i: usize) {
         Self::paper(ui.painter(), rect);
         let sc = self.scale_of(rect);
-        let galley = layout(ui.ctx(), self.doc.page_job(i, &self.typing, sc));
+        let galley = layout(ui.ctx(), self.page_job(i, sc));
         ui.painter().galley(rect.min + self.doc.setup.margin_origin() * sc, galley, INK);
         self.draw_footer(ui, rect, i);
     }
@@ -127,7 +127,7 @@ impl App {
         if front {
             // Text: tessellate the galleys, then squash/lift the vertices with the paper.
             let ctx = ui.ctx();
-            let galley = layout(ctx, self.doc.page_job(i, &self.typing, sc));
+            let galley = layout(ctx, self.page_job(i, sc));
             let font_tex = ctx.fonts(|f| f.font_image_size());
             let mut tess = Tessellator::new(ctx.pixels_per_point(), TessellationOptions::default(), font_tex, vec![]);
             let mut text_mesh = Mesh::default();

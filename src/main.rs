@@ -1,20 +1,24 @@
+mod edit;
 mod editor;
 mod fileio;
 mod fonts;
 mod layout;
 mod model;
+mod notes;
 mod paginate;
 mod render;
+mod search;
 mod theme;
 mod ui;
 mod view;
 
 use std::path::PathBuf;
 
-use eframe::egui::{self, Key, Modifiers, Pos2};
+use eframe::egui::{self, Key, Modifiers, Pos2, Rect};
 
 use fonts::FontBook;
 use model::{Doc, EditBuf, Style};
+use search::Search;
 use theme::{DESK, apply_theme};
 
 fn main() -> eframe::Result {
@@ -60,6 +64,12 @@ pub struct App {
     pub cursor_req: Option<(usize, usize)>,
     /// Typing that arrived while a page was turning; replayed once the next page is editable.
     pub held_input: Vec<egui::Event>,
+    pub search: Search,
+    /// The note whose editor window is open, where to put it, and whether to focus its text field.
+    pub open_note: Option<u64>,
+    pub note_pos: Pos2,
+    pub note_focus: bool,
+    pub last_page_rect: Rect,
 }
 
 impl App {
@@ -85,11 +95,19 @@ impl App {
             scrubbing: false,
             cursor_req: Some((0, 0)),
             held_input: Vec::new(),
+            search: Search::default(),
+            open_note: None,
+            note_pos: Pos2::ZERO,
+            note_focus: false,
+            last_page_rect: Rect::NOTHING,
         }
     }
 
     /// Keep typed text and plain editing keys that arrive mid-flip instead of losing them.
     fn hold_typing(&mut self, ctx: &egui::Context) {
+        if Self::ui_field_focused(ctx) {
+            return; // that typing is meant for the search box or a note
+        }
         let is_typing = |e: &egui::Event| match e {
             egui::Event::Text(_) => true,
             egui::Event::Key { key, pressed: true, modifiers, .. } => {
@@ -146,6 +164,24 @@ impl App {
             self.open(&ctx);
         }
 
+        // Document-wide shortcuts. Undo is ours (one history for the whole document), so the
+        // page editor never sees these keys.
+        if !Self::ui_field_focused(&ctx) {
+            let redo = ctx.input_mut(|i| {
+                i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y)
+            });
+            let undo = !redo && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z));
+            if redo || undo {
+                self.step_history(&ctx, redo);
+            }
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
+            self.open_search();
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::N)) {
+            self.add_note(&ctx);
+        }
+
         // Page navigation shortcuts.
         let (next, prev, new_page) = ctx.input(|i| {
             (
@@ -174,6 +210,7 @@ impl App {
         self.pos = self.pos.clamp(0.0, self.last() as f32);
 
         let page_rect = self.page_rect(&ctx, area);
+        self.last_page_rect = page_rect;
         let base = self.pos.floor() as usize;
         let t = self.pos - base as f32;
         let n = self.doc.pages();
@@ -188,6 +225,7 @@ impl App {
             Self::paper(ui.painter(), page_rect);
             self.draw_footer(ui, page_rect, i);
             self.edit_page(ui, page_rect, i);
+            self.draw_notes(ui, page_rect, i);
         } else {
             // Mid-flip: page `base` turns over, revealing `base + 1`.
             self.hold_typing(&ctx);
@@ -201,6 +239,8 @@ impl App {
         self.pan_with_ctrl(ui, area);
         self.format_bar(ui, area);
         self.page_bar(ui, area);
+        self.search_bar(ui, area);
+        self.note_window(&ctx);
         if self.cursor_req.is_some() {
             ctx.request_repaint();
         }
@@ -319,5 +359,67 @@ mod tests {
         h.frames(90, vec![], Modifiers::NONE);
         assert_eq!(h.app.doc.pages(), before, "text flows back when margins shrink again");
         assert_eq!(h.app.doc.flow.text.matches("a line of text").count(), 150);
+    }
+
+    #[test]
+    fn undo_and_redo_work_on_typed_text() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("hello");
+        h.type_text(" world");
+        assert_eq!(h.app.doc.flow.text, "hello world");
+        h.key(Key::Z, Modifiers::COMMAND);
+        h.frames(5, vec![], Modifiers::NONE);
+        assert_eq!(h.app.doc.flow.text, "", "typing within a second undoes as one step");
+        h.key(Key::Z, Modifiers::COMMAND | Modifiers::SHIFT);
+        h.frames(5, vec![], Modifiers::NONE);
+        assert_eq!(h.app.doc.flow.text, "hello world");
+        // The caret is back at the end, so typing continues there.
+        h.type_text("!");
+        assert_eq!(h.app.doc.flow.text, "hello world!");
+    }
+
+    #[test]
+    fn search_finds_matches_and_flips_to_their_page() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        for _ in 0..90 {
+            h.type_text("some filler text\n");
+        }
+        h.type_text("the NEEDLE is here");
+        h.frames(90, vec![], Modifiers::NONE);
+        assert!(h.app.doc.pages() >= 2);
+        // Go back to the first page, then search.
+        h.app.target = 0;
+        h.frames(120, vec![], Modifiers::NONE);
+        assert_eq!(h.app.pos.round() as usize, 0);
+        h.app.open_search();
+        h.app.search.query = "needle".into();
+        h.frames(120, vec![], Modifiers::NONE);
+        assert_eq!(h.app.search.matches.len(), 1);
+        assert_eq!(h.app.target, h.app.doc.pages() - 1, "flipped to the page with the match");
+        assert_eq!(h.app.pos.round() as usize, h.app.doc.pages() - 1);
+    }
+
+    #[test]
+    fn a_note_on_a_line_stays_put_while_typing_next_to_it() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("first line\nsecond line");
+        let ctx = h.ctx.clone();
+        h.app.add_note(&ctx);
+        h.frames(3, vec![], Modifiers::NONE);
+        let note = h.app.doc.notes[0].clone();
+        assert_eq!((note.start, note.end), (11,22), "the note covers the line the cursor was on");
+        // The note editor grabs the keyboard when it opens...
+        h.type_text("remember");
+        assert_eq!(h.app.doc.notes[0].text, "remember");
+        assert_eq!(h.app.doc.flow.text, "first line\nsecond line");
+        // ...and the page gets it back when it closes.
+        h.app.open_note = None;
+        h.frames(5, vec![], Modifiers::NONE);
+        h.type_text("!"); // typed right after the note's end: not part of it
+        assert_eq!(h.app.doc.flow.text, "first line\nsecond line!");
+        assert_eq!((h.app.doc.notes[0].start, h.app.doc.notes[0].end), (11, 22));
     }
 }

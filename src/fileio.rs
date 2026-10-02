@@ -9,7 +9,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::App;
-use crate::model::{Doc, Flow, PAGE_BREAK, PageSetup, Style};
+use crate::model::{Doc, Flow, Note, PAGE_BREAK, PageSetup, Style};
 
 #[derive(Serialize, Deserialize)]
 struct Run {
@@ -21,12 +21,23 @@ struct Run {
 }
 
 #[derive(Serialize, Deserialize)]
+struct NoteFile {
+    start: usize,
+    end: usize,
+    text: String,
+    #[serde(default)]
+    color: usize,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct DocFile {
     version: u32,
     #[serde(default)]
     setup: PageSetup,
     #[serde(default)]
     content: Vec<Run>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<NoteFile>,
     /// Version 1 only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pages: Vec<Vec<Run>>,
@@ -55,7 +66,18 @@ fn from_runs(runs: Vec<Run>, text: &mut String, styles: &mut Vec<Style>) {
 
 impl DocFile {
     pub fn from_doc(doc: &Doc) -> Self {
-        Self { version: 2, setup: doc.setup.clone(), content: to_runs(&doc.flow.text, &doc.flow.styles), pages: Vec::new() }
+        let notes = doc
+            .notes
+            .iter()
+            .map(|n| NoteFile { start: n.start, end: n.end, text: n.text.clone(), color: n.color })
+            .collect();
+        Self {
+            version: 2,
+            setup: doc.setup.clone(),
+            content: to_runs(&doc.flow.text, &doc.flow.styles),
+            notes,
+            pages: Vec::new(),
+        }
     }
 
     pub fn into_doc(self) -> Doc {
@@ -74,6 +96,13 @@ impl DocFile {
         doc.flow = Flow { text, styles };
         doc.setup = self.setup;
         doc.setup.clamp_margins();
+        let total = doc.total_chars();
+        for n in self.notes {
+            let (start, end) = (n.start.min(total), n.end.min(total));
+            let id = doc.next_note_id;
+            doc.next_note_id += 1;
+            doc.notes.push(Note { id, start: start.min(end), end, text: n.text, color: n.color });
+        }
         doc
     }
 }
@@ -112,6 +141,8 @@ impl App {
             Ok(file) => {
                 let mut doc = file.into_doc();
                 doc.version = self.doc.version + 1;
+                self.open_note = None;
+                self.search.matches.clear();
                 let fonts: BTreeSet<String> = doc.flow.styles.iter().map(|s| s.font.to_string()).collect();
                 for f in fonts {
                     self.fonts.ensure(ctx, &f, false);
@@ -148,11 +179,15 @@ mod tests {
         doc.flow.styles = vec![bold.clone(), bold.clone(), plain.clone(), plain.clone(), plain.clone()];
         doc.setup.margin_left = 40.0;
         doc.setup.page_numbers = true;
+        doc.notes.push(Note { id: 7, start: 1, end: 4, text: "check this".into(), color: 2 });
         let json = serde_json::to_string(&DocFile::from_doc(&doc)).unwrap();
         let back = serde_json::from_str::<DocFile>(&json).unwrap().into_doc();
         assert_eq!(back.flow.text, doc.flow.text);
         assert_eq!(back.flow.styles, doc.flow.styles);
         assert_eq!(back.setup, doc.setup);
+        assert_eq!(back.notes.len(), 1);
+        assert_eq!((back.notes[0].start, back.notes[0].end, back.notes[0].color), (1, 4, 2));
+        assert_eq!(back.notes[0].text, "check this");
     }
 
     #[test]
