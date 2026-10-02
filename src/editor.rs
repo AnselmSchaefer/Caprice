@@ -6,6 +6,7 @@ use egui::output::IMEOutput;
 
 use crate::App;
 use crate::edit::{Edit, Piece};
+use crate::images::{Handle, PicDrag, ResizeDrag};
 use crate::layout::PageLayout;
 use crate::model::{Align, ListKind, PAGE_BREAK, PageSetup, ParaAttrs, Style, is_terminator};
 use crate::theme::INK;
@@ -135,9 +136,14 @@ impl App {
         }
     }
 
+    /// The selection to delete: a selected picture goes together with its paragraph mark.
+    fn deletion_range(&self) -> (usize, usize) {
+        self.picture_paragraph().unwrap_or_else(|| self.selection())
+    }
+
     pub fn backspace(&mut self, ctx: &egui::Context, by_word: bool) {
         if self.has_selection() {
-            let (a, b) = self.selection();
+            let (a, b) = self.deletion_range();
             return self.replace_range(ctx, a, b, "");
         }
         let (ps, _) = self.doc.para_start(self.caret);
@@ -153,7 +159,7 @@ impl App {
 
     pub fn delete_forward(&mut self, ctx: &egui::Context, by_word: bool) {
         if self.has_selection() {
-            let (a, b) = self.selection();
+            let (a, b) = self.deletion_range();
             return self.replace_range(ctx, a, b, "");
         }
         if self.caret >= self.max_caret() {
@@ -392,6 +398,9 @@ impl App {
     /// formatting shortcut right after Enter formats the new paragraph.
     fn handle_key(&mut self, ctx: &egui::Context, key: Key, m: Modifiers) {
         let (word, shift) = (m.command || m.ctrl, m.shift);
+        if m.alt && !m.command && matches!(key, Key::ArrowUp | Key::ArrowDown) && self.picture_paragraph().is_some() {
+            return self.nudge_picture(ctx, key == Key::ArrowUp);
+        }
         if m.command {
             match key {
                 Key::Z => return self.step_history(ctx, shift),
@@ -566,31 +575,112 @@ impl App {
             }
         }
 
+        // Where a dragged picture would land.
+        if let Some((_, y)) = self.pic_drag.as_ref().and_then(|d| d.drop) {
+            let y = content.min.y + y;
+            ui.painter().line_segment([pos2(content.left(), y), pos2(content.right(), y)], Stroke::new(2.5, crate::theme::ACCENT));
+        }
+
+        // Resize handles around a selected picture.
+        let picture = self.selected_picture_box(&layout, content, start);
+        if let Some((_, rect)) = picture {
+            for h in Handle::ALL {
+                let c = h.pos(rect);
+                let sq = Rect::from_center_size(c, vec2(9.0, 9.0));
+                ui.painter().rect_filled(sq, 2.0, egui::Color32::WHITE);
+                ui.painter().rect_stroke(sq, 2.0, Stroke::new(1.5, crate::theme::ACCENT), egui::StrokeKind::Outside);
+            }
+        }
+
         if !interactive {
             return;
         }
-        self.mouse(ui, &layout, content, i);
+        self.mouse(ui, &layout, content, i, picture);
     }
 
-    fn mouse(&mut self, ui: &mut egui::Ui, layout: &PageLayout, content: Rect, i: usize) {
+    /// The selected picture (if the selection is exactly one, on this page) and where it is on screen.
+    fn selected_picture_box(&self, layout: &PageLayout, content: Rect, page_start: usize) -> Option<(u32, Rect)> {
+        let (from, _) = self.picture_paragraph()?;
+        let p = layout.paras.iter().find(|p| p.image.is_some() && page_start + p.start == from)?;
+        let img = p.image?;
+        Some((img.id, img.rect.translate(content.min.to_vec2() + vec2(0.0, p.y))))
+    }
+
+    fn mouse(&mut self, ui: &mut egui::Ui, layout: &PageLayout, content: Rect, i: usize, picture: Option<(u32, Rect)>) {
         let ctx = ui.ctx().clone();
+        let sc = layout.scale;
         let resp = ui.interact(content.expand(6.0), Id::new("editor"), Sense::click_and_drag());
-        if resp.hovered() && !self.ctrl_down {
-            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Text);
+
+        // Resize handles sit on top of the editor.
+        let mut over_handle = false;
+        if let Some((id, rect)) = picture {
+            for h in Handle::ALL {
+                let hr = Rect::from_center_size(h.pos(rect), vec2(13.0, 13.0));
+                let r = ui.interact(hr, Id::new(("pic_handle", h.kx, h.ky)), Sense::drag());
+                if r.hovered() || r.dragged() {
+                    over_handle = true;
+                    ui.output_mut(|o| o.cursor_icon = h.cursor());
+                }
+                if r.drag_started() {
+                    let start_width = self.doc.image(id).map_or(0.0, |im| im.width_pt);
+                    self.resize = Some(ResizeDrag { id, handle: h, start_width, dragged: Vec2::ZERO });
+                }
+                if r.dragged() {
+                    if let Some(rs) = &mut self.resize {
+                        rs.dragged += r.drag_delta() / sc;
+                        let aspect = self.doc.image(rs.id).map_or(1.0, |im| im.aspect());
+                        let width = rs.handle.new_width(rs.start_width, aspect, rs.dragged);
+                        let id = rs.id;
+                        self.set_image_width(&ctx, id, width);
+                    }
+                }
+                if r.drag_stopped() {
+                    self.resize = None;
+                }
+            }
         }
-        if self.ctrl_down {
-            return; // Ctrl+drag moves the page
+        if resp.hovered() && !self.ctrl_down && !over_handle {
+            let on_picture = ctx.input(|inp| inp.pointer.latest_pos()).is_some_and(|p| layout.image_at(p - content.min).is_some());
+            ui.output_mut(|o| o.cursor_icon = if on_picture { egui::CursorIcon::Grab } else { egui::CursorIcon::Text });
         }
+        if self.ctrl_down || over_handle || self.resize.is_some() {
+            return; // Ctrl+drag moves the page; handles do their own thing
+        }
+
         let start = self.doc.spans[i].start;
-        let at = |p: Pos2Like| start + layout.hit(p - content.min);
-        let (pressed, shift) = ctx.input(|inp| (inp.pointer.primary_pressed(), inp.modifiers.shift));
-        if pressed && resp.contains_pointer() {
-            if let Some(p) = resp.interact_pointer_pos().or_else(|| ctx.input(|inp| inp.pointer.interact_pos())) {
+        let at = |p: egui::Pos2| start + layout.hit(p - content.min);
+        let (pressed, secondary, released, shift, pos) = ctx.input(|inp| {
+            (
+                inp.pointer.primary_pressed(),
+                inp.pointer.secondary_pressed(),
+                inp.pointer.primary_released(),
+                inp.modifiers.shift,
+                inp.pointer.latest_pos(),
+            )
+        });
+
+        // Right click on a picture opens its menu.
+        if secondary && resp.contains_pointer() {
+            self.pic_menu = None;
+            if let Some(p) = pos {
                 if let Some(pic) = layout.image_at(p - content.min) {
-                    // Clicking a picture selects it.
+                    self.anchor = start + pic.start;
+                    self.set_caret(&ctx, start + pic.end, true);
+                    self.pic_menu = Some(p);
+                    self.pic_menu_fresh = true;
+                }
+            }
+        }
+
+        if pressed && resp.contains_pointer() {
+            if let Some(p) = resp.interact_pointer_pos().or(pos) {
+                self.pic_drag = None;
+                if let Some(pic) = layout.image_at(p - content.min) {
+                    // Clicking a picture selects it; dragging it moves it.
                     let (s, e) = (start + pic.start, start + pic.end);
                     self.anchor = s;
                     self.set_caret(&ctx, e, true);
+                    self.pic_drag = Some(PicDrag { from: s, press: p, drop: None });
                 } else {
                     let c = at(p);
                     self.set_caret(&ctx, c, shift);
@@ -599,17 +689,31 @@ impl App {
             }
         } else if resp.dragged() {
             if let Some(p) = resp.interact_pointer_pos() {
-                let c = at(p);
-                self.set_caret(&ctx, c, true);
+                if let Some(d) = &mut self.pic_drag {
+                    if (p - d.press).length() > 5.0 {
+                        d.drop = layout.drop_boundary(p.y - content.min.y).map(|(local, y)| (start + local, y));
+                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grabbing);
+                    }
+                } else {
+                    let c = at(p);
+                    self.set_caret(&ctx, c, true);
+                }
             }
         }
-        if resp.double_clicked() {
+        if released {
+            if let Some(d) = self.pic_drag.take() {
+                if let Some((boundary, _)) = d.drop {
+                    self.move_picture(&ctx, d.from, boundary);
+                }
+            }
+        }
+        if resp.double_clicked() && self.pic_drag.is_none() && layout.image_at(pos.map_or(Vec2::ZERO.to_pos2(), |p| p) - content.min).is_none() {
             if let Some(p) = resp.interact_pointer_pos() {
                 let (a, b) = self.word_range_at(at(p));
                 self.anchor = a;
                 self.set_caret(&ctx, b, true);
             }
-        } else if resp.triple_clicked() {
+        } else if resp.triple_clicked() && layout.image_at(pos.unwrap_or_default() - content.min).is_none() {
             if let Some(p) = resp.interact_pointer_pos() {
                 let c = at(p);
                 let (ps, _) = self.doc.para_start(c);
@@ -623,8 +727,8 @@ impl App {
     pub fn paint_layout(&self, painter: &egui::Painter, layout: &PageLayout, origin: egui::Pos2) {
         for p in &layout.paras {
             if let (Some(img), Some(tex)) = (p.image, p.image.and_then(|i| self.textures.get(&i.id))) {
-                let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                painter.image(tex.id(), img.rect.translate(origin.to_vec2() + vec2(0.0, p.y)), uv, egui::Color32::WHITE);
+                let rect = img.rect.translate(origin.to_vec2() + vec2(0.0, p.y));
+                painter.add(egui::Shape::mesh(crate::images::picture_mesh(tex.id(), rect, img.rotation, egui::Color32::WHITE)));
             }
             if let Some((g, at)) = &p.marker {
                 painter.galley(origin + vec2(at.x, p.y + at.y), g.clone(), INK);
@@ -641,6 +745,3 @@ impl App {
     }
 }
 
-type Pos2Like = egui::Pos2;
-#[allow(dead_code)]
-fn _unused(_: Vec2) {}

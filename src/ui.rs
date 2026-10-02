@@ -29,13 +29,8 @@ enum Icon {
     Numbers,
 }
 
-/// A square toolbar button with a drawn icon.
-fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, tip: &str) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
-    let fill = if selected { ACCENT } else if resp.hovered() { BTN_HOVER } else { BTN };
-    let ink = if selected { Color32::from_rgb(20, 22, 30) } else { TEXT };
-    let p = ui.painter();
-    p.rect_filled(rect, 8.0, fill);
+/// Draw an icon into a 30x30 square.
+fn paint_icon(p: &egui::Painter, rect: Rect, icon: Icon, ink: Color32) {
     let stroke = Stroke::new(1.6, ink);
     let area = rect.shrink2(vec2(8.0, 8.0));
     match icon {
@@ -63,7 +58,34 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, tip: &str) -> egui
             }
         }
     }
+}
+
+/// A square toolbar button with a drawn icon.
+fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, tip: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
+    let fill = if selected { ACCENT } else if resp.hovered() { BTN_HOVER } else { BTN };
+    let ink = if selected { Color32::from_rgb(20, 22, 30) } else { TEXT };
+    ui.painter().rect_filled(rect, 8.0, fill);
+    paint_icon(ui.painter(), rect, icon, ink);
     resp.on_hover_text(tip)
+}
+
+/// A toolbar button showing `icon` and a small arrow; clicking it opens a popup with more choices.
+fn icon_dropdown(ui: &mut egui::Ui, icon: Icon, active: bool, tip: &str, popup: impl FnOnce(&mut egui::Ui)) {
+    let (rect, resp) = ui.allocate_exact_size(vec2(46.0, 30.0), Sense::click());
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+    let fill = if active { ACCENT } else if resp.hovered() || open { BTN_HOVER } else { BTN };
+    let ink = if active { Color32::from_rgb(20, 22, 30) } else { TEXT };
+    ui.painter().rect_filled(rect, 8.0, fill);
+    paint_icon(ui.painter(), Rect::from_min_size(rect.min, vec2(30.0, 30.0)), icon, ink);
+    let c = pos2(rect.right() - 9.0, rect.center().y);
+    let s = Stroke::new(1.5, ink);
+    ui.painter().line_segment([pos2(c.x - 3.5, c.y - 1.5), pos2(c.x, c.y + 2.0)], s);
+    ui.painter().line_segment([pos2(c.x, c.y + 2.0), pos2(c.x + 3.5, c.y - 1.5)], s);
+    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(popup);
+    if !open {
+        resp.on_hover_text(tip);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -223,43 +245,49 @@ impl App {
         ui.separator();
         ui.add_space(2.0);
 
-        // Paragraph format of the paragraph the caret is in.
+        // Paragraph format of the paragraph the caret is in. Alignment (with line spacing) and
+        // lists are one dropdown each, to save room.
         let attrs = self.doc.para_attrs_at(self.caret);
         let mut para_change = None;
-        let aligns = [
-            (Align::Left, "Align left"),
-            (Align::Center, "Center"),
-            (Align::Right, "Align right"),
-            (Align::Justify, "Justify"),
-        ];
-        ui.spacing_mut().item_spacing.x = 4.0;
-        for (a, tip) in aligns {
-            if icon_button(ui, Icon::Align(a), attrs.align == a, tip).clicked() {
-                para_change = Some(ParaChange::Align(a));
-            }
-        }
-        ui.spacing_mut().item_spacing.x = 10.0;
-        egui::ComboBox::from_id_salt("spacing")
-            .selected_text(format!("{:.2}", attrs.spacing).trim_end_matches('0').trim_end_matches('.').to_owned())
-            .width(54.0)
-            .show_ui(ui, |ui| {
+        icon_dropdown(ui, Icon::Align(attrs.align), false, "Alignment and line spacing", |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let aligns = [
+                    (Align::Left, "Align left (Ctrl+L)"),
+                    (Align::Center, "Center (Ctrl+E)"),
+                    (Align::Right, "Align right (Ctrl+R)"),
+                    (Align::Justify, "Justify (Ctrl+J)"),
+                ];
+                for (a, tip) in aligns {
+                    if icon_button(ui, Icon::Align(a), attrs.align == a, tip).clicked() {
+                        para_change = Some(ParaChange::Align(a));
+                    }
+                }
+            });
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new("Line spacing").size(12.0).color(TEXT_DIM));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
                 for s in [1.0_f32, 1.15, 1.5, 2.0, 3.0] {
                     let label = format!("{s:.2}").trim_end_matches('0').trim_end_matches('.').to_owned();
-                    if ui.selectable_label((attrs.spacing - s).abs() < 0.01, label).clicked() {
+                    if ui.add(egui::Button::new(label).selected((attrs.spacing - s).abs() < 0.01).min_size(vec2(34.0, 28.0))).clicked() {
                         para_change = Some(ParaChange::Spacing(s));
                     }
                 }
-            })
-            .response
-            .on_hover_text("Line spacing");
-        ui.spacing_mut().item_spacing.x = 4.0;
-        if icon_button(ui, Icon::Bullets, attrs.list == ListKind::Bullet, "Bulleted list").clicked() {
-            para_change = Some(ParaChange::List(ListKind::Bullet));
-        }
-        if icon_button(ui, Icon::Numbers, attrs.list == ListKind::Numbered, "Numbered list").clicked() {
-            para_change = Some(ParaChange::List(ListKind::Numbered));
-        }
-        ui.spacing_mut().item_spacing.x = 10.0;
+            });
+        });
+        let list_icon = if attrs.list == ListKind::Numbered { Icon::Numbers } else { Icon::Bullets };
+        icon_dropdown(ui, list_icon, attrs.list != ListKind::None, "Lists", |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if icon_button(ui, Icon::Bullets, attrs.list == ListKind::Bullet, "Bulleted list (Ctrl+Shift+L)").clicked() {
+                    para_change = Some(ParaChange::List(ListKind::Bullet));
+                }
+                if icon_button(ui, Icon::Numbers, attrs.list == ListKind::Numbered, "Numbered list").clicked() {
+                    para_change = Some(ParaChange::List(ListKind::Numbered));
+                }
+            });
+        });
 
         ui.add_space(2.0);
         ui.separator();
@@ -284,15 +312,6 @@ impl App {
         });
         let add_note = ui.button("Note").on_hover_text("Attach a note to the selection or line (Ctrl+Alt+N)").clicked();
         let find = ui.button("Find").on_hover_text("Search (Ctrl+F)").clicked();
-
-        let name = self
-            .path
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned());
-        let status = egui::RichText::new(format!("{name} {}", self.status)).size(12.5).color(TEXT_DIM);
-        ui.add_space(6.0);
-        ui.label(status);
 
         if let Some(f) = font_pick {
             self.fonts.ensure(&ctx, &f, false);

@@ -172,7 +172,7 @@ impl App {
                     let u = f;
                     for (y, v) in [(r.top(), 0.0), (r.bottom(), 1.0)] {
                         let pos = map(x, rect.top() + y);
-                        quad.vertices.push(egui::epaint::Vertex { pos, uv: pos2(u, v), color: tint });
+                        quad.vertices.push(egui::epaint::Vertex { pos, uv: crate::images::rotated_uv(u, v, img.rotation), color: tint });
                     }
                     if k > 0 {
                         let b = (k * 2) as u32;

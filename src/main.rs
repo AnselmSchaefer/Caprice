@@ -85,6 +85,16 @@ pub struct App {
     /// Textures of the document's pictures, by picture id.
     pub textures: HashMap<u32, egui::TextureHandle>,
     pub startup_file: Option<PathBuf>,
+    /// The last status message shown, when it appeared, and the window title last set.
+    pub shown_status: String,
+    /// Right-click menu of a picture (where it was opened), a picture being dragged, a resize in progress.
+    pub pic_menu: Option<Pos2>,
+    /// The menu opened this very frame (so the click that opened it is not a click outside).
+    pub pic_menu_fresh: bool,
+    pub pic_drag: Option<images::PicDrag>,
+    pub resize: Option<images::ResizeDrag>,
+    pub status_at: f64,
+    pub title: String,
 }
 
 impl App {
@@ -124,6 +134,44 @@ impl App {
             last_page_rect: Rect::NOTHING,
             textures: HashMap::new(),
             startup_file: None,
+            shown_status: String::new(),
+            pic_menu: None,
+            pic_menu_fresh: false,
+            pic_drag: None,
+            resize: None,
+            status_at: f64::NEG_INFINITY,
+            title: String::new(),
+        }
+    }
+
+    /// The document name goes in the window title; messages ("saved", errors) show briefly above the page bar.
+    fn update_title_and_toast(&mut self, ui: &egui::Ui, area: Rect) {
+        let ctx = ui.ctx();
+        let name = self.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned());
+        let title = format!("{name} \u{2014} Caprice");
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
+
+        let now = ctx.input(|i| i.time);
+        if self.status != self.shown_status {
+            self.shown_status = self.status.clone();
+            self.status_at = now;
+        }
+        let age = now - self.status_at;
+        const SHOW_FOR: f64 = 4.0;
+        if !self.status.is_empty() && age < SHOW_FOR {
+            let text = self.status.trim_start_matches(['-', ' ']).to_owned();
+            let fade = (((SHOW_FOR - age) / 0.6) as f32).clamp(0.0, 1.0);
+            let galley = ui.painter().layout_no_wrap(text, egui::FontId::proportional(13.0), theme::TEXT.gamma_multiply(fade));
+            let size = galley.size() + egui::vec2(28.0, 14.0);
+            let center = egui::pos2(area.center().x, area.bottom() - ui::DOCK_GAP - ui::DOCK_H - 26.0);
+            let pill = Rect::from_center_size(center, size);
+            ui.painter().rect_filled(pill, 12.0, theme::DOCK.gamma_multiply(fade));
+            ui.painter().rect_stroke(pill, 12.0, egui::Stroke::new(1.0, theme::DOCK_EDGE.gamma_multiply(fade)), egui::StrokeKind::Inside);
+            ui.painter().galley(pill.center() - galley.size() / 2.0, galley, theme::TEXT);
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 
@@ -205,10 +253,12 @@ impl App {
         }
 
         self.pan_with_ctrl(ui, area);
+        self.update_title_and_toast(ui, area);
         self.format_bar(ui, area);
         self.page_bar(ui, area);
         self.search_bar(ui, area);
         self.note_window(&ctx);
+        self.picture_menu(&ctx);
     }
 }
 
@@ -707,5 +757,183 @@ mod tests {
         let docx = std::path::PathBuf::from(&out).with_extension("docx");
         std::fs::write(docx, export::to_docx(&h.app.doc).unwrap()).unwrap();
         std::fs::write(out, serde_json::to_string_pretty(&fileio::DocFile::from_doc(&h.app.doc)).unwrap()).unwrap();
+    }
+
+    // ------------------------------------------- picture handles, menu, moving
+
+    impl Harness {
+        /// Press at one point of the writing area, drag to another, release.
+        fn drag_in_page(&mut self, from: egui::Vec2, to: egui::Vec2) {
+            let rect = self.app.last_page_rect;
+            let sc = self.app.scale_of(rect);
+            let abs = |h: &Harness, v: egui::Vec2| rect.min + h.app.doc.setup.margin_origin() * sc + v * sc;
+            let (a, b) = (abs(self, from), abs(self, to));
+            let button = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            self.frames(1, vec![egui::Event::PointerMoved(a)], Modifiers::NONE);
+            self.frames(1, vec![button(a, true)], Modifiers::NONE);
+            for k in 1..=6 {
+                let p = a + (b - a) * (k as f32 / 6.0);
+                self.frames(1, vec![egui::Event::PointerMoved(p)], Modifiers::NONE);
+            }
+            self.frames(1, vec![button(b, false)], Modifiers::NONE);
+            self.frames(3, vec![], Modifiers::NONE);
+        }
+
+        fn picture_rect(&self) -> egui::Rect {
+            let ctx = self.ctx.clone();
+            let layout = self.app.page_layout(&ctx, 0, 1.0);
+            let p = layout.paras.iter().find(|p| p.image.is_some()).expect("a picture on page 1");
+            p.image.unwrap().rect.translate(egui::vec2(0.0, p.y))
+        }
+
+        fn with_picture_between_text(&mut self) {
+            self.frames(3, vec![], Modifiers::NONE);
+            self.type_text("top text");
+            self.key(Key::Enter, Modifiers::NONE);
+            let ctx = self.ctx.clone();
+            self.app.insert_image_bytes(&ctx, images::test_png(200, 100, [9, 99, 199])).unwrap();
+            self.type_text("bottom text");
+            self.frames(3, vec![], Modifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn rotating_swaps_the_picture_sides_and_exports_turned_pixels() {
+        let mut h = Harness::new();
+        h.with_picture_between_text();
+        let ctx = h.ctx.clone();
+        let before = h.picture_rect();
+        let (w0, h0) = (before.width(), before.height());
+        h.click_in_page(before.center().to_vec2());
+        h.app.do_picture_action(&ctx, images::PicAction::RotateRight);
+        let after = h.picture_rect();
+        assert!((after.width() - w0).abs() < 0.1, "the width setting stays");
+        assert!((after.height() - w0 * (w0 / h0)).abs() < 0.5 || after.height() > h0, "taller than wide now: {after:?}");
+        assert_eq!(h.app.doc.images[0].rotation, 1);
+        // Four right turns come full circle.
+        for _ in 0..3 {
+            h.app.do_picture_action(&ctx, images::PicAction::RotateRight);
+        }
+        assert_eq!(h.app.doc.images[0].rotation, 0);
+        h.app.do_picture_action(&ctx, images::PicAction::RotateLeft);
+        assert_eq!(h.app.doc.images[0].rotation, 3);
+        // The file keeps the rotation and the original pixels.
+        let json = serde_json::to_string(&fileio::DocFile::from_doc(&h.app.doc)).unwrap();
+        let back = serde_json::from_str::<fileio::DocFile>(&json).unwrap().into_doc();
+        assert_eq!(back.images[0].rotation, 3);
+        assert_eq!(back.images[0].bytes, h.app.doc.images[0].bytes);
+        // The Word export turns the pixels: 200x100 becomes 100x200.
+        let (bytes, ext) = images::export_media(&h.app.doc.images[0]);
+        assert_eq!(ext, "png");
+        assert_eq!(images::describe(&bytes).unwrap().1, (100, 200));
+    }
+
+    #[test]
+    fn rotated_uvs_put_the_texture_corners_where_they_belong() {
+        let c = images::rotated_uv;
+        assert_eq!((c(0.0, 0.0, 0), c(1.0, 0.0, 0)), (egui::pos2(0.0, 0.0), egui::pos2(1.0, 0.0)));
+        // Turned right once, the top-left of the screen shows the texture's bottom-left.
+        assert_eq!(c(0.0, 0.0, 1), egui::pos2(0.0, 1.0));
+        assert_eq!(c(1.0, 0.0, 1), egui::pos2(0.0, 0.0));
+        assert_eq!(c(0.0, 0.0, 2), egui::pos2(1.0, 1.0));
+        assert_eq!(c(0.0, 0.0, 3), egui::pos2(1.0, 0.0));
+    }
+
+    #[test]
+    fn handles_resize_keeping_the_proportions() {
+        use images::Handle;
+        let se = Handle { kx: 1, ky: 1 };
+        assert_eq!(se.new_width(100.0, 0.5, egui::vec2(20.0, 3.0)), 120.0, "dragging right grows it");
+        assert_eq!(se.new_width(100.0, 0.5, egui::vec2(1.0, 20.0)), 140.0, "dragging down counts via the aspect ratio");
+        let nw = Handle { kx: -1, ky: -1 };
+        assert_eq!(nw.new_width(100.0, 0.5, egui::vec2(-20.0, 0.0)), 120.0, "the left handle grows it when dragged left");
+        let n = Handle { kx: 0, ky: -1 };
+        assert_eq!(n.new_width(100.0, 0.5, egui::vec2(50.0, -10.0)), 120.0, "side handles ignore the other axis");
+    }
+
+    #[test]
+    fn dragging_a_corner_handle_resizes_the_selected_picture() {
+        let mut h = Harness::new();
+        h.with_picture_between_text();
+        let pic = h.picture_rect();
+        h.click_in_page(pic.center().to_vec2()); // select it
+        assert!(h.app.picture_paragraph().is_some());
+        let width_before = h.app.doc.images[0].width_pt;
+        let corner = pic.right_bottom();
+        h.drag_in_page(corner.to_vec2(), corner.to_vec2() + egui::vec2(-60.0, -30.0));
+        let after = h.app.doc.images[0].width_pt;
+        assert!(after < width_before - 40.0, "dragging the bottom-right corner inwards shrinks it: {width_before} -> {after}");
+        let rect = h.picture_rect();
+        assert!((rect.height() / rect.width() - 0.5).abs() < 0.01, "proportions are kept");
+        assert_eq!(h.app.doc.visible_text().matches(model::IMAGE_CHAR).count(), 1, "resizing did not turn into a move or a selection change");
+    }
+
+    #[test]
+    fn right_click_opens_the_picture_menu_only_on_a_picture() {
+        let mut h = Harness::new();
+        h.with_picture_between_text();
+        let pic = h.picture_rect();
+        let rect = h.app.last_page_rect;
+        let sc = h.app.scale_of(rect);
+        let origin = rect.min + h.app.doc.setup.margin_origin() * sc;
+        let abs = |v: egui::Vec2| origin + v * sc;
+        let secondary = |pos| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        };
+        let on_text = abs(egui::vec2(10.0, 5.0));
+        h.frames(1, vec![egui::Event::PointerMoved(on_text)], Modifiers::NONE);
+        h.frames(1, vec![secondary(on_text)], Modifiers::NONE);
+        assert!(h.app.pic_menu.is_none());
+        let on_pic = abs(pic.center().to_vec2());
+        h.frames(1, vec![egui::Event::PointerMoved(on_pic)], Modifiers::NONE);
+        h.frames(1, vec![secondary(on_pic)], Modifiers::NONE);
+        assert!(h.app.pic_menu.is_some());
+        assert!(h.app.picture_paragraph().is_some(), "right-clicking selects the picture");
+    }
+
+    #[test]
+    fn dragging_a_picture_moves_it_between_paragraphs_as_one_undo_step() {
+        let mut h = Harness::new();
+        h.with_picture_between_text();
+        assert_eq!(h.text(), format!("top text\n{}\nbottom text", model::IMAGE_CHAR));
+        let pic = h.picture_rect();
+        // Drag it up above the first line.
+        h.drag_in_page(pic.center().to_vec2(), egui::vec2(60.0, 0.5));
+        assert_eq!(h.text(), format!("{}\ntop text\nbottom text", model::IMAGE_CHAR), "the picture is now first");
+        assert!(h.app.picture_paragraph().is_some(), "and still selected");
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert_eq!(h.text(), format!("top text\n{}\nbottom text", model::IMAGE_CHAR), "one undo puts it back");
+        h.key(Key::Z, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(h.text().starts_with(model::IMAGE_CHAR), "and redo moves it again");
+    }
+
+    #[test]
+    fn alt_arrows_nudge_the_selected_picture_by_a_paragraph() {
+        let mut h = Harness::new();
+        h.with_picture_between_text();
+        let pic = h.picture_rect();
+        h.click_in_page(pic.center().to_vec2());
+        h.key(Key::ArrowUp, Modifiers::ALT);
+        assert!(h.text().starts_with(model::IMAGE_CHAR), "moved above 'top text': {:?}", h.text());
+        h.key(Key::ArrowDown, Modifiers::ALT);
+        assert_eq!(h.text(), format!("top text\n{}\nbottom text", model::IMAGE_CHAR));
+    }
+
+    #[test]
+    fn deleting_a_selected_picture_removes_its_paragraph_too() {
+        let mut h = Harness::new();
+        h.with_picture_between_text();
+        let pic = h.picture_rect();
+        h.click_in_page(pic.center().to_vec2());
+        h.key(Key::Delete, Modifiers::NONE);
+        assert_eq!(h.text(), "top text\nbottom text");
     }
 }

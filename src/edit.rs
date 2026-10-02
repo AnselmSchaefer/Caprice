@@ -107,6 +107,16 @@ impl History {
         }
     }
 
+    /// Several edits that undo as one step (never merged with typing before or after).
+    fn record_group(&mut self, edits: Vec<Edit>) {
+        self.redo.clear();
+        self.last_edit_time = f64::NEG_INFINITY;
+        self.undo.push(edits);
+        if self.undo.len() > Self::MAX {
+            self.undo.remove(0);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();
@@ -119,6 +129,14 @@ impl Doc {
     pub fn apply(&mut self, edit: Edit, now: f64) {
         self.apply_raw(&edit);
         self.history.record(edit, now);
+    }
+
+    /// Apply several edits in order; undo reverts them all at once.
+    pub fn apply_group(&mut self, edits: Vec<Edit>) {
+        for edit in &edits {
+            self.apply_raw(edit);
+        }
+        self.history.record_group(edits);
     }
 
     /// Undo the last step; returns where the caret should go.

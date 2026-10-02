@@ -53,6 +53,12 @@ struct ImageFile {
     /// The original file, base64 encoded.
     data: String,
     width_pt: f32,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    rotation: u8,
+}
+
+fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
 }
 
 #[derive(Serialize, Deserialize)]
@@ -105,7 +111,7 @@ impl DocFile {
             .images
             .iter()
             .filter(|i| used.contains(&i.id))
-            .map(|i| ImageFile { id: i.id, format: i.format.clone(), data: BASE64.encode(&i.bytes), width_pt: i.width_pt })
+            .map(|i| ImageFile { id: i.id, format: i.format.clone(), data: BASE64.encode(&i.bytes), width_pt: i.width_pt, rotation: i.rotation })
             .collect();
         Self {
             version: 2,
@@ -137,7 +143,7 @@ impl DocFile {
         for img in self.images {
             let Ok(bytes) = BASE64.decode(img.data.as_bytes()) else { continue };
             let Ok((format, px)) = crate::images::describe(&bytes) else { continue };
-            doc.images.push(ImageData { id: img.id, format, bytes, px, width_pt: img.width_pt });
+            doc.images.push(ImageData { id: img.id, format, bytes, px, width_pt: img.width_pt, rotation: img.rotation % 4 });
         }
         let total = doc.total_chars();
         for n in self.notes {

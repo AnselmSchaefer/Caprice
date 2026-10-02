@@ -228,11 +228,11 @@ impl Body {
 }
 
 /// The body XML, how many separate numbered lists it uses, and the pictures it refers to.
-fn document_xml(doc: &Doc, has_footer: bool) -> (String, u32, Vec<u32>) {
+fn document_xml(doc: &Doc, has_footer: bool, media: &std::collections::HashMap<u32, (Vec<u8>, &'static str)>) -> (String, u32, Vec<u32>) {
     let mut body = Body::new();
     for img in &doc.images {
         let size = doc.image_size(img);
-        let ext = if img.format == "png" { "png" } else { "jpeg" };
+        let ext = media.get(&img.id).map_or("png", |m| m.1);
         body.pics.insert(img.id, ((size.x * 12700.0) as i64, (size.y * 12700.0) as i64, ext.to_owned()));
     }
     let notes: &[Note] = &doc.notes;
@@ -378,7 +378,10 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
     let has_footer = doc.setup.page_numbers;
     let has_comments = !doc.notes.is_empty();
     let default = doc.flow.styles.first().cloned().unwrap_or_else(|| Style::new("Times New Roman"));
-    let (document, numbered_lists, used_pics) = document_xml(doc, has_footer);
+    // Rotated pictures are written with their pixels turned.
+    let media: std::collections::HashMap<u32, (Vec<u8>, &'static str)> =
+        doc.images.iter().map(|i| (i.id, crate::images::export_media(i))).collect();
+    let (document, numbered_lists, used_pics) = document_xml(doc, has_footer, &media);
     let has_numbering = document.contains("<w:numPr>");
 
     let mut content_types = format!(
@@ -398,9 +401,7 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
         let _ = write!(content_types, "<Override PartName=\"/word/comments.xml\" ContentType=\"{CT}.comments+xml\"/>");
         let _ = write!(rels, "<Relationship Id=\"rIdComments\" Type=\"{REL}/comments\" Target=\"comments.xml\"/>");
     }
-    let pic_ext = |id: u32| -> &'static str {
-        if doc.image(id).is_some_and(|i| i.format == "png") { "png" } else { "jpeg" }
-    };
+    let pic_ext = |id: u32| -> &'static str { media.get(&id).map_or("png", |m| m.1) };
     if used_pics.iter().any(|&id| pic_ext(id) == "png") {
         content_types.push_str("<Default Extension=\"png\" ContentType=\"image/png\"/>");
     }
@@ -446,8 +447,8 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
     }
     parts.extend(text_parts.into_iter().map(|(n, s)| (n.to_owned(), s.into_bytes())));
     for &id in &used_pics {
-        if let Some(img) = doc.image(id) {
-            parts.push((format!("word/media/image{id}.{}", pic_ext(id)), img.bytes.clone()));
+        if let Some((bytes, ext)) = media.get(&id) {
+            parts.push((format!("word/media/image{id}.{ext}"), bytes.clone()));
         }
     }
 
@@ -603,6 +604,7 @@ mod tests {
             bytes: crate::images::test_png(20, 10, [1, 2, 3]),
             px: (20, 10),
             width_pt: 100.0,
+            rotation: 0,
         });
         let bytes = to_docx(&d).unwrap();
         for name in ["word/document.xml", "word/_rels/document.xml.rels", "[Content_Types].xml"] {

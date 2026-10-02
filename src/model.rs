@@ -85,11 +85,15 @@ pub struct ImageData {
     pub px: (u32, u32),
     /// Shown width in points (the height follows the aspect ratio).
     pub width_pt: f32,
+    /// Clockwise quarter turns (0..=3). The stored bytes are never changed.
+    pub rotation: u8,
 }
 
 impl ImageData {
+    /// Shown height divided by shown width (quarter turns swap the sides).
     pub fn aspect(&self) -> f32 {
-        self.px.1.max(1) as f32 / self.px.0.max(1) as f32
+        let (w, h) = (self.px.0.max(1) as f32, self.px.1.max(1) as f32);
+        if self.rotation % 2 == 1 { w / h } else { h / w }
     }
 }
 

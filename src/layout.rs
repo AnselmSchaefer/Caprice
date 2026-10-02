@@ -80,6 +80,8 @@ pub fn paragraph_job(
 pub struct ImageBox {
     pub id: u32,
     pub rect: Rect,
+    /// Clockwise quarter turns.
+    pub rotation: u8,
 }
 
 /// A row of a paragraph: how many chars it holds and where it is, relative to the paragraph's top.
@@ -105,6 +107,8 @@ pub struct ParaLayout {
     pub attrs: ParaAttrs,
     /// Set when the paragraph is a picture.
     pub image: Option<ImageBox>,
+    /// Does this piece begin its paragraph (rather than continue one from the previous page)?
+    pub starts_paragraph: bool,
 }
 
 impl ParaLayout {
@@ -139,8 +143,8 @@ pub struct PieceSpec<'a> {
     pub invisible: bool,
     /// Text of the bullet/number, if this piece starts a list item.
     pub marker: Option<String>,
-    /// The picture this piece is, with its size in page points.
-    pub image: Option<(u32, Vec2)>,
+    /// The picture this piece is: its id, its size in page points and its rotation.
+    pub image: Option<(u32, Vec2, u8)>,
 }
 
 pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, local_end: usize, y: f32) -> ParaLayout {
@@ -148,7 +152,7 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
     let wrap = (spec.content_width - indent).max(10.0);
     let job = paragraph_job(ctx, spec.text, spec.styles, spec.term, spec.attrs, spec.scale, wrap, spec.marks);
     let galley = ctx.fonts_mut(|f| f.layout_job(job));
-    if let Some((id, size)) = spec.image {
+    if let Some((id, size, rotation)) = spec.image {
         let size = size * spec.scale;
         let x = match spec.attrs.align {
             Align::Left | Align::Justify => 0.0,
@@ -164,7 +168,8 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
             galley,
             marker: None,
             attrs: spec.attrs,
-            image: Some(ImageBox { id, rect: Rect::from_min_size(pos2(x, 0.0), size) }),
+            starts_paragraph: false,
+            image: Some(ImageBox { id, rect: Rect::from_min_size(pos2(x, 0.0), size), rotation }),
         };
     }
     let height = if spec.invisible { 0.0 } else { galley.size().y };
@@ -193,6 +198,7 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
         galley,
         marker,
         attrs: spec.attrs,
+        starts_paragraph: false,
         image: None,
     }
 }
@@ -223,13 +229,13 @@ pub fn list_number(doc: &Doc, mut c: usize, mut b: usize) -> usize {
 
 impl Doc {
     /// If chars `c..ec` are exactly one picture placeholder, its id and size.
-    pub fn picture_in(&self, c: usize, ec: usize) -> Option<(u32, Vec2)> {
+    pub fn picture_in(&self, c: usize, ec: usize) -> Option<(u32, Vec2, u8)> {
         if ec != c + 1 {
             return None;
         }
         let st = &self.flow.styles[c];
         let img = (st.image != 0).then(|| self.image(st.image)).flatten()?;
-        (self.char_at(c) == Some(IMAGE_CHAR)).then(|| (img.id, self.image_size(img)))
+        (self.char_at(c) == Some(IMAGE_CHAR)).then(|| (img.id, self.image_size(img), img.rotation))
     }
 
     pub fn hard_end(&self, page: usize) -> bool {
@@ -291,7 +297,8 @@ impl Doc {
                 marker,
                 image: self.picture_in(c, pe_c),
             };
-            let p = layout_piece(ctx, &spec, local(c), local(pe_c), y);
+            let mut p = layout_piece(ctx, &spec, local(c), local(pe_c), y);
+            p.starts_paragraph = at_para_start;
             y += p.height;
             paras.push(p);
 
@@ -340,6 +347,16 @@ impl PageLayout {
         let idx = local.clamp(p.start, p.end) - p.start;
         let r = p.galley.pos_from_cursor(CCursor { index: idx.into(), prefer_next_row });
         r.translate(vec2(p.x, p.y))
+    }
+
+    /// Where a dragged picture would land for a pointer at height `y`: the paragraph start nearest
+    /// to it, as (page-local position, height of the line to draw).
+    pub fn drop_boundary(&self, y: f32) -> Option<(usize, f32)> {
+        self.paras
+            .iter()
+            .filter(|p| p.starts_paragraph)
+            .map(|p| (p.start, p.y))
+            .min_by(|a, b| (a.1 - y).abs().total_cmp(&(b.1 - y).abs()))
     }
 
     /// The picture paragraph under a point relative to the writing area.
