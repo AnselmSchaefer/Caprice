@@ -50,9 +50,6 @@ impl App {
     /// Move the caret (and the selection end, if `extend`), and flip to the page it is on.
     pub fn set_caret(&mut self, ctx: &egui::Context, c: usize, extend: bool) {
         let c = c.min(self.max_caret());
-        if std::env::var_os("CAPRICE_DEBUG").is_some() && c + 1 < self.caret.saturating_sub(0) && c < 3 {
-            eprintln!("caret jump {} -> {c}\n{}", self.caret, std::backtrace::Backtrace::force_capture());
-        }
         let moved = c != self.caret;
         self.caret = c;
         if !extend {
@@ -74,6 +71,7 @@ impl App {
         let k = if before_is_char { c - 1 } else { c };
         if let Some(st) = self.doc.flow.styles.get(k) {
             self.typing = st.with_para(ParaAttrs::default());
+            self.typing.image = 0; // typing after a picture is text, not another picture
         }
     }
 
@@ -105,7 +103,7 @@ impl App {
     }
 
     /// Apply an edit made around the caret and park the caret after it.
-    fn apply_edit(&mut self, ctx: &egui::Context, edit: Edit, old_end: usize) {
+    pub fn apply_edit(&mut self, ctx: &egui::Context, edit: Edit, old_end: usize) {
         let (dchars, dbytes) = edit.delta();
         let at = match &edit {
             Edit::Replace { at, .. } | Edit::Restyle { at, .. } => *at,
@@ -532,7 +530,18 @@ impl App {
                 ui.painter().rect_filled(r.translate(content.min.to_vec2()), 1.0, color);
             }
         }
-        Self::paint_layout(ui.painter(), &layout, content.min);
+        self.paint_layout(ui.painter(), &layout, content.min);
+
+        if a != b {
+            // Pictures are drawn over the highlight, so tint them afterwards.
+            let (la, lb) = (a.saturating_sub(start), (b.saturating_sub(start)).min(page_len + 1));
+            for p in layout.paras.iter().filter(|p| p.image.is_some() && la < p.end && lb > p.start) {
+                if let Some(img) = p.image {
+                    let r = img.rect.translate(vec2(0.0, p.y) + content.min.to_vec2());
+                    ui.painter().rect_filled(r, 1.0, crate::theme::ACCENT.gamma_multiply(0.35));
+                }
+            }
+        }
 
         let caret_here = self.doc.page_of(self.caret) == i;
         if caret_here {
@@ -577,8 +586,15 @@ impl App {
         let (pressed, shift) = ctx.input(|inp| (inp.pointer.primary_pressed(), inp.modifiers.shift));
         if pressed && resp.contains_pointer() {
             if let Some(p) = resp.interact_pointer_pos().or_else(|| ctx.input(|inp| inp.pointer.interact_pos())) {
-                let c = at(p);
-                self.set_caret(&ctx, c, shift);
+                if let Some(pic) = layout.image_at(p - content.min) {
+                    // Clicking a picture selects it.
+                    let (s, e) = (start + pic.start, start + pic.end);
+                    self.anchor = s;
+                    self.set_caret(&ctx, e, true);
+                } else {
+                    let c = at(p);
+                    self.set_caret(&ctx, c, shift);
+                }
                 self.want_x = None;
             }
         } else if resp.dragged() {
@@ -604,12 +620,18 @@ impl App {
         }
     }
 
-    pub fn paint_layout(painter: &egui::Painter, layout: &PageLayout, origin: egui::Pos2) {
+    pub fn paint_layout(&self, painter: &egui::Painter, layout: &PageLayout, origin: egui::Pos2) {
         for p in &layout.paras {
+            if let (Some(img), Some(tex)) = (p.image, p.image.and_then(|i| self.textures.get(&i.id))) {
+                let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                painter.image(tex.id(), img.rect.translate(origin.to_vec2() + vec2(0.0, p.y)), uv, egui::Color32::WHITE);
+            }
             if let Some((g, at)) = &p.marker {
                 painter.galley(origin + vec2(at.x, p.y + at.y), g.clone(), INK);
             }
-            painter.galley(origin + vec2(p.x, p.y), p.galley.clone(), INK);
+            if p.image.is_none() {
+                painter.galley(origin + vec2(p.x, p.y), p.galley.clone(), INK);
+            }
         }
     }
 

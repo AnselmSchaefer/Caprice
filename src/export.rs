@@ -12,9 +12,12 @@ use std::io::{Cursor, Write};
 
 use zip::write::SimpleFileOptions;
 
-use crate::model::{Align, Doc, ListKind, Note, PAGE_BREAK, ParaAttrs, Style};
+use crate::model::{Align, Doc, IMAGE_CHAR, ListKind, Note, PAGE_BREAK, ParaAttrs, Style};
 
 const NS_W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const NS_WP: &str = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
+const NS_A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const NS_PIC: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture";
 const NS_R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const CT: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml";
@@ -83,6 +86,9 @@ struct Body {
     last_list: ListKind,
     /// How many separate numbered lists there have been (each restarts at 1).
     numbered_lists: u32,
+    /// Pictures: id -> (width, height) in EMU (1 pt = 12700 EMU), and the ids used.
+    pics: std::collections::HashMap<u32, (i64, i64, String)>,
+    used_pics: Vec<u32>,
 }
 
 impl Body {
@@ -96,6 +102,8 @@ impl Body {
             page_break_before: false,
             last_list: ListKind::None,
             numbered_lists: 0,
+            pics: Default::default(),
+            used_pics: Vec::new(),
         }
     }
 
@@ -111,7 +119,32 @@ impl Body {
         }
     }
 
+    fn push_picture(&mut self, id: u32) {
+        let Some((cx, cy, ext)) = self.pics.get(&id).cloned() else { return };
+        self.flush_run();
+        if !self.used_pics.contains(&id) {
+            self.used_pics.push(id);
+        }
+        let n = self.used_pics.iter().position(|&p| p == id).unwrap_or(0) + 1;
+        let _ = write!(
+            self.para,
+            "<w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">\
+<wp:extent cx=\"{cx}\" cy=\"{cy}\"/><wp:docPr id=\"{n}\" name=\"Picture {n}\"/>\
+<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr>\
+<a:graphic><a:graphicData uri=\"{NS_PIC}\"><pic:pic>\
+<pic:nvPicPr><pic:cNvPr id=\"{n}\" name=\"image{id}.{ext}\"/><pic:cNvPicPr/></pic:nvPicPr>\
+<pic:blipFill><a:blip r:embed=\"rIdImg{id}\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>\
+<pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></a:xfrm>\
+<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>\
+</wp:inline></w:drawing></w:r>"
+        );
+        self.has_content = true;
+    }
+
     fn push_char(&mut self, c: char, st: &Style) {
+        if c == IMAGE_CHAR && st.image != 0 {
+            return self.push_picture(st.image);
+        }
         match c {
             '\t' => {
                 self.flush_run();
@@ -194,9 +227,14 @@ impl Body {
     }
 }
 
-/// The body XML, and how many separate numbered lists it uses.
-fn document_xml(doc: &Doc, has_footer: bool) -> (String, u32) {
+/// The body XML, how many separate numbered lists it uses, and the pictures it refers to.
+fn document_xml(doc: &Doc, has_footer: bool) -> (String, u32, Vec<u32>) {
     let mut body = Body::new();
+    for img in &doc.images {
+        let size = doc.image_size(img);
+        let ext = if img.format == "png" { "png" } else { "jpeg" };
+        body.pics.insert(img.id, ((size.x * 12700.0) as i64, (size.y * 12700.0) as i64, ext.to_owned()));
+    }
     let notes: &[Note] = &doc.notes;
     let fallback = Style::new("Times New Roman");
     let mut chars = doc.flow.text.chars().zip(doc.flow.styles.iter().chain(std::iter::repeat(&fallback)));
@@ -232,7 +270,7 @@ fn document_xml(doc: &Doc, has_footer: bool) -> (String, u32) {
     let orient = if size.x > size.y { " w:orient=\"landscape\"" } else { "" };
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
-<w:document xmlns:w=\"{NS_W}\" xmlns:r=\"{NS_R}\"><w:body>{}<w:sectPr>{footer_ref}\
+<w:document xmlns:w=\"{NS_W}\" xmlns:r=\"{NS_R}\" xmlns:wp=\"{NS_WP}\" xmlns:a=\"{NS_A}\" xmlns:pic=\"{NS_PIC}\"><w:body>{}<w:sectPr>{footer_ref}\
 <w:pgSz w:w=\"{}\" w:h=\"{}\"{orient}/>\
 <w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"{}\" w:footer=\"{}\" w:gutter=\"0\"/>\
 </w:sectPr></w:body></w:document>",
@@ -246,7 +284,7 @@ fn document_xml(doc: &Doc, has_footer: bool) -> (String, u32) {
         twips(s.margin_top / 2.0),
         twips(s.margin_bottom / 2.0),
     );
-    (xml, body.numbered_lists)
+    (xml, body.numbered_lists, body.used_pics)
 }
 
 /// Bullet and numbering definitions: one bullet list, and one numbered list per run of numbered paragraphs.
@@ -340,7 +378,7 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
     let has_footer = doc.setup.page_numbers;
     let has_comments = !doc.notes.is_empty();
     let default = doc.flow.styles.first().cloned().unwrap_or_else(|| Style::new("Times New Roman"));
-    let (document, numbered_lists) = document_xml(doc, has_footer);
+    let (document, numbered_lists, used_pics) = document_xml(doc, has_footer);
     let has_numbering = document.contains("<w:numPr>");
 
     let mut content_types = format!(
@@ -360,6 +398,18 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
         let _ = write!(content_types, "<Override PartName=\"/word/comments.xml\" ContentType=\"{CT}.comments+xml\"/>");
         let _ = write!(rels, "<Relationship Id=\"rIdComments\" Type=\"{REL}/comments\" Target=\"comments.xml\"/>");
     }
+    let pic_ext = |id: u32| -> &'static str {
+        if doc.image(id).is_some_and(|i| i.format == "png") { "png" } else { "jpeg" }
+    };
+    if used_pics.iter().any(|&id| pic_ext(id) == "png") {
+        content_types.push_str("<Default Extension=\"png\" ContentType=\"image/png\"/>");
+    }
+    if used_pics.iter().any(|&id| pic_ext(id) == "jpeg") {
+        content_types.push_str("<Default Extension=\"jpeg\" ContentType=\"image/jpeg\"/>");
+    }
+    for &id in &used_pics {
+        let _ = write!(rels, "<Relationship Id=\"rIdImg{id}\" Type=\"{REL}/image\" Target=\"media/image{id}.{}\"/>", pic_ext(id));
+    }
     if has_numbering {
         let _ = write!(content_types, "<Override PartName=\"/word/numbering.xml\" ContentType=\"{CT}.numbering+xml\"/>");
         let _ = write!(rels, "<Relationship Id=\"rIdNumbering\" Type=\"{REL}/numbering\" Target=\"numbering.xml\"/>");
@@ -377,7 +427,8 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
 <Relationship Id=\"rId1\" Type=\"{REL}/officeDocument\" Target=\"word/document.xml\"/></Relationships>"
     );
 
-    let mut parts: Vec<(&str, String)> = vec![
+    let mut parts: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut text_parts: Vec<(&str, String)> = vec![
         ("[Content_Types].xml", content_types),
         ("_rels/.rels", root_rels),
         ("word/document.xml", document),
@@ -385,20 +436,26 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
         ("word/styles.xml", styles_xml(&default)),
     ];
     if has_comments {
-        parts.push(("word/comments.xml", comments_xml(&doc.notes)));
+        text_parts.push(("word/comments.xml", comments_xml(&doc.notes)));
     }
     if has_numbering {
-        parts.push(("word/numbering.xml", numbering_xml(numbered_lists)));
+        text_parts.push(("word/numbering.xml", numbering_xml(numbered_lists)));
     }
     if has_footer {
-        parts.push(("word/footer1.xml", footer_xml(&default)));
+        text_parts.push(("word/footer1.xml", footer_xml(&default)));
+    }
+    parts.extend(text_parts.into_iter().map(|(n, s)| (n.to_owned(), s.into_bytes())));
+    for &id in &used_pics {
+        if let Some(img) = doc.image(id) {
+            parts.push((format!("word/media/image{id}.{}", pic_ext(id)), img.bytes.clone()));
+        }
     }
 
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    for (name, xml) in parts {
+    for (name, data) in parts {
         zip.start_file(name, options).map_err(|e| e.to_string())?;
-        zip.write_all(xml.as_bytes()).map_err(|e| e.to_string())?;
+        zip.write_all(&data).map_err(|e| e.to_string())?;
     }
     Ok(zip.finish().map_err(|e| e.to_string())?.into_inner())
 }
@@ -533,6 +590,33 @@ mod tests {
         assert!(between.contains(">two<"), "the comment covers exactly the noted word: {between}");
         assert!(!between.contains("one") && !between.contains("three"));
         assert!(read_part(&bytes, "word/comments.xml").unwrap().contains("check"));
+    }
+
+    #[test]
+    fn pictures_are_embedded() {
+        let st = Style::new("Arial");
+        let mut d = doc_with("text\n\u{fffc}\nmore\n", st.clone());
+        d.flow.styles[5].image = 1;
+        d.images.push(crate::model::ImageData {
+            id: 1,
+            format: "png".into(),
+            bytes: crate::images::test_png(20, 10, [1, 2, 3]),
+            px: (20, 10),
+            width_pt: 100.0,
+        });
+        let bytes = to_docx(&d).unwrap();
+        for name in ["word/document.xml", "word/_rels/document.xml.rels", "[Content_Types].xml"] {
+            roxmltree::Document::parse(&read_part(&bytes, name).unwrap()).unwrap();
+        }
+        let xml = read_part(&bytes, "word/document.xml").unwrap();
+        assert_eq!(count(&xml, "drawing"), 1);
+        assert!(xml.contains("cx=\"1270000\" cy=\"635000\""), "100 x 50 pt in EMU");
+        assert!(xml.contains("r:embed=\"rIdImg1\""));
+        assert!(read_part(&bytes, "word/_rels/document.xml.rels").unwrap().contains("media/image1.png"));
+        let mut zip = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        let mut media = Vec::new();
+        zip.by_name("word/media/image1.png").unwrap().read_to_end(&mut media).unwrap();
+        assert_eq!(media, d.images[0].bytes);
     }
 
     #[test]

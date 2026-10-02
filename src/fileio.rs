@@ -5,11 +5,14 @@
 
 use std::collections::BTreeSet;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::App;
-use crate::model::{Doc, Flow, Note, PAGE_BREAK, PageSetup, ParaAttrs, Style};
+use crate::model::{Doc, Flow, ImageData, Note, PAGE_BREAK, PageSetup, ParaAttrs, Style};
 
 #[derive(Serialize, Deserialize)]
 struct Run {
@@ -21,6 +24,13 @@ struct Run {
     /// Paragraph format; only present on runs holding paragraph marks.
     #[serde(default, skip_serializing_if = "is_default_para")]
     para: ParaAttrs,
+    /// Picture id, on the placeholder character of a picture.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    image: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 fn is_default_para(p: &ParaAttrs) -> bool {
@@ -37,6 +47,15 @@ struct NoteFile {
 }
 
 #[derive(Serialize, Deserialize)]
+struct ImageFile {
+    id: u32,
+    format: String,
+    /// The original file, base64 encoded.
+    data: String,
+    width_pt: f32,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct DocFile {
     version: u32,
     #[serde(default)]
@@ -45,6 +64,8 @@ pub struct DocFile {
     content: Vec<Run>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     notes: Vec<NoteFile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    images: Vec<ImageFile>,
     /// Version 1 only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pages: Vec<Vec<Run>>,
@@ -59,13 +80,13 @@ fn to_runs(text: &str, styles: &[Style]) -> Vec<Run> {
         }
     }
     runs.into_iter()
-        .map(|(s, text)| Run { text, font: s.font.to_string(), size: s.size, bold: s.bold, underline: s.underline, para: s.para })
+        .map(|(s, text)| Run { text, font: s.font.to_string(), size: s.size, bold: s.bold, underline: s.underline, para: s.para, image: s.image })
         .collect()
 }
 
 fn from_runs(runs: Vec<Run>, text: &mut String, styles: &mut Vec<Style>) {
     for r in runs {
-        let st = Style { font: r.font.into(), size: r.size, bold: r.bold, underline: r.underline, para: r.para };
+        let st = Style { font: r.font.into(), size: r.size, bold: r.bold, underline: r.underline, para: r.para, image: r.image };
         styles.extend(std::iter::repeat_n(st, r.text.chars().count()));
         text.push_str(&r.text);
     }
@@ -78,11 +99,20 @@ impl DocFile {
             .iter()
             .map(|n| NoteFile { start: n.start, end: n.end, text: n.text.clone(), color: n.color })
             .collect();
+        // Only pictures that are still in the text are kept.
+        let used: BTreeSet<u32> = doc.flow.styles.iter().map(|s| s.image).filter(|&i| i != 0).collect();
+        let images = doc
+            .images
+            .iter()
+            .filter(|i| used.contains(&i.id))
+            .map(|i| ImageFile { id: i.id, format: i.format.clone(), data: BASE64.encode(&i.bytes), width_pt: i.width_pt })
+            .collect();
         Self {
             version: 2,
             setup: doc.setup.clone(),
             content: to_runs(&doc.flow.text, &doc.flow.styles),
             notes,
+            images,
             pages: Vec::new(),
         }
     }
@@ -104,6 +134,11 @@ impl DocFile {
         doc.ensure_final_mark();
         doc.setup = self.setup;
         doc.setup.clamp_margins();
+        for img in self.images {
+            let Ok(bytes) = BASE64.decode(img.data.as_bytes()) else { continue };
+            let Ok((format, px)) = crate::images::describe(&bytes) else { continue };
+            doc.images.push(ImageData { id: img.id, format, bytes, px, width_pt: img.width_pt });
+        }
         let total = doc.total_chars();
         for n in self.notes {
             let (start, end) = (n.start.min(total), n.end.min(total));
@@ -160,6 +195,10 @@ impl App {
         let Some(path) = rfd::FileDialog::new().add_filter("Caprice document", &["caprice"]).pick_file() else {
             return;
         };
+        self.open_path(ctx, path);
+    }
+
+    pub fn open_path(&mut self, ctx: &egui::Context, path: std::path::PathBuf) {
         let loaded = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
             .and_then(|s| serde_json::from_str::<DocFile>(&s).map_err(|e| e.to_string()));
@@ -177,6 +216,8 @@ impl App {
                     self.typing = st.clone();
                 }
                 self.doc = doc;
+                self.textures.clear();
+                self.ensure_textures(ctx);
                 self.doc.full_paginate(ctx, &self.typing);
                 self.pos = 0.0;
                 self.target = 0;

@@ -61,7 +61,7 @@ impl App {
         Self::paper(ui.painter(), rect);
         let sc = self.scale_of(rect);
         let layout = self.page_layout(ui.ctx(), i, sc);
-        Self::paint_layout(ui.painter(), &layout, rect.min + self.doc.setup.margin_origin() * sc);
+        self.paint_layout(ui.painter(), &layout, rect.min + self.doc.setup.margin_origin() * sc);
         self.draw_footer(ui, rect, i);
     }
 
@@ -135,7 +135,9 @@ impl App {
                 if let Some((g, at)) = &p.marker {
                     tess.tessellate_shape(Shape::galley(pos2(origin.x + at.x, origin.y + p.y + at.y), g.clone(), INK), &mut text_mesh);
                 }
-                tess.tessellate_shape(Shape::galley(pos2(origin.x + p.x, origin.y + p.y), p.galley.clone(), INK), &mut text_mesh);
+                if p.image.is_none() {
+                    tess.tessellate_shape(Shape::galley(pos2(origin.x + p.x, origin.y + p.y), p.galley.clone(), INK), &mut text_mesh);
+                }
             }
             if let Some((g, at)) = self.footer(ctx, i, sc) {
                 tess.tessellate_shape(Shape::galley(at, g, INK), &mut text_mesh);
@@ -152,6 +154,34 @@ impl App {
                 ));
             }
             painter.add(Shape::mesh(text_mesh));
+
+            // Pictures are textured quads that follow the paper the same way.
+            for p in &page.paras {
+                let (Some(img), Some(tex)) = (p.image, p.image.and_then(|i| self.textures.get(&i.id))) else { continue };
+                let r = img.rect.translate(vec2(origin.x, origin.y + p.y));
+                let tint = alpha(Color32::from_rgb(
+                    (255.0 * shade) as u8,
+                    (255.0 * shade) as u8,
+                    (255.0 * shade) as u8,
+                ));
+                let mut quad = Mesh::with_texture(tex.id());
+                const N: usize = 8; // a few strips so it bends with the page
+                for k in 0..=N {
+                    let f = k as f32 / N as f32;
+                    let x = r.left() + f * r.width();
+                    let u = f;
+                    for (y, v) in [(r.top(), 0.0), (r.bottom(), 1.0)] {
+                        let pos = map(x, rect.top() + y);
+                        quad.vertices.push(egui::epaint::Vertex { pos, uv: pos2(u, v), color: tint });
+                    }
+                    if k > 0 {
+                        let b = (k * 2) as u32;
+                        quad.add_triangle(b - 2, b - 1, b);
+                        quad.add_triangle(b - 1, b + 1, b);
+                    }
+                }
+                painter.add(Shape::mesh(quad));
+            }
         }
     }
 }

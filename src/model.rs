@@ -53,20 +53,43 @@ pub struct Style {
     pub bold: bool,
     pub underline: bool,
     pub para: ParaAttrs,
+    /// Nonzero on the placeholder character of an inline picture: the id in `Doc::images`.
+    pub image: u32,
 }
 
 impl Style {
     pub fn new(font: &str) -> Self {
-        Self { font: font.into(), size: FONT_SIZE, bold: false, underline: false, para: ParaAttrs::default() }
+        Self { font: font.into(), size: FONT_SIZE, bold: false, underline: false, para: ParaAttrs::default(), image: 0 }
     }
 
     /// Same look of the glyph itself, ignoring paragraph formatting.
     pub fn same_char(&self, o: &Style) -> bool {
-        self.font == o.font && self.size == o.size && self.bold == o.bold && self.underline == o.underline
+        self.font == o.font && self.size == o.size && self.bold == o.bold && self.underline == o.underline && self.image == o.image
     }
 
     pub fn with_para(&self, para: ParaAttrs) -> Style {
         Style { para, ..self.clone() }
+    }
+}
+
+/// Stands in the text for a picture (which sits in a paragraph of its own).
+pub const IMAGE_CHAR: char = '\u{fffc}';
+
+/// A picture of the document: the original file bytes, and how wide it is shown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageData {
+    pub id: u32,
+    /// "png" or "jpeg".
+    pub format: String,
+    pub bytes: Vec<u8>,
+    pub px: (u32, u32),
+    /// Shown width in points (the height follows the aspect ratio).
+    pub width_pt: f32,
+}
+
+impl ImageData {
+    pub fn aspect(&self) -> f32 {
+        self.px.1.max(1) as f32 / self.px.0.max(1) as f32
     }
 }
 
@@ -197,6 +220,7 @@ pub struct Doc {
     pub version: u64,
     pub notes: Vec<Note>,
     pub next_note_id: u64,
+    pub images: Vec<ImageData>,
     pub history: crate::edit::History,
 }
 
@@ -210,6 +234,7 @@ impl Doc {
             version: 0,
             notes: Vec::new(),
             next_note_id: 1,
+            images: Vec::new(),
             history: Default::default(),
         }
     }
@@ -226,6 +251,22 @@ impl Doc {
     /// The text as the user sees it, without the final paragraph mark.
     pub fn visible_text(&self) -> &str {
         &self.flow.text[..self.flow.text.len().saturating_sub(1)]
+    }
+
+    pub fn image(&self, id: u32) -> Option<&ImageData> {
+        self.images.iter().find(|i| i.id == id)
+    }
+
+    /// Size in points an image is drawn at, shrunk if needed to fit the writing area.
+    pub fn image_size(&self, img: &ImageData) -> Vec2 {
+        let content = self.setup.content_size();
+        let mut w = img.width_pt.clamp(8.0, content.x);
+        let mut h = w * img.aspect();
+        if h > content.y {
+            h = content.y;
+            w = h / img.aspect();
+        }
+        vec2(w, h)
     }
 
     pub fn pages(&self) -> usize {

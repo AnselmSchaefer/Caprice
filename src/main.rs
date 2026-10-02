@@ -3,6 +3,7 @@ mod editor;
 mod export;
 mod fileio;
 mod fonts;
+mod images;
 mod layout;
 mod model;
 mod notes;
@@ -13,6 +14,7 @@ mod theme;
 mod ui;
 mod view;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use eframe::egui::{self, Key, Modifiers, Pos2, Rect};
@@ -34,7 +36,10 @@ fn main() -> eframe::Result {
             apply_theme(&cc.egui_ctx);
             // We handle zoom ourselves so the docks keep their size.
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-            Ok(Box::new(App::new(&cc.egui_ctx)))
+            let mut app = App::new(&cc.egui_ctx);
+            // `caprice some.caprice` opens that document (once the first frame has fonts to lay it out).
+            app.startup_file = std::env::args_os().nth(1).map(Into::into);
+            Ok(Box::new(app))
         }),
     )
 }
@@ -77,6 +82,9 @@ pub struct App {
     pub note_pos: Pos2,
     pub note_focus: bool,
     pub last_page_rect: Rect,
+    /// Textures of the document's pictures, by picture id.
+    pub textures: HashMap<u32, egui::TextureHandle>,
+    pub startup_file: Option<PathBuf>,
 }
 
 impl App {
@@ -114,6 +122,8 @@ impl App {
             note_pos: Pos2::ZERO,
             note_focus: false,
             last_page_rect: Rect::NOTHING,
+            textures: HashMap::new(),
+            startup_file: None,
         }
     }
 
@@ -149,6 +159,10 @@ impl App {
         ui.painter().rect_filled(area, 0.0, DESK);
 
         self.fonts.activate_pending();
+        if let Some(path) = self.startup_file.take() {
+            self.open_path(&ctx, path);
+        }
+        self.ensure_textures(&ctx);
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
             self.save(false);
         }
@@ -578,5 +592,120 @@ mod tests {
         assert!(styles[0..10].iter().all(|s| !s.bold));
         h.key(Key::Z, Modifiers::COMMAND);
         assert!(h.app.doc.flow.styles.iter().all(|s| !s.bold));
+    }
+
+    // -------------------------------------------------------------- pictures
+
+    #[test]
+    fn inserting_a_picture_gives_it_a_paragraph_of_its_own() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("before after");
+        for _ in 0..5 {
+            h.key(Key::ArrowLeft, Modifiers::NONE);
+        }
+        let ctx = h.ctx.clone();
+        h.app.insert_image_bytes(&ctx, images::test_png(200, 100, [10, 120, 200])).unwrap();
+        h.frames(3, vec![], Modifiers::NONE);
+        assert_eq!(h.text(), format!("before \n{}\nafter", model::IMAGE_CHAR));
+        assert_eq!(h.app.doc.images.len(), 1);
+        // The picture's paragraph is as tall as the picture; the caret lands after it, in the rest of the text.
+        let layout = h.app.page_layout(&ctx, 0, 1.0);
+        assert_eq!(layout.paras.len(), 3);
+        let pic = layout.paras[1].image.expect("the middle paragraph is the picture");
+        assert!((pic.rect.width() - 150.0).abs() < 0.1, "200px at 96dpi is 150pt: {:?}", pic.rect);
+        assert!((layout.paras[1].height - 75.0).abs() < 0.1);
+        assert_eq!(h.app.caret, h.text().chars().count() - 5, "caret is at the start of 'after'");
+        // Typing after a picture is text, not another picture. (Wait, so undo treats it as a separate step.)
+        h.frames(90, vec![], Modifiers::NONE);
+        h.type_text("X");
+        h.frames(90, vec![], Modifiers::NONE);
+        assert!(h.app.doc.flow.styles.iter().filter(|s| s.image != 0).count() == 1);
+        // One Backspace chain removes the picture, and undo brings it back.
+        h.key(Key::ArrowLeft, Modifiers::NONE);
+        h.key(Key::Backspace, Modifiers::NONE); // joins 'after' to the picture's paragraph
+        h.key(Key::Backspace, Modifiers::NONE); // deletes the picture
+        assert!(!h.text().contains(model::IMAGE_CHAR));
+        h.key(Key::Z, Modifiers::COMMAND);
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert!(h.text().contains(model::IMAGE_CHAR), "undo restores the picture: {:?}", h.text());
+    }
+
+    #[test]
+    fn clicking_a_picture_selects_it_and_it_can_be_resized() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        h.app.insert_image_bytes(&ctx, images::test_png(100, 100, [0, 0, 0])).unwrap();
+        h.frames(3, vec![], Modifiers::NONE);
+        let layout = h.app.page_layout(&ctx, 0, 1.0);
+        let pic = layout.paras[0].image.unwrap().rect;
+        h.click_in_page(pic.center().to_vec2());
+        assert_eq!(h.app.selection(), (0, 1), "the picture's placeholder char is selected");
+        assert!(h.app.selected_image().is_some());
+        h.app.set_image_width_fraction(&ctx, 0.5);
+        let half = h.app.doc.setup.content_size().x * 0.5;
+        assert!((h.app.doc.images[0].width_pt - half).abs() < 0.1);
+    }
+
+    #[test]
+    fn a_picture_that_does_not_fit_moves_to_the_next_page_as_a_whole() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        for _ in 0..40 {
+            h.type_text("line\n");
+        }
+        h.app.insert_image_bytes(&ctx, images::test_png(300, 300, [0, 0, 0])).unwrap(); // 225pt tall
+        h.frames(30, vec![], Modifiers::NONE);
+        assert!(h.app.doc.pages() >= 2);
+        let pic_page = h.app.doc.page_of(h.text().chars().position(|c| c == model::IMAGE_CHAR).unwrap());
+        let layout = h.app.page_layout(&ctx, pic_page, 1.0);
+        let pic = layout.paras.iter().find(|p| p.image.is_some()).expect("the picture is whole on its page");
+        assert!(pic.y + pic.height <= h.app.doc.setup.content_size().y + 0.6);
+    }
+
+    #[test]
+    fn pictures_survive_saving_and_loading() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        let png = images::test_png(64, 32, [5, 6, 7]);
+        h.app.insert_image_bytes(&ctx, png.clone()).unwrap();
+        let json = serde_json::to_string(&fileio::DocFile::from_doc(&h.app.doc)).unwrap();
+        let back = serde_json::from_str::<fileio::DocFile>(&json).unwrap().into_doc();
+        assert_eq!(back.images.len(), 1);
+        assert_eq!(back.images[0].bytes, png);
+        assert_eq!(back.images[0].px, (64, 32));
+        assert_eq!(back.flow.text, h.app.doc.flow.text);
+        assert_eq!(back.flow.styles, h.app.doc.flow.styles);
+    }
+
+    /// Writes a sample document with a picture, for looking at in the real app:
+    /// `CAPRICE_SAMPLE_OUT=/some/file.caprice cargo test sample_caprice`
+    #[test]
+    fn sample_caprice() {
+        let Some(out) = std::env::var_os("CAPRICE_SAMPLE_OUT") else { return };
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("A document with a picture");
+        h.key(Key::E, Modifiers::COMMAND);
+        h.key(Key::Enter, Modifiers::NONE);
+        h.key(Key::L, Modifiers::COMMAND);
+        h.type_text("Text before the picture, and then the picture itself, centered below:");
+        h.key(Key::Enter, Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        // A gradient so that scaling and orientation are visible.
+        let img = image::RgbImage::from_fn(240, 120, |x, y| image::Rgb([(x as f32 / 240.0 * 255.0) as u8, (y as f32 / 120.0 * 255.0) as u8, 150]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        h.app.insert_image_bytes(&ctx, png.into_inner()).unwrap();
+        h.key(Key::ArrowUp, Modifiers::NONE);
+        h.key(Key::E, Modifiers::COMMAND);
+        h.key(Key::ArrowDown, Modifiers::NONE);
+        h.type_text("Text after the picture, which continues on the same page.");
+        let docx = std::path::PathBuf::from(&out).with_extension("docx");
+        std::fs::write(docx, export::to_docx(&h.app.doc).unwrap()).unwrap();
+        std::fs::write(out, serde_json::to_string_pretty(&fileio::DocFile::from_doc(&h.app.doc)).unwrap()).unwrap();
     }
 }

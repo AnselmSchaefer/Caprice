@@ -67,6 +67,12 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, tip: &str) -> egui
 }
 
 #[derive(Clone, Copy)]
+enum ImageAction {
+    Insert,
+    Width(f32),
+}
+
+#[derive(Clone, Copy)]
 enum FileAction {
     Open,
     Save,
@@ -260,6 +266,22 @@ impl App {
         ui.add_space(2.0);
         let new_setup = self.page_menu(ui);
 
+        let mut image_action = None;
+        let selected_image = self.selected_image().is_some();
+        egui::containers::menu::MenuButton::new("Image").ui(ui, |ui| {
+            ui.set_min_width(190.0);
+            if ui.add(egui::Button::new("Insert picture…").frame(false)).clicked() {
+                image_action = Some(ImageAction::Insert);
+            }
+            ui.add_enabled_ui(selected_image, |ui| {
+                ui.separator();
+                for (label, fraction) in [("Small  (25% of width)", 0.25), ("Medium  (50%)", 0.5), ("Large  (75%)", 0.75), ("Full width", 1.0)] {
+                    if ui.add(egui::Button::new(label).frame(false)).clicked() {
+                        image_action = Some(ImageAction::Width(fraction));
+                    }
+                }
+            });
+        });
         let add_note = ui.button("Note").on_hover_text("Attach a note to the selection or line (Ctrl+Alt+N)").clicked();
         let find = ui.button("Find").on_hover_text("Search (Ctrl+F)").clicked();
 
@@ -304,6 +326,19 @@ impl App {
         }
         if find {
             self.open_search();
+        }
+        match image_action {
+            Some(ImageAction::Insert) => {
+                let dialog = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg"]);
+                if let Some(path) = dialog.pick_file() {
+                    self.status = match self.insert_image(&ctx, &path) {
+                        Ok(()) => "- picture added".into(),
+                        Err(e) => format!("- picture failed: {e}"),
+                    };
+                }
+            }
+            Some(ImageAction::Width(f)) => self.set_image_width_fraction(&ctx, f),
+            None => {}
         }
         match file_action {
             Some(FileAction::Open) => self.open(&ctx),

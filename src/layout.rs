@@ -8,7 +8,7 @@ use eframe::egui::{self, Color32, FontId, Rect, Stroke, TextFormat, Vec2, pos2, 
 use egui::text::CCursor;
 
 use crate::fonts::family_for;
-use crate::model::{Align, Doc, ListKind, PAGE_BREAK, ParaAttrs, Style, is_terminator};
+use crate::model::{Align, Doc, IMAGE_CHAR, ListKind, PAGE_BREAK, ParaAttrs, Style, is_terminator};
 use crate::theme::INK;
 
 /// Width reserved for the bullet or number of a list item, in page points.
@@ -75,6 +75,21 @@ pub fn paragraph_job(
     job
 }
 
+/// Where a picture is drawn, relative to the top-left of its paragraph.
+#[derive(Clone, Copy, Debug)]
+pub struct ImageBox {
+    pub id: u32,
+    pub rect: Rect,
+}
+
+/// A row of a paragraph: how many chars it holds and where it is, relative to the paragraph's top.
+#[derive(Clone, Copy, Debug)]
+pub struct RowGeom {
+    pub chars: usize,
+    pub y: f32,
+    pub height: f32,
+}
+
 /// One paragraph (or the page's share of it), laid out.
 pub struct ParaLayout {
     /// Page-local char range of the text; `end` is where the terminator sits (or the page ends).
@@ -88,6 +103,21 @@ pub struct ParaLayout {
     /// Bullet or number, with its position relative to the paragraph's own top-left (before `x`).
     pub marker: Option<(Arc<egui::Galley>, Vec2)>,
     pub attrs: ParaAttrs,
+    /// Set when the paragraph is a picture.
+    pub image: Option<ImageBox>,
+}
+
+impl ParaLayout {
+    pub fn row_table(&self) -> Vec<RowGeom> {
+        if self.image.is_some() {
+            return vec![RowGeom { chars: self.end - self.start, y: 0.0, height: self.height }];
+        }
+        self.galley
+            .rows
+            .iter()
+            .map(|r| RowGeom { chars: usize::from(r.row.char_count_excluding_newline()), y: r.pos.y, height: r.size.y })
+            .collect()
+    }
 }
 
 pub struct PageLayout {
@@ -109,6 +139,8 @@ pub struct PieceSpec<'a> {
     pub invisible: bool,
     /// Text of the bullet/number, if this piece starts a list item.
     pub marker: Option<String>,
+    /// The picture this piece is, with its size in page points.
+    pub image: Option<(u32, Vec2)>,
 }
 
 pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, local_end: usize, y: f32) -> ParaLayout {
@@ -116,6 +148,25 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
     let wrap = (spec.content_width - indent).max(10.0);
     let job = paragraph_job(ctx, spec.text, spec.styles, spec.term, spec.attrs, spec.scale, wrap, spec.marks);
     let galley = ctx.fonts_mut(|f| f.layout_job(job));
+    if let Some((id, size)) = spec.image {
+        let size = size * spec.scale;
+        let x = match spec.attrs.align {
+            Align::Left | Align::Justify => 0.0,
+            Align::Center => (spec.content_width - size.x) / 2.0,
+            Align::Right => spec.content_width - size.x,
+        };
+        return ParaLayout {
+            start: local_start,
+            end: local_end,
+            y,
+            x: 0.0,
+            height: size.y,
+            galley,
+            marker: None,
+            attrs: spec.attrs,
+            image: Some(ImageBox { id, rect: Rect::from_min_size(pos2(x, 0.0), size) }),
+        };
+    }
     let height = if spec.invisible { 0.0 } else { galley.size().y };
     let marker = spec.marker.as_ref().map(|text| {
         let st = spec.styles.first().unwrap_or(spec.term);
@@ -142,6 +193,7 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
         galley,
         marker,
         attrs: spec.attrs,
+        image: None,
     }
 }
 
@@ -170,6 +222,16 @@ pub fn list_number(doc: &Doc, mut c: usize, mut b: usize) -> usize {
 }
 
 impl Doc {
+    /// If chars `c..ec` are exactly one picture placeholder, its id and size.
+    pub fn picture_in(&self, c: usize, ec: usize) -> Option<(u32, Vec2)> {
+        if ec != c + 1 {
+            return None;
+        }
+        let st = &self.flow.styles[c];
+        let img = (st.image != 0).then(|| self.image(st.image)).flatten()?;
+        (self.char_at(c) == Some(IMAGE_CHAR)).then(|| (img.id, self.image_size(img)))
+    }
+
     pub fn hard_end(&self, page: usize) -> bool {
         self.spans[page].hard
     }
@@ -204,7 +266,8 @@ impl Doc {
             } else {
                 number = None;
             }
-            let marker = match (attrs.list, at_para_start) {
+            let is_picture = self.picture_in(c, pe_c).is_some();
+            let marker = match (attrs.list, at_para_start && !is_picture) {
                 (ListKind::Bullet, true) => Some("\u{2022}".to_owned()),
                 (ListKind::Numbered, true) => Some(format!("{}.", number.unwrap_or(1))),
                 _ => None,
@@ -226,6 +289,7 @@ impl Doc {
                 marks: &piece_marks,
                 invisible: pe_c == c && self.flow.text[tb..].starts_with(PAGE_BREAK) && tc == pe_c,
                 marker,
+                image: self.picture_in(c, pe_c),
             };
             let p = layout_piece(ctx, &spec, local(c), local(pe_c), y);
             y += p.height;
@@ -268,9 +332,21 @@ impl PageLayout {
             return Rect::from_min_size(pos2(0.0, 0.0), vec2(1.0, 14.0 * self.scale));
         };
         let p = &self.paras[k];
+        if let Some(img) = p.image {
+            // Before the picture: its left edge; after it: its right edge.
+            let x = if local <= p.start { img.rect.left() } else { img.rect.right() };
+            return Rect::from_min_max(pos2(x, p.y), pos2(x + 1.0, p.y + p.height));
+        }
         let idx = local.clamp(p.start, p.end) - p.start;
         let r = p.galley.pos_from_cursor(CCursor { index: idx.into(), prefer_next_row });
         r.translate(vec2(p.x, p.y))
+    }
+
+    /// The picture paragraph under a point relative to the writing area.
+    pub fn image_at(&self, pos: Vec2) -> Option<&ParaLayout> {
+        self.paras.iter().find(|p| {
+            p.image.is_some_and(|img| img.rect.translate(vec2(0.0, p.y)).contains(pos.to_pos2()))
+        })
     }
 
     /// Page-local position closest to a point relative to the writing area.
@@ -278,6 +354,9 @@ impl PageLayout {
         let Some(p) = self.paras.iter().find(|p| pos.y < p.y + p.height).or(self.paras.last()) else {
             return 0;
         };
+        if let Some(img) = p.image {
+            return if pos.x < img.rect.center().x { p.start } else { p.end };
+        }
         let idx = usize::from(p.galley.cursor_from_pos(vec2(pos.x - p.x, pos.y - p.y)).index);
         p.start + idx.min(p.end - p.start)
     }
@@ -286,10 +365,9 @@ impl PageLayout {
         let mut out = Vec::new();
         for (k, p) in self.paras.iter().enumerate() {
             let mut start = p.start;
-            for r in &p.galley.rows {
-                let len = usize::from(r.row.char_count_excluding_newline());
-                out.push(RowRef { para: k, start, end: start + len, top: p.y + r.pos.y, height: r.size.y });
-                start += len;
+            for r in p.row_table() {
+                out.push(RowRef { para: k, start, end: start + r.chars, top: p.y + r.y, height: r.height });
+                start += r.chars;
             }
         }
         out
@@ -318,6 +396,12 @@ impl PageLayout {
         let mut out = Vec::new();
         for r in self.rows() {
             let p = &self.paras[r.para];
+            if let Some(img) = p.image {
+                if a < p.end && b > p.start {
+                    out.push(img.rect.translate(vec2(0.0, p.y)));
+                }
+                continue;
+            }
             let (s, e) = (a.max(r.start), b.min(r.end));
             let includes_end = b > p.end && r.end == p.end && p.galley.rows.last().is_some();
             if s >= e && !(includes_end && a <= r.end) {

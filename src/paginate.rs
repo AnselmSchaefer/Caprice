@@ -67,7 +67,7 @@ impl Doc {
 
             // Lay out the paragraph (a window of it, if it is huge) and see how much of it fits.
             let mut window = WINDOW;
-            let (ec, eb, layout, height) = loop {
+            let (ec, eb, rows, height) = loop {
                 let (ec, eb) = if tc - c <= window {
                     (tc, tb)
                 } else {
@@ -83,18 +83,19 @@ impl Doc {
                     marks: &[],
                     invisible: ec == c && is_break && ec == tc,
                     marker: None,
+                    image: self.picture_in(c, ec),
                 };
                 let p = layout_piece(ctx, &spec, 0, ec - c, 0.0);
                 if ec < tc && y + p.height <= limit {
                     window *= 2; // fits so far, but more of the paragraph follows
                     continue;
                 }
-                break (ec, eb, p.galley.clone(), p.height);
+                break (ec, eb, p.row_table(), p.height);
             };
             let truncated = ec < tc;
 
             let whole = !truncated && y + height <= limit;
-            let rows_fit = layout.rows.iter().take_while(|r| y + r.pos.y + r.size.y <= limit).count();
+            let rows_fit = rows.iter().take_while(|r| y + r.y + r.height <= limit).count();
             let nothing_fits_on_empty_page = rows_fit == 0 && (c, b) == (c0, b0);
             let empty_para = ec == c;
             if whole || (nothing_fits_on_empty_page && empty_para) {
@@ -114,8 +115,8 @@ impl Doc {
                 return (Span { start: c0, end: c, bstart: b0, bend: b, hard: false }, Some((c, b)));
             }
             // Split the paragraph after the rows that fit (at least one, to always make progress).
-            let rows = rows_fit.max(1);
-            let chars: usize = layout.rows[..rows].iter().map(|r| usize::from(r.row.char_count_excluding_newline())).sum();
+            let n_rows = rows_fit.max(1);
+            let chars: usize = rows[..n_rows].iter().map(|r| r.chars).sum();
             let cut = c + chars.max(1).min(ec - c);
             let cut_b = b + self.flow.text[b..eb].char_indices().nth(cut - c).map_or(eb - b, |(o, _)| o);
             return (Span { start: c0, end: cut, bstart: b0, bend: cut_b, hard: false }, Some((cut, cut_b)));
