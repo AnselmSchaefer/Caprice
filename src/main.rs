@@ -24,9 +24,25 @@ use model::{Doc, Style};
 use search::Search;
 use theme::{DESK, apply_theme};
 
+/// The app icon, for window managers that take it from the window (the launcher uses the installed files).
+fn window_icon() -> egui::IconData {
+    let bytes = include_bytes!("../assets/icon-256.png");
+    match image::load_from_memory(bytes) {
+        Ok(img) => {
+            let rgba = img.to_rgba8();
+            egui::IconData { width: rgba.width(), height: rgba.height(), rgba: rgba.into_raw() }
+        }
+        Err(_) => egui::IconData::default(),
+    }
+}
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 900.0]).with_title("Caprice"),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1280.0, 900.0])
+            .with_title("Caprice")
+            .with_app_id("Caprice")
+            .with_icon(window_icon()),
         ..Default::default()
     };
     eframe::run_native(
