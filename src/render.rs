@@ -6,7 +6,6 @@ use eframe::egui::{self, Color32, FontId, Pos2, Rect, Shape, Stroke, pos2, vec2}
 use egui::epaint::{Mesh, TessellationOptions, Tessellator, WHITE_UV};
 
 use crate::App;
-use crate::layout::layout;
 use crate::theme::{INK, PAPER};
 
 impl App {
@@ -61,8 +60,8 @@ impl App {
     pub fn static_page(&self, ui: &egui::Ui, rect: Rect, i: usize) {
         Self::paper(ui.painter(), rect);
         let sc = self.scale_of(rect);
-        let galley = layout(ui.ctx(), self.page_job(i, sc));
-        ui.painter().galley(rect.min + self.doc.setup.margin_origin() * sc, galley, INK);
+        let layout = self.page_layout(ui.ctx(), i, sc);
+        Self::paint_layout(ui.painter(), &layout, rect.min + self.doc.setup.margin_origin() * sc);
         self.draw_footer(ui, rect, i);
     }
 
@@ -127,12 +126,17 @@ impl App {
         if front {
             // Text: tessellate the galleys, then squash/lift the vertices with the paper.
             let ctx = ui.ctx();
-            let galley = layout(ctx, self.page_job(i, sc));
+            let page = self.page_layout(ctx, i, sc);
             let font_tex = ctx.fonts(|f| f.font_image_size());
             let mut tess = Tessellator::new(ctx.pixels_per_point(), TessellationOptions::default(), font_tex, vec![]);
             let mut text_mesh = Mesh::default();
             let origin = self.doc.setup.margin_origin() * sc;
-            tess.tessellate_shape(Shape::galley(pos2(origin.x, origin.y), galley, INK), &mut text_mesh);
+            for p in &page.paras {
+                if let Some((g, at)) = &p.marker {
+                    tess.tessellate_shape(Shape::galley(pos2(origin.x + at.x, origin.y + p.y + at.y), g.clone(), INK), &mut text_mesh);
+                }
+                tess.tessellate_shape(Shape::galley(pos2(origin.x + p.x, origin.y + p.y), p.galley.clone(), INK), &mut text_mesh);
+            }
             if let Some((g, at)) = self.footer(ctx, i, sc) {
                 tess.tessellate_shape(Shape::galley(at, g, INK), &mut text_mesh);
             }

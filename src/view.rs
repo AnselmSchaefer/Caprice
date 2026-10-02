@@ -24,9 +24,17 @@ impl App {
         ui.input(|i| {
             for e in &i.events {
                 match e {
-                    egui::Event::Key { key: Key::ControlLeft | Key::ControlRight, pressed, .. } => self.ctrl_down = *pressed,
+                    egui::Event::Key { key: Key::ControlLeft | Key::ControlRight, pressed, .. } => {
+                        self.ctrl_down = *pressed;
+                        self.ctrl_via_key = *pressed;
+                    }
+                    // Without key events (e.g. virtual keyboards) the modifier state is all there is.
                     egui::Event::ModifiersChanged(m) if m.ctrl => self.ctrl_down = true,
-                    egui::Event::WindowFocused(false) => self.ctrl_down = false,
+                    egui::Event::ModifiersChanged(m) if !self.ctrl_via_key => self.ctrl_down = m.ctrl,
+                    egui::Event::WindowFocused(false) => {
+                        self.ctrl_down = false;
+                        self.ctrl_via_key = false;
+                    }
                     _ => {}
                 }
             }

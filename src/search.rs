@@ -51,9 +51,7 @@ impl App {
 
     fn close_search(&mut self, ctx: &egui::Context) {
         if let Some(&(s, _)) = self.search.matches.get(self.search.current) {
-            let (p, local) = self.locate(s, self.target.min(self.last()));
-            self.target = p;
-            self.cursor_req = Some((p, local));
+            self.set_caret(ctx, s, false);
         }
         self.search.open = false;
         self.search.matches.clear();
@@ -61,12 +59,7 @@ impl App {
         ctx.request_repaint();
     }
 
-    fn caret_in_flow(&self, ctx: &egui::Context) -> usize {
-        let t = self.target.min(self.last());
-        self.doc.spans[t].start + Self::cursor_of(ctx, t).unwrap_or(0)
-    }
-
-    fn refresh_matches(&mut self, ctx: &egui::Context) {
+    fn refresh_matches(&mut self) {
         let stamp = (self.doc.version, self.search.query.clone());
         if self.search.stamp.as_ref() == Some(&stamp) {
             return;
@@ -78,7 +71,7 @@ impl App {
         if n == 0 {
             self.search.current = 0;
         } else if query_changed {
-            let caret = self.caret_in_flow(ctx);
+            let caret = self.caret;
             let first = self.search.matches.iter().position(|&(s, _)| s >= caret).unwrap_or(0);
             self.jump_to_match(first);
         } else {
@@ -90,8 +83,7 @@ impl App {
     fn jump_to_match(&mut self, k: usize) {
         let Some(&(s, _)) = self.search.matches.get(k) else { return };
         self.search.current = k;
-        let (p, _) = self.locate(s, self.target.min(self.last()));
-        self.target = p;
+        self.target = self.doc.page_of(s);
     }
 
     fn step_match(&mut self, forward: bool) {
@@ -107,7 +99,7 @@ impl App {
             return;
         }
         let ctx = ui.ctx().clone();
-        let dock_w = (area.width() - 48.0).min(940.0);
+        let dock_w = (area.width() - 48.0).min(crate::ui::DOCK_MAX_W);
         let width = 430.0_f32.min(dock_w);
         let rect = Rect::from_min_size(
             pos2(area.center().x + dock_w / 2.0 - width, area.top() + DOCK_GAP + DOCK_H + 8.0),
@@ -161,7 +153,7 @@ impl App {
                 close |= ui.button("✕").on_hover_text("Close (Esc)").clicked();
             },
         );
-        self.refresh_matches(&ctx);
+        self.refresh_matches();
         if forward {
             self.step_match(true);
         }

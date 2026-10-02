@@ -9,7 +9,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::App;
-use crate::model::{Doc, Flow, Note, PAGE_BREAK, PageSetup, Style};
+use crate::model::{Doc, Flow, Note, PAGE_BREAK, PageSetup, ParaAttrs, Style};
 
 #[derive(Serialize, Deserialize)]
 struct Run {
@@ -18,6 +18,13 @@ struct Run {
     size: f32,
     bold: bool,
     underline: bool,
+    /// Paragraph format; only present on runs holding paragraph marks.
+    #[serde(default, skip_serializing_if = "is_default_para")]
+    para: ParaAttrs,
+}
+
+fn is_default_para(p: &ParaAttrs) -> bool {
+    *p == ParaAttrs::default()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -52,13 +59,13 @@ fn to_runs(text: &str, styles: &[Style]) -> Vec<Run> {
         }
     }
     runs.into_iter()
-        .map(|(s, text)| Run { text, font: s.font.to_string(), size: s.size, bold: s.bold, underline: s.underline })
+        .map(|(s, text)| Run { text, font: s.font.to_string(), size: s.size, bold: s.bold, underline: s.underline, para: s.para })
         .collect()
 }
 
 fn from_runs(runs: Vec<Run>, text: &mut String, styles: &mut Vec<Style>) {
     for r in runs {
-        let st = Style { font: r.font.into(), size: r.size, bold: r.bold, underline: r.underline };
+        let st = Style { font: r.font.into(), size: r.size, bold: r.bold, underline: r.underline, para: r.para };
         styles.extend(std::iter::repeat_n(st, r.text.chars().count()));
         text.push_str(&r.text);
     }
@@ -94,6 +101,7 @@ impl DocFile {
         }
         let mut doc = Doc::new();
         doc.flow = Flow { text, styles };
+        doc.ensure_final_mark();
         doc.setup = self.setup;
         doc.setup.clamp_margins();
         let total = doc.total_chars();
@@ -170,11 +178,9 @@ impl App {
                 }
                 self.doc = doc;
                 self.doc.full_paginate(ctx, &self.typing);
-                self.view_for = None;
                 self.pos = 0.0;
                 self.target = 0;
-                self.last_cursor = None;
-                self.cursor_req = Some((0, 0));
+                self.set_caret(ctx, 0, false);
                 self.fit = true;
                 self.path = Some(path);
                 self.status = "- opened".into();
@@ -193,8 +199,8 @@ mod tests {
         let bold = Style { bold: true, ..Style::new("Foo") };
         let plain = Style::new("Foo");
         let mut doc = Doc::new();
-        doc.flow.text = format!("hi{PAGE_BREAK}yo");
-        doc.flow.styles = vec![bold.clone(), bold.clone(), plain.clone(), plain.clone(), plain.clone()];
+        doc.flow.text = format!("hi{PAGE_BREAK}yo\n");
+        doc.flow.styles = vec![bold.clone(), bold.clone(), plain.clone(), plain.clone(), plain.clone(), plain.clone()];
         doc.setup.margin_left = 40.0;
         doc.setup.page_numbers = true;
         doc.notes.push(Note { id: 7, start: 1, end: 4, text: "check this".into(), color: 2 });
@@ -213,7 +219,7 @@ mod tests {
         let json = r#"{"version":1,"pages":[[{"text":"one","font":"F","size":12.0,"bold":false,"underline":false}],
                                              [{"text":"two","font":"F","size":12.0,"bold":true,"underline":false}]]}"#;
         let doc = serde_json::from_str::<DocFile>(json).unwrap().into_doc();
-        assert_eq!(doc.flow.text, format!("one{PAGE_BREAK}two"));
-        assert_eq!(doc.flow.styles.len(), 7);
+        assert_eq!(doc.flow.text, format!("one{PAGE_BREAK}two\n"));
+        assert_eq!(doc.flow.styles.len(), 8);
     }
 }

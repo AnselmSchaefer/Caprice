@@ -5,13 +5,66 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, FontId, Id, Rect, Sense, Stroke, UiBuilder, pos2, vec2};
 
 use crate::App;
-use crate::model::{CM, Orientation};
-use crate::theme::{ACCENT, DOCK, DOCK_EDGE, TEXT_DIM};
+use crate::model::{Align, CM, ListKind, Orientation};
+use crate::theme::{ACCENT, BTN, BTN_HOVER, DOCK, DOCK_EDGE, TEXT, TEXT_DIM};
 
 pub const DOCK_H: f32 = 48.0;
 pub const DOCK_GAP: f32 = 14.0;
 /// Space at the top/bottom of the window taken by the two docks.
 pub const RESERVED: f32 = DOCK_GAP + DOCK_H + 10.0;
+/// Widest the docks get.
+pub const DOCK_MAX_W: f32 = 1180.0;
+/// A paragraph-format change picked in the toolbar.
+#[derive(Clone, Copy)]
+enum ParaChange {
+    Align(Align),
+    Spacing(f32),
+    List(ListKind),
+}
+
+#[derive(Clone, Copy)]
+enum Icon {
+    Align(Align),
+    Bullets,
+    Numbers,
+}
+
+/// A square toolbar button with a drawn icon.
+fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, tip: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
+    let fill = if selected { ACCENT } else if resp.hovered() { BTN_HOVER } else { BTN };
+    let ink = if selected { Color32::from_rgb(20, 22, 30) } else { TEXT };
+    let p = ui.painter();
+    p.rect_filled(rect, 8.0, fill);
+    let stroke = Stroke::new(1.6, ink);
+    let area = rect.shrink2(vec2(8.0, 8.0));
+    match icon {
+        Icon::Align(a) => {
+            for (k, w) in [1.0, 0.62, 0.86, 0.5].into_iter().enumerate() {
+                let w = if a == Align::Justify { 1.0 } else { w } * area.width();
+                let x0 = match a {
+                    Align::Left | Align::Justify => area.left(),
+                    Align::Center => area.center().x - w / 2.0,
+                    Align::Right => area.right() - w,
+                };
+                let y = area.top() + 1.0 + k as f32 * (area.height() - 2.0) / 3.0;
+                p.line_segment([pos2(x0, y), pos2(x0 + w, y)], stroke);
+            }
+        }
+        Icon::Bullets | Icon::Numbers => {
+            for k in 0..3 {
+                let y = area.top() + 2.0 + k as f32 * (area.height() - 4.0) / 2.0;
+                if matches!(icon, Icon::Bullets) {
+                    p.circle_filled(pos2(area.left() + 1.5, y), 1.7, ink);
+                } else {
+                    p.text(pos2(area.left() + 1.0, y), egui::Align2::LEFT_CENTER, (k + 1).to_string(), FontId::proportional(8.0), ink);
+                }
+                p.line_segment([pos2(area.left() + 6.5, y), pos2(area.right(), y)], stroke);
+            }
+        }
+    }
+    resp.on_hover_text(tip)
+}
 
 #[derive(Clone, Copy)]
 enum FileAction {
@@ -22,8 +75,8 @@ enum FileAction {
 }
 
 impl App {
-    fn dock_rect(area: Rect, top: bool) -> Rect {
-        let width = (area.width() - 48.0).min(940.0);
+    pub fn dock_rect(area: Rect, top: bool) -> Rect {
+        let width = (area.width() - 48.0).min(DOCK_MAX_W);
         let y = if top { area.top() + DOCK_GAP + DOCK_H / 2.0 } else { area.bottom() - DOCK_GAP - DOCK_H / 2.0 };
         Rect::from_center_size(pos2(area.center().x, y), vec2(width, DOCK_H))
     }
@@ -38,18 +91,76 @@ impl App {
         p.rect_stroke(rect, 16.0, Stroke::new(1.0, DOCK_EDGE), egui::StrokeKind::Inside);
     }
 
+    /// The formatting dock: one row of tools that slides sideways when the window is too narrow,
+    /// with an arrow at each end.
     pub fn format_bar(&mut self, ui: &mut egui::Ui, area: Rect) {
         let rect = Self::dock_rect(area, true);
         Self::paint_dock(ui, rect);
+        let inner = rect.shrink2(vec2(14.0, 0.0));
+        let overflow = self.toolbar_w > inner.width() + 0.5;
+        let arrow_w = 28.0;
+        let view = if overflow { inner.shrink2(vec2(arrow_w + 6.0, 0.0)) } else { inner };
+        let max_scroll = (self.toolbar_w - view.width()).max(0.0);
+
+        if overflow {
+            // Wheel / two-finger scrolling over the bar slides it too.
+            let over_bar = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| rect.contains(p));
+            if over_bar {
+                let d = ui.input(|i| i.smooth_scroll_delta);
+                let step = if d.x.abs() > d.y.abs() { d.x } else { d.y };
+                self.toolbar_target = (self.toolbar_target - step).clamp(0.0, max_scroll);
+            }
+            for (left, ar) in [(true, Rect::from_min_size(inner.min, vec2(arrow_w, inner.height()))),
+                               (false, Rect::from_min_size(pos2(inner.right() - arrow_w, inner.top()), vec2(arrow_w, inner.height())))] {
+                let can = if left { self.toolbar_target > 0.5 } else { self.toolbar_target < max_scroll - 0.5 };
+                let btn = Rect::from_center_size(ar.center(), vec2(arrow_w, 30.0));
+                let resp = ui.interact(btn, Id::new(("toolbar_arrow", left)), if can { Sense::click() } else { Sense::hover() });
+                let fill = if can && resp.hovered() { BTN_HOVER } else { BTN };
+                let ink = if can { TEXT } else { TEXT_DIM.gamma_multiply(0.5) };
+                let p = ui.painter();
+                p.rect_filled(btn, 8.0, fill);
+                let c = btn.center();
+                let dx = if left { -1.0 } else { 1.0 };
+                let s = Stroke::new(1.8, ink);
+                p.line_segment([pos2(c.x - 2.5 * dx, c.y - 5.0), pos2(c.x + 2.5 * dx, c.y)], s);
+                p.line_segment([pos2(c.x + 2.5 * dx, c.y), pos2(c.x - 2.5 * dx, c.y + 5.0)], s);
+                if can && resp.clicked() {
+                    let by = view.width() * 0.6 * if left { -1.0 } else { 1.0 };
+                    self.toolbar_target = (self.toolbar_target + by).clamp(0.0, max_scroll);
+                }
+            }
+        } else {
+            self.toolbar_target = 0.0;
+        }
+
+        // Ease towards the target offset.
+        let dt = ui.input(|i| i.stable_dt).min(0.05);
+        let diff = self.toolbar_target - self.toolbar_scroll;
+        if diff.abs() > 0.3 {
+            self.toolbar_scroll += diff * (1.0 - (-dt * 16.0).exp());
+            ui.ctx().request_repaint();
+        } else {
+            self.toolbar_scroll = self.toolbar_target;
+        }
+        self.toolbar_scroll = self.toolbar_scroll.clamp(0.0, max_scroll);
+
+        // The tools themselves, laid out on a very wide strip and clipped to the visible window.
+        let strip = Rect::from_min_size(pos2(view.left() - self.toolbar_scroll, view.top()), vec2(4000.0, view.height()));
+        let mut used = 0.0;
         ui.scope_builder(
-            UiBuilder::new()
-                .max_rect(rect.shrink2(vec2(14.0, 0.0)))
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            UiBuilder::new().max_rect(strip).layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
+                ui.set_clip_rect(ui.clip_rect().intersect(view.expand2(vec2(0.0, 6.0))));
+                ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
                 self.toolbox(ui);
+                used = ui.min_rect().width();
             },
         );
+        // Measured this frame, used the next; a changed width asks for one more frame.
+        if (used - self.toolbar_w).abs() > 0.5 {
+            self.toolbar_w = used;
+            ui.ctx().request_repaint();
+        }
     }
 
     pub fn page_bar(&mut self, ui: &mut egui::Ui, area: Rect) {
@@ -63,6 +174,25 @@ impl App {
         let mut font_pick = None;
         let (mut bold, mut underline, mut size) = (self.typing.bold, self.typing.underline, self.typing.size);
         let small = vec2(32.0, 30.0);
+
+        let mut file_action = None;
+        egui::containers::menu::MenuButton::new("File").ui(ui, |ui| {
+            ui.set_min_width(210.0);
+            let items = [
+                ("Open…", "Ctrl+O", FileAction::Open),
+                ("Save", "Ctrl+S", FileAction::Save),
+                ("Save as…", "", FileAction::SaveAs),
+                ("Export as Word (.docx)…", "", FileAction::ExportDocx),
+            ];
+            for (label, shortcut, action) in items {
+                let button = egui::Button::new(label).shortcut_text(shortcut).frame(false);
+                if ui.add(button).clicked() {
+                    file_action = Some(action);
+                }
+            }
+        });
+
+        ui.add_space(2.0);
 
         egui::ComboBox::from_id_salt("font")
             .selected_text(self.typing.font.to_string())
@@ -83,38 +213,64 @@ impl App {
         let u = egui::Button::new(egui::RichText::new("U").underline()).selected(underline).min_size(small);
         underline ^= ui.add(u).clicked();
 
-        ui.add_space(4.0);
+        ui.add_space(2.0);
+        ui.separator();
+        ui.add_space(2.0);
+
+        // Paragraph format of the paragraph the caret is in.
+        let attrs = self.doc.para_attrs_at(self.caret);
+        let mut para_change = None;
+        let aligns = [
+            (Align::Left, "Align left"),
+            (Align::Center, "Center"),
+            (Align::Right, "Align right"),
+            (Align::Justify, "Justify"),
+        ];
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (a, tip) in aligns {
+            if icon_button(ui, Icon::Align(a), attrs.align == a, tip).clicked() {
+                para_change = Some(ParaChange::Align(a));
+            }
+        }
+        ui.spacing_mut().item_spacing.x = 10.0;
+        egui::ComboBox::from_id_salt("spacing")
+            .selected_text(format!("{:.2}", attrs.spacing).trim_end_matches('0').trim_end_matches('.').to_owned())
+            .width(54.0)
+            .show_ui(ui, |ui| {
+                for s in [1.0_f32, 1.15, 1.5, 2.0, 3.0] {
+                    let label = format!("{s:.2}").trim_end_matches('0').trim_end_matches('.').to_owned();
+                    if ui.selectable_label((attrs.spacing - s).abs() < 0.01, label).clicked() {
+                        para_change = Some(ParaChange::Spacing(s));
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Line spacing");
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if icon_button(ui, Icon::Bullets, attrs.list == ListKind::Bullet, "Bulleted list").clicked() {
+            para_change = Some(ParaChange::List(ListKind::Bullet));
+        }
+        if icon_button(ui, Icon::Numbers, attrs.list == ListKind::Numbered, "Numbered list").clicked() {
+            para_change = Some(ParaChange::List(ListKind::Numbered));
+        }
+        ui.spacing_mut().item_spacing.x = 10.0;
+
+        ui.add_space(2.0);
+        ui.separator();
+        ui.add_space(2.0);
         let new_setup = self.page_menu(ui);
 
         let add_note = ui.button("Note").on_hover_text("Attach a note to the selection or line (Ctrl+Alt+N)").clicked();
         let find = ui.button("Find").on_hover_text("Search (Ctrl+F)").clicked();
 
-        ui.add_space(4.0);
-        let mut file_action = None;
-        egui::containers::menu::MenuButton::new("File").ui(ui, |ui| {
-            ui.set_min_width(210.0);
-            let items = [
-                ("Open…", "Ctrl+O", FileAction::Open),
-                ("Save", "Ctrl+S", FileAction::Save),
-                ("Save as…", "", FileAction::SaveAs),
-                ("Export as Word (.docx)…", "", FileAction::ExportDocx),
-            ];
-            for (label, shortcut, action) in items {
-                let button = egui::Button::new(label).shortcut_text(shortcut).frame(false);
-                if ui.add(button).clicked() {
-                    file_action = Some(action);
-                }
-            }
-        });
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let name = self
-                .path
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned());
-            ui.label(egui::RichText::new(format!("{name} {}", self.status)).size(12.5).color(TEXT_DIM));
-        });
+        let name = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned());
+        let status = egui::RichText::new(format!("{name} {}", self.status)).size(12.5).color(TEXT_DIM);
+        ui.add_space(6.0);
+        ui.label(status);
 
         if let Some(f) = font_pick {
             self.fonts.ensure(&ctx, &f, false);
@@ -129,6 +285,16 @@ impl App {
         }
         if underline != self.typing.underline {
             self.apply_style(&ctx, |s| s.underline = underline);
+        }
+        match para_change {
+            Some(ParaChange::Align(a)) => self.set_para(&ctx, |p| p.align = a),
+            Some(ParaChange::Spacing(s)) => self.set_para(&ctx, |p| p.spacing = s),
+            Some(ParaChange::List(kind)) => {
+                // Clicking the active kind turns the list off.
+                let kind = if attrs.list == kind { ListKind::None } else { kind };
+                self.set_para(&ctx, |p| p.list = kind);
+            }
+            None => {}
         }
         if let Some(setup) = new_setup {
             self.set_setup(&ctx, setup);
@@ -249,7 +415,9 @@ impl App {
                 self.pos = f * (n - 1) as f32;
                 self.target = self.pos.round() as usize;
                 self.scrubbing = true;
-                self.cursor_req = Some((self.target, 0));
+                let ctx = ui.ctx().clone();
+                let start = self.doc.spans[self.target.min(self.last())].start;
+                self.set_caret(&ctx, start, false);
             }
         } else {
             self.scrubbing = false;

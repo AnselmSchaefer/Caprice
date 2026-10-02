@@ -1,7 +1,6 @@
 //! The document: one continuous flow of styled text plus page setup. Pages are *derived*
 //! from it (see `paginate`), they are not stored.
 
-use std::cell::RefCell;
 use std::sync::Arc;
 
 use eframe::egui::{Vec2, vec2};
@@ -13,57 +12,66 @@ pub const PAGE_BREAK: char = '\u{c}';
 /// Points per centimetre.
 pub const CM: f32 = 72.0 / 2.54;
 
-/// Per-character formatting.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum Align {
+    #[default]
+    Left,
+    Center,
+    Right,
+    Justify,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum ListKind {
+    #[default]
+    None,
+    Bullet,
+    Numbered,
+}
+
+/// Paragraph formatting. It lives on the paragraph's terminating character (`\n` or `\f`), like
+/// Word keeps it on the paragraph mark, so splitting, merging and undo handle it for free.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct ParaAttrs {
+    pub align: Align,
+    /// Line spacing as a multiple of the font's natural line height.
+    pub spacing: f32,
+    pub list: ListKind,
+}
+
+impl Default for ParaAttrs {
+    fn default() -> Self {
+        Self { align: Align::Left, spacing: 1.0, list: ListKind::None }
+    }
+}
+
+/// Per-character formatting. `para` only means something on terminator characters.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Style {
     pub font: Arc<str>,
     pub size: f32,
     pub bold: bool,
     pub underline: bool,
+    pub para: ParaAttrs,
 }
 
 impl Style {
     pub fn new(font: &str) -> Self {
-        Self { font: font.into(), size: FONT_SIZE, bold: false, underline: false }
+        Self { font: font.into(), size: FONT_SIZE, bold: false, underline: false, para: ParaAttrs::default() }
+    }
+
+    /// Same look of the glyph itself, ignoring paragraph formatting.
+    pub fn same_char(&self, o: &Style) -> bool {
+        self.font == o.font && self.size == o.size && self.bold == o.bold && self.underline == o.underline
+    }
+
+    pub fn with_para(&self, para: ParaAttrs) -> Style {
+        Style { para, ..self.clone() }
     }
 }
 
-/// Keeps `styles` aligned with a text buffer that is edited behind our back.
-pub struct Rich {
-    pub styles: Vec<Style>,
-    /// The text `styles` currently corresponds to.
-    pub synced: String,
-}
-
-impl Rich {
-    /// Bring `styles` in line with `new`, giving freshly inserted chars the `fill` style.
-    pub fn sync(&mut self, new: &str, fill: &Style) {
-        if self.synced == new {
-            return;
-        }
-        let old: Vec<char> = self.synced.chars().collect();
-        let new_c: Vec<char> = new.chars().collect();
-        self.styles.resize(old.len(), fill.clone());
-        let max = old.len().min(new_c.len());
-        let p = old.iter().zip(&new_c).take_while(|(a, b)| a == b).count();
-        let s = old[p..].iter().rev().zip(new_c[p..].iter().rev()).take(max - p).take_while(|(a, b)| a == b).count();
-        let inserted = new_c.len() - p - s;
-        self.styles.splice(p..old.len() - s, std::iter::repeat_n(fill.clone(), inserted));
-        self.synced = new.to_owned();
-    }
-}
-
-/// The text of the page currently being edited, with the styles that go with it.
-pub struct EditBuf {
-    pub text: String,
-    pub rich: RefCell<Rich>,
-}
-
-impl EditBuf {
-    pub fn new(text: String, styles: Vec<Style>) -> Self {
-        let rich = RefCell::new(Rich { styles, synced: text.clone() });
-        Self { text, rich }
-    }
+pub fn is_terminator(c: char) -> bool {
+    c == '\n' || c == PAGE_BREAK
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -140,6 +148,8 @@ pub struct Span {
     pub end: usize,
     pub bstart: usize,
     pub bend: usize,
+    /// Does a hard page break follow (rather than the page ending because it is full)?
+    pub hard: bool,
 }
 
 impl Span {
@@ -149,6 +159,7 @@ impl Span {
             end: self.end.wrapping_add_signed(dchars),
             bstart: self.bstart.wrapping_add_signed(dbytes),
             bend: self.bend.wrapping_add_signed(dbytes),
+            hard: self.hard,
         }
     }
 
@@ -190,16 +201,31 @@ pub struct Doc {
 }
 
 impl Doc {
+    /// An empty document: just the final paragraph mark every document ends with.
     pub fn new() -> Self {
         Self {
-            flow: Flow { text: String::new(), styles: Vec::new() },
+            flow: Flow { text: "\n".into(), styles: vec![Style::new("Default")] },
             setup: PageSetup::default(),
-            spans: vec![Span::default()],
+            spans: vec![Span { start: 0, end: 1, bstart: 0, bend: 1, hard: false }],
             version: 0,
             notes: Vec::new(),
             next_note_id: 1,
             history: Default::default(),
         }
+    }
+
+    /// Make sure the text ends with a paragraph mark (it is the carrier of the last paragraph's format).
+    pub fn ensure_final_mark(&mut self) {
+        if !self.flow.text.ends_with('\n') {
+            let st = self.flow.styles.last().cloned().unwrap_or_else(|| Style::new("Default"));
+            self.flow.text.push('\n');
+            self.flow.styles.push(st.with_para(ParaAttrs::default()));
+        }
+    }
+
+    /// The text as the user sees it, without the final paragraph mark.
+    pub fn visible_text(&self) -> &str {
+        &self.flow.text[..self.flow.text.len().saturating_sub(1)]
     }
 
     pub fn pages(&self) -> usize {
@@ -220,6 +246,7 @@ impl Doc {
         self.flow.text.char_indices().nth(c).map_or(self.flow.text.len(), |(b, _)| b)
     }
 
+    /// Chars in the flow, including the final paragraph mark. The caret can sit at `0..total_chars()`.
     pub fn total_chars(&self) -> usize {
         self.flow.styles.len()
     }
@@ -227,24 +254,45 @@ impl Doc {
     pub fn char_at(&self, c: usize) -> Option<char> {
         self.flow.text.chars().nth(c)
     }
+
+    /// The first paragraph terminator at or after (char `c`, byte `b`).
+    pub fn term_from(&self, c: usize, b: usize) -> (usize, usize) {
+        let rest = &self.flow.text[b..];
+        let rel = rest.find(is_terminator).unwrap_or(rest.len().saturating_sub(1));
+        (c + rest[..rel].chars().count(), b + rel)
+    }
+
+    /// Start (char, byte) of the paragraph containing char `c`.
+    pub fn para_start(&self, c: usize) -> (usize, usize) {
+        let b = self.char_to_byte(c);
+        match self.flow.text[..b].rfind(is_terminator) {
+            Some(t) => (self.flow.text[..t].chars().count() + 1, t + 1),
+            None => (0, 0),
+        }
+    }
+
+    /// Format of the paragraph containing char `c`.
+    pub fn para_attrs_at(&self, c: usize) -> ParaAttrs {
+        let b = self.char_to_byte(c.min(self.total_chars().saturating_sub(1)));
+        let (tc, _) = self.term_from(c.min(self.total_chars().saturating_sub(1)), b);
+        self.flow.styles[tc.min(self.flow.styles.len() - 1)].para
+    }
+
+    /// Which page the caret at flow position `c` is on. A position on a soft page boundary belongs
+    /// to the page that starts there; the spot just before a hard break to the page it ends.
+    pub fn page_of(&self, c: usize) -> usize {
+        for (i, s) in self.spans.iter().enumerate() {
+            if c < s.end || (s.hard && c == s.end) {
+                return i;
+            }
+        }
+        self.spans.len() - 1
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sync_tracks_insert_and_delete() {
-        let plain = Style::new("x");
-        let bold = Style { bold: true, ..plain.clone() };
-        let mut r = Rich { styles: vec![plain.clone(), bold.clone(), plain.clone()], synced: "abc".into() };
-        r.sync("abZc", &bold);
-        assert_eq!(r.styles, vec![plain.clone(), bold.clone(), bold.clone(), plain.clone()]);
-        r.sync("ac", &plain);
-        assert_eq!(r.styles, vec![plain.clone(), plain.clone()]);
-        r.sync("", &plain);
-        assert!(r.styles.is_empty());
-    }
 
     #[test]
     fn landscape_swaps_and_margins_are_kept_usable() {

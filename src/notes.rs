@@ -1,11 +1,10 @@
 //! Sticky notes: anchored to text without being part of it. They show as a highlight on the
 //! text and a small tab beside the page; clicking the tab opens the note.
 
-use eframe::egui::{self, Color32, Id, Pos2, Rect, Sense, Stroke, TextEdit, pos2, text::LayoutJob, vec2};
-use egui::text::CCursor;
+use eframe::egui::{self, Color32, Id, Pos2, Rect, Sense, Stroke, TextEdit, pos2, vec2};
 
 use crate::App;
-use crate::layout::{Mark, build_job, layout};
+use crate::layout::Mark;
 use crate::model::{NOTE_COLORS, Note};
 
 pub const SEARCH_FIELD: &str = "search_field";
@@ -47,32 +46,21 @@ impl App {
         marks
     }
 
-    pub fn page_job(&self, i: usize, scale: f32) -> LayoutJob {
-        build_job(
-            self.doc.page_text(i),
-            self.doc.page_styles(i),
-            &self.typing,
-            scale,
-            self.doc.setup.content_size().x * scale,
-            &self.page_marks(i),
-        )
-    }
-
     /// Attach a new note to the selection, or to the line the cursor is on.
     pub fn add_note(&mut self, ctx: &egui::Context) {
-        let i = self.target.min(self.last());
-        let Some((p, s)) = Self::cursor_state(ctx, i) else { return };
-        let (mut a, mut b) = (p.min(s), p.max(s));
-        if a == b {
-            let galley = layout(ctx, self.page_job(i, 1.0));
-            let c = CCursor::new(a);
-            a = usize::from(galley.cursor_begin_of_row(&c).index);
-            b = usize::from(galley.cursor_end_of_row(&c).index);
+        let (mut start, mut end) = self.selection();
+        if start == end {
+            // No selection: take the line the caret is on.
+            let page = self.doc.page_of(self.caret);
+            let layout = self.doc.layout_page(ctx, page, 1.0, &[]);
+            let first = self.doc.spans[page].start;
+            if let Some(row) = layout.row_of(self.caret - first, self.prefer_next) {
+                (start, end) = (first + row.start, first + row.end);
+            }
         }
-        let start = self.doc.spans[i].start;
         let id = self.doc.next_note_id;
         self.doc.next_note_id += 1;
-        self.doc.notes.push(Note { id, start: start + a, end: start + b, text: String::new(), color: 0 });
+        self.doc.notes.push(Note { id, start, end, text: String::new(), color: 0 });
         self.open_note = Some(id);
         self.note_focus = true;
         let r = self.last_page_rect;
@@ -84,7 +72,7 @@ impl App {
     pub fn draw_notes(&mut self, ui: &mut egui::Ui, rect: Rect, i: usize) {
         let sp = self.doc.spans[i];
         let sc = self.scale_of(rect);
-        let galley = layout(ui.ctx(), self.page_job(i, sc));
+        let page_layout = self.page_layout(ui.ctx(), i, sc);
         let origin = rect.min + self.doc.setup.margin_origin() * sc;
 
         let tabs: Vec<(u64, usize, usize, String)> = self
@@ -96,7 +84,7 @@ impl App {
             .collect();
         let mut placed: Vec<f32> = Vec::new();
         for (id, local, color, text) in tabs {
-            let y = origin.y + galley.pos_from_cursor(CCursor::new(local)).center().y;
+            let y = origin.y + page_layout.caret_rect(local, true).center().y;
             let stacked = placed.iter().filter(|&&py| (py - y).abs() < 4.0).count();
             placed.push(y);
             let tab = Rect::from_center_size(pos2(rect.right() + 16.0 + stacked as f32 * 22.0, y), vec2(16.0, 16.0));

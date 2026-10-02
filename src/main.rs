@@ -18,13 +18,13 @@ use std::path::PathBuf;
 use eframe::egui::{self, Key, Modifiers, Pos2, Rect};
 
 use fonts::FontBook;
-use model::{Doc, EditBuf, Style};
+use model::{Doc, Style};
 use search::Search;
 use theme::{DESK, apply_theme};
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 900.0]).with_title("Caprice"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 900.0]).with_title("Caprice"),
         ..Default::default()
     };
     eframe::run_native(
@@ -41,10 +41,15 @@ fn main() -> eframe::Result {
 
 pub struct App {
     pub doc: Doc,
-    /// Text of the page being edited, and which (page, doc version) it was loaded from.
-    pub view: EditBuf,
-    pub view_for: Option<(usize, u64)>,
-    /// Style given to newly typed text; follows the cursor.
+    /// Caret and the other end of the selection, as positions in the flow (chars).
+    pub caret: usize,
+    pub anchor: usize,
+    /// Horizontal position kept while moving up and down through lines.
+    pub want_x: Option<f32>,
+    /// At a soft line wrap, does the caret sit at the start of the next row (rather than the end of this one)?
+    pub prefer_next: bool,
+    pub blink_epoch: f64,
+    /// Style given to newly typed text; follows the caret.
     pub typing: Style,
     pub fonts: FontBook,
     /// Page scale (screen points per page point) and the page's top-left on screen.
@@ -53,18 +58,19 @@ pub struct App {
     /// Follow the window size until the user zooms by hand.
     pub fit: bool,
     pub ctrl_down: bool,
+    /// True while Ctrl is known from its own key events (then only its key release ends it).
+    pub ctrl_via_key: bool,
+    /// Width the toolbar wants, and how far it is slid sideways (current and target).
+    pub toolbar_w: f32,
+    pub toolbar_scroll: f32,
+    pub toolbar_target: f32,
     pub path: Option<PathBuf>,
     pub status: String,
-    pub last_cursor: Option<(usize, usize)>,
     /// Animated position in page units. 2.4 means page 2 is 40% flipped over.
     pub pos: f32,
-    /// Page we are flipping towards (and the one being edited once we arrive).
+    /// Page we are flipping towards.
     pub target: usize,
     pub scrubbing: bool,
-    /// (page, offset in page) to put the cursor at once that page is shown and settled.
-    pub cursor_req: Option<(usize, usize)>,
-    /// Typing that arrived while a page was turning; replayed once the next page is editable.
-    pub held_input: Vec<egui::Event>,
     pub search: Search,
     /// The note whose editor window is open, where to put it, and whether to focus its text field.
     pub open_note: Option<u64>,
@@ -78,52 +84,37 @@ impl App {
         let mut fonts = FontBook::new();
         let default = fonts.preferred_default();
         fonts.ensure(ctx, &default, true);
+        let typing = Style::new(&default);
+        let mut doc = Doc::new();
+        doc.flow.styles = vec![typing.clone()];
         Self {
-            doc: Doc::new(),
-            view: EditBuf::new(String::new(), Vec::new()),
-            view_for: None,
-            typing: Style::new(&default),
+            doc,
+            caret: 0,
+            anchor: 0,
+            want_x: None,
+            prefer_next: true,
+            blink_epoch: 0.0,
+            typing,
             fonts,
             zoom: 1.0,
             origin: Pos2::ZERO,
             fit: true,
             ctrl_down: false,
+            ctrl_via_key: false,
+            toolbar_w: 0.0,
+            toolbar_scroll: 0.0,
+            toolbar_target: 0.0,
             path: None,
             status: String::new(),
-            last_cursor: None,
             pos: 0.0,
             target: 0,
             scrubbing: false,
-            cursor_req: Some((0, 0)),
-            held_input: Vec::new(),
             search: Search::default(),
             open_note: None,
             note_pos: Pos2::ZERO,
             note_focus: false,
             last_page_rect: Rect::NOTHING,
         }
-    }
-
-    /// Keep typed text and plain editing keys that arrive mid-flip instead of losing them.
-    fn hold_typing(&mut self, ctx: &egui::Context) {
-        if Self::ui_field_focused(ctx) {
-            return; // that typing is meant for the search box or a note
-        }
-        let is_typing = |e: &egui::Event| match e {
-            egui::Event::Text(_) => true,
-            egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                !modifiers.command
-                    && !modifiers.alt
-                    && matches!(key, Key::Enter | Key::Backspace | Key::Delete | Key::Tab)
-            }
-            _ => false,
-        };
-        let taken = ctx.input_mut(|i| {
-            let (taken, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut i.events).into_iter().partition(|e| is_typing(e));
-            i.events = kept;
-            taken
-        });
-        self.held_input.extend(taken);
     }
 
     fn animate(&mut self, ui: &egui::Ui) {
@@ -165,45 +156,11 @@ impl App {
             self.open(&ctx);
         }
 
-        // Document-wide shortcuts. Undo is ours (one history for the whole document), so the
-        // page editor never sees these keys.
-        if !Self::ui_field_focused(&ctx) {
-            let redo = ctx.input_mut(|i| {
-                i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y)
-            });
-            let undo = !redo && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z));
-            if redo || undo {
-                self.step_history(&ctx, redo);
-            }
-        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
             self.open_search();
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::N)) {
-            self.add_note(&ctx);
-        }
 
-        // Page navigation shortcuts.
-        let (next, prev, new_page) = ctx.input(|i| {
-            (
-                i.key_pressed(Key::PageDown),
-                i.key_pressed(Key::PageUp),
-                i.modifiers.command && i.key_pressed(Key::Enter),
-            )
-        });
-        if next {
-            self.target = (self.target + 1).min(self.last());
-            self.cursor_req = Some((self.target, 0));
-        }
-        if prev {
-            self.target = self.target.saturating_sub(1);
-            self.cursor_req = Some((self.target, 0));
-        }
-        if new_page {
-            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
-            let cur = self.target;
-            self.insert_page_after(&ctx, cur);
-        }
+        self.process_input(&ctx);
 
         // Pages can disappear (backspacing away a break), so keep the position valid.
         self.target = self.target.min(self.last());
@@ -219,17 +176,13 @@ impl App {
         if t < 1e-3 || base >= self.last() {
             // Settled: this page is editable.
             let i = (self.pos.round() as usize).min(self.last());
-            // May merge pages, so work out which page to show only afterwards.
-            self.handle_boundary_keys(&ctx, i);
-            let i = (self.pos.round() as usize).min(self.last());
             self.stack(ui.painter(), page_rect, i, self.last() - i);
             Self::paper(ui.painter(), page_rect);
             self.draw_footer(ui, page_rect, i);
-            self.edit_page(ui, page_rect, i);
+            self.editor_surface(ui, page_rect, i, true);
             self.draw_notes(ui, page_rect, i);
         } else {
             // Mid-flip: page `base` turns over, revealing `base + 1`.
-            self.hold_typing(&ctx);
             self.stack(ui.painter(), page_rect, base, n - 1 - base - 1);
             self.static_page(ui, page_rect, base + 1);
             let eased = t * t * (3.0 - 2.0 * t);
@@ -242,9 +195,6 @@ impl App {
         self.page_bar(ui, area);
         self.search_bar(ui, area);
         self.note_window(&ctx);
-        if self.cursor_req.is_some() {
-            ctx.request_repaint();
-        }
     }
 }
 
@@ -305,11 +255,12 @@ mod tests {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.type_text("hello");
-        assert_eq!(h.app.doc.flow.text, "hello");
+        assert_eq!(h.app.doc.visible_text(), "hello");
 
         // Add two empty pages, then remove them again with backspace.
         h.key(Key::Enter, Modifiers::COMMAND);
         h.frames(90, vec![], Modifiers::NONE);
+        assert_eq!(h.app.doc.pages(), 2);
         h.key(Key::Enter, Modifiers::COMMAND);
         h.frames(90, vec![], Modifiers::NONE);
         assert_eq!(h.app.doc.pages(), 3);
@@ -321,7 +272,7 @@ mod tests {
         h.key(Key::Backspace, Modifiers::NONE);
         h.frames(30, vec![], Modifiers::NONE);
         assert_eq!(h.app.doc.pages(), 1);
-        assert_eq!(h.app.doc.flow.text, "hello", "backspacing a page must not eat text");
+        assert_eq!(h.app.doc.visible_text(), "hello", "backspacing a page must not eat text");
         assert_eq!(h.app.target, 0);
     }
 
@@ -368,16 +319,16 @@ mod tests {
         h.frames(3, vec![], Modifiers::NONE);
         h.type_text("hello");
         h.type_text(" world");
-        assert_eq!(h.app.doc.flow.text, "hello world");
+        assert_eq!(h.app.doc.visible_text(), "hello world");
         h.key(Key::Z, Modifiers::COMMAND);
         h.frames(5, vec![], Modifiers::NONE);
-        assert_eq!(h.app.doc.flow.text, "", "typing within a second undoes as one step");
+        assert_eq!(h.app.doc.visible_text(), "", "typing within a second undoes as one step");
         h.key(Key::Z, Modifiers::COMMAND | Modifiers::SHIFT);
         h.frames(5, vec![], Modifiers::NONE);
-        assert_eq!(h.app.doc.flow.text, "hello world");
+        assert_eq!(h.app.doc.visible_text(), "hello world");
         // The caret is back at the end, so typing continues there.
         h.type_text("!");
-        assert_eq!(h.app.doc.flow.text, "hello world!");
+        assert_eq!(h.app.doc.visible_text(), "hello world!");
     }
 
     #[test]
@@ -415,12 +366,217 @@ mod tests {
         // The note editor grabs the keyboard when it opens...
         h.type_text("remember");
         assert_eq!(h.app.doc.notes[0].text, "remember");
-        assert_eq!(h.app.doc.flow.text, "first line\nsecond line");
+        assert_eq!(h.app.doc.visible_text(), "first line\nsecond line");
         // ...and the page gets it back when it closes.
         h.app.open_note = None;
         h.frames(5, vec![], Modifiers::NONE);
         h.type_text("!"); // typed right after the note's end: not part of it
-        assert_eq!(h.app.doc.flow.text, "first line\nsecond line!");
+        assert_eq!(h.app.doc.visible_text(), "first line\nsecond line!");
         assert_eq!((h.app.doc.notes[0].start, h.app.doc.notes[0].end), (11, 22));
+    }
+
+    // ----------------------------------------------------------- the editor
+
+    impl Harness {
+        fn shift(&mut self, key: Key) {
+            self.key(key, Modifiers::SHIFT);
+        }
+
+        fn text(&self) -> String {
+            self.app.doc.visible_text().to_owned()
+        }
+
+        /// Click at a point given relative to the writing area of the current page.
+        fn click_in_page(&mut self, rel: egui::Vec2) {
+            let rect = self.app.last_page_rect;
+            let sc = self.app.scale_of(rect);
+            let pos = rect.min + self.app.doc.setup.margin_origin() * sc + rel * sc;
+            self.frames(1, vec![egui::Event::PointerMoved(pos)], Modifiers::NONE);
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            self.frames(1, vec![button(true)], Modifiers::NONE);
+            self.frames(1, vec![button(false)], Modifiers::NONE);
+            self.frames(2, vec![], Modifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn arrows_selection_and_replacing_text() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("hello world");
+        h.key(Key::Home, Modifiers::NONE);
+        assert_eq!(h.app.caret, 0);
+        h.key(Key::ArrowRight, Modifiers::COMMAND); // next word
+        assert_eq!(h.app.caret, 6, "after 'hello '");
+        for _ in 0..5 {
+            h.shift(Key::ArrowRight);
+        }
+        assert_eq!(h.app.selection(), (6, 11));
+        h.type_text("there");
+        assert_eq!(h.text(), "hello there");
+        h.key(Key::Backspace, Modifiers::COMMAND); // delete the word before the caret
+        assert_eq!(h.text(), "hello ");
+        h.key(Key::ArrowLeft, Modifiers::NONE);
+        h.key(Key::Delete, Modifiers::NONE);
+        assert_eq!(h.text(), "hello");
+        h.key(Key::A, Modifiers::COMMAND);
+        assert_eq!(h.app.selection(), (0, 5));
+        h.key(Key::Backspace, Modifiers::NONE);
+        assert_eq!(h.text(), "");
+    }
+
+    #[test]
+    fn enter_splits_paragraphs_and_keeps_their_format() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("title");
+        h.key(Key::E, Modifiers::COMMAND); // center
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("next");
+        assert_eq!(h.text(), "title\nnext");
+        let attrs = |h: &Harness, c| h.app.doc.para_attrs_at(c);
+        assert_eq!(attrs(&h, 0).align, model::Align::Center);
+        assert_eq!(attrs(&h, 8).align, model::Align::Center, "the new paragraph inherits the format");
+        h.key(Key::L, Modifiers::COMMAND);
+        assert_eq!(attrs(&h, 8).align, model::Align::Left);
+        assert_eq!(attrs(&h, 0).align, model::Align::Center, "only the paragraph with the caret changes");
+        // Backspace at the start of the second paragraph joins them; the merged paragraph keeps the second's format.
+        h.key(Key::Home, Modifiers::NONE);
+        h.key(Key::Backspace, Modifiers::NONE);
+        assert_eq!(h.text(), "titlenext");
+        assert_eq!(attrs(&h, 0).align, model::Align::Left);
+        // And all of it can be undone.
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert_eq!(h.text(), "title\nnext");
+    }
+
+    #[test]
+    fn lists_start_continue_and_end_with_enter() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.key(Key::L, Modifiers::COMMAND | Modifiers::SHIFT); // bullets on
+        h.type_text("one");
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("two");
+        assert_eq!(h.app.doc.para_attrs_at(0).list, model::ListKind::Bullet);
+        assert_eq!(h.app.doc.para_attrs_at(5).list, model::ListKind::Bullet, "Enter continues the list");
+        h.key(Key::Enter, Modifiers::NONE);
+        h.key(Key::Enter, Modifiers::NONE); // Enter on an empty item ends the list
+        assert_eq!(h.text(), "one\ntwo\n");
+        let last = h.app.caret;
+        assert_eq!(h.app.doc.para_attrs_at(last).list, model::ListKind::None);
+        h.type_text("plain");
+        assert_eq!(h.text(), "one\ntwo\nplain");
+        // Backspace at the start of a list item first removes the bullet, then joins.
+        h.key(Key::ArrowUp, Modifiers::NONE);
+        h.key(Key::Home, Modifiers::NONE);
+        h.key(Key::Backspace, Modifiers::NONE);
+        assert_eq!(h.text(), "one\ntwo\nplain");
+        assert_eq!(h.app.doc.para_attrs_at(h.app.caret).list, model::ListKind::None);
+    }
+
+    #[test]
+    fn up_and_down_keep_the_column() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("first line here\nxx\nthird line here");
+        // Caret is at the end of the third line (column 15). Up goes to the short line, up again returns to column 15.
+        h.key(Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(h.app.caret, 15 + 1 + 2, "end of the short second line");
+        h.key(Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(h.app.caret, 15, "back at the original column on the first line");
+        h.key(Key::ArrowDown, Modifiers::NONE);
+        h.key(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(h.app.caret, h.app.doc.total_chars() - 1, "end of the last line again");
+    }
+
+    #[test]
+    fn clipboard_events_copy_cut_and_paste() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("abc def");
+        h.key(Key::A, Modifiers::COMMAND);
+        h.frames(1, vec![egui::Event::Cut], Modifiers::NONE);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(h.text(), "");
+        h.frames(1, vec![egui::Event::Paste("one\r\ntwo\u{c}x".into())], Modifiers::NONE);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(h.text(), "one\ntwox", "carriage returns and page breaks do not get into the text");
+    }
+
+    #[test]
+    fn clicking_places_the_caret_where_the_text_is() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("first line\nsecond line\nthird line");
+        h.frames(3, vec![], Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        let layout = h.app.page_layout(&ctx, 0, 1.0);
+        // Click in the middle of the word "second" (char 17) on the second line.
+        let target = layout.caret_rect(14, true);
+        h.click_in_page(egui::vec2(target.left() + 1.0, target.center().y));
+        assert_eq!(h.app.caret, 14, "start of 'second line' is char 11; x of char 14 hits 14");
+        // A click below all the text goes to the end of the last line.
+        h.click_in_page(egui::vec2(100.0, 500.0));
+        assert_eq!(h.app.caret, h.app.doc.total_chars() - 1);
+        // Shift-click extends the selection.
+        let start = layout.caret_rect(0, true);
+        h.click_in_page(egui::vec2(start.left() + 0.5, start.center().y));
+        assert_eq!(h.app.caret, 0);
+    }
+
+    #[test]
+    fn centered_text_is_hit_where_it_is_drawn() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("centered");
+        h.key(Key::E, Modifiers::COMMAND);
+        h.frames(3, vec![], Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        let layout = h.app.page_layout(&ctx, 0, 1.0);
+        let r = layout.caret_rect(4, true);
+        assert!(r.left() > 100.0, "the text is in the middle of the writing width, not at its left edge: {r:?}");
+        h.click_in_page(egui::vec2(r.left() + 0.5, r.center().y));
+        assert_eq!(h.app.caret, 4);
+    }
+
+    #[test]
+    fn typing_in_a_new_empty_page_and_page_break_semantics() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("page one");
+        h.key(Key::Enter, Modifiers::COMMAND);
+        h.frames(60, vec![], Modifiers::NONE);
+        h.type_text("page two");
+        assert_eq!(h.app.doc.pages(), 2);
+        assert_eq!(h.app.doc.page_text(1), "page two\n");
+        assert_eq!(h.text(), "page one\u{c}page two");
+        h.key(Key::PageUp, Modifiers::NONE);
+        assert_eq!(h.app.caret, 0);
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!(h.app.pos.round() as usize, 0);
+        h.key(Key::PageDown, Modifiers::NONE);
+        assert_eq!(h.app.doc.page_of(h.app.caret), 1);
+    }
+
+    #[test]
+    fn character_styles_apply_to_the_selection_and_undo() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("make this bold");
+        for _ in 0..4 {
+            h.shift(Key::ArrowLeft);
+        }
+        h.key(Key::B, Modifiers::COMMAND);
+        let styles = &h.app.doc.flow.styles;
+        assert!(styles[10..14].iter().all(|s| s.bold));
+        assert!(styles[0..10].iter().all(|s| !s.bold));
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert!(h.app.doc.flow.styles.iter().all(|s| !s.bold));
     }
 }

@@ -1,7 +1,8 @@
 //! Export to Word's `.docx` (Office Open XML, ISO/IEC 29500), which Word, LibreOffice, Google Docs
 //! and Pages all open. Mapping:
 //!
-//! * paragraphs = lines of the flow, hard page breaks = page-break runs
+//! * paragraphs = paragraphs of the flow; alignment, line spacing, bullets and numbering = paragraph properties
+//! * hard page breaks = "page break before" on the paragraph that follows
 //! * font, size, bold, underline = run properties
 //! * page setup = section properties (paper, orientation, margins), page numbers = a footer field
 //! * notes = Word comments anchored to the same text
@@ -11,7 +12,7 @@ use std::io::{Cursor, Write};
 
 use zip::write::SimpleFileOptions;
 
-use crate::model::{Doc, Note, PAGE_BREAK, Style};
+use crate::model::{Align, Doc, ListKind, Note, PAGE_BREAK, ParaAttrs, Style};
 
 const NS_W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const NS_R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -65,55 +66,60 @@ fn run_props(st: &Style) -> String {
     s
 }
 
-/// Builds `<w:body>` content, tracking the open paragraph and the pending run.
+/// Builds `<w:body>` content. A paragraph's properties are only known at its end, so its runs are
+/// collected first.
 struct Body {
+    /// Finished paragraphs.
     xml: String,
-    in_paragraph: bool,
+    /// Runs and comment markers of the open paragraph.
+    para: String,
     run: Option<(Style, String)>,
+    /// Does the open paragraph have anything in it (text, a tab or a comment marker)?
+    has_content: bool,
+    /// Is the next paragraph the first on its page?
+    at_page_start: bool,
+    /// A hard page break came just before.
+    page_break_before: bool,
+    last_list: ListKind,
+    /// How many separate numbered lists there have been (each restarts at 1).
+    numbered_lists: u32,
 }
 
 impl Body {
-    fn open_paragraph(&mut self) {
-        if !self.in_paragraph {
-            self.xml.push_str("<w:p>");
-            self.in_paragraph = true;
+    fn new() -> Self {
+        Self {
+            xml: String::new(),
+            para: String::new(),
+            run: None,
+            has_content: false,
+            at_page_start: true,
+            page_break_before: false,
+            last_list: ListKind::None,
+            numbered_lists: 0,
         }
     }
 
     fn flush_run(&mut self) {
         if let Some((st, text)) = self.run.take() {
-            self.open_paragraph();
             let _ = write!(
-                self.xml,
+                self.para,
                 "<w:r><w:rPr>{}</w:rPr><w:t xml:space=\"preserve\">{}</w:t></w:r>",
                 run_props(&st),
                 esc(&text)
             );
+            self.has_content = true;
         }
-    }
-
-    fn end_paragraph(&mut self) {
-        self.flush_run();
-        self.open_paragraph();
-        self.xml.push_str("</w:p>");
-        self.in_paragraph = false;
     }
 
     fn push_char(&mut self, c: char, st: &Style) {
         match c {
-            '\n' => self.end_paragraph(),
-            PAGE_BREAK => {
-                self.flush_run();
-                self.open_paragraph();
-                self.xml.push_str("<w:r><w:br w:type=\"page\"/></w:r>");
-            }
             '\t' => {
                 self.flush_run();
-                self.open_paragraph();
-                let _ = write!(self.xml, "<w:r><w:rPr>{}</w:rPr><w:tab/></w:r>", run_props(st));
+                let _ = write!(self.para, "<w:r><w:rPr>{}</w:rPr><w:tab/></w:r>", run_props(st));
+                self.has_content = true;
             }
             c => match &mut self.run {
-                Some((cur, text)) if cur == st => text.push(c),
+                Some((cur, text)) if cur.same_char(st) => text.push(c),
                 _ => {
                     self.flush_run();
                     self.run = Some((st.clone(), c.to_string()));
@@ -124,22 +130,73 @@ impl Body {
 
     fn comment_start(&mut self, id: usize) {
         self.flush_run();
-        self.open_paragraph();
-        let _ = write!(self.xml, "<w:commentRangeStart w:id=\"{id}\"/>");
+        let _ = write!(self.para, "<w:commentRangeStart w:id=\"{id}\"/>");
+        self.has_content = true;
     }
 
     fn comment_end(&mut self, id: usize) {
         self.flush_run();
-        self.open_paragraph();
         let _ = write!(
-            self.xml,
+            self.para,
             "<w:commentRangeEnd w:id=\"{id}\"/><w:r><w:commentReference w:id=\"{id}\"/></w:r>"
         );
+        self.has_content = true;
+    }
+
+    /// The paragraph ends with `term` (`\n`, or a page break). `\n` always makes a paragraph; a page
+    /// break only does if it has text or it is what holds an otherwise empty page.
+    fn end_paragraph(&mut self, term: char, st: &Style) {
+        self.flush_run();
+        let is_break = term == PAGE_BREAK;
+        if !is_break || self.has_content || self.at_page_start {
+            self.emit(st.para, st);
+        }
+        if is_break {
+            self.page_break_before = true;
+            self.at_page_start = true;
+        }
+    }
+
+    fn emit(&mut self, attrs: ParaAttrs, term: &Style) {
+        let mut ppr = String::new();
+        if self.page_break_before {
+            ppr.push_str("<w:pageBreakBefore/>");
+        }
+        match attrs.list {
+            ListKind::None => {}
+            kind => {
+                if kind == ListKind::Numbered && self.last_list != ListKind::Numbered {
+                    self.numbered_lists += 1; // a new list: numbering starts over
+                }
+                let num_id = if kind == ListKind::Bullet { 1 } else { 1 + self.numbered_lists };
+                let _ = write!(ppr, "<w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"{num_id}\"/></w:numPr>");
+            }
+        }
+        if (attrs.spacing - 1.0).abs() > 0.001 {
+            let _ = write!(ppr, "<w:spacing w:line=\"{}\" w:lineRule=\"auto\"/>", (attrs.spacing * 240.0).round() as i32);
+        }
+        if attrs.list != ListKind::None {
+            ppr.push_str("<w:ind w:left=\"560\" w:hanging=\"360\"/>");
+        }
+        match attrs.align {
+            Align::Left => {}
+            Align::Center => ppr.push_str("<w:jc w:val=\"center\"/>"),
+            Align::Right => ppr.push_str("<w:jc w:val=\"right\"/>"),
+            Align::Justify => ppr.push_str("<w:jc w:val=\"both\"/>"),
+        }
+        // The paragraph mark's own size keeps empty lines the right height.
+        let _ = write!(ppr, "<w:rPr>{}</w:rPr>", run_props(term));
+        let _ = write!(self.xml, "<w:p><w:pPr>{ppr}</w:pPr>{}</w:p>", std::mem::take(&mut self.para));
+        self.has_content = false;
+        self.at_page_start = false;
+        self.page_break_before = false;
+        self.last_list = attrs.list;
     }
 }
 
-fn document_xml(doc: &Doc, has_footer: bool) -> String {
-    let mut body = Body { xml: String::new(), in_paragraph: false, run: None };
+/// The body XML, and how many separate numbered lists it uses.
+fn document_xml(doc: &Doc, has_footer: bool) -> (String, u32) {
+    let mut body = Body::new();
     let notes: &[Note] = &doc.notes;
     let fallback = Style::new("Times New Roman");
     let mut chars = doc.flow.text.chars().zip(doc.flow.styles.iter().chain(std::iter::repeat(&fallback)));
@@ -157,18 +214,23 @@ fn document_xml(doc: &Doc, has_footer: bool) -> String {
             }
         }
         if let Some((c, st)) = chars.next() {
-            body.push_char(c, st);
+            if crate::model::is_terminator(c) {
+                body.end_paragraph(c, st);
+            } else {
+                body.push_char(c, st);
+            }
         }
     }
-    if body.in_paragraph || body.run.is_some() || body.xml.is_empty() {
-        body.end_paragraph();
+    body.flush_run();
+    if body.has_content || !body.para.is_empty() {
+        body.emit(ParaAttrs::default(), &fallback); // markers after the final paragraph mark
     }
 
     let s = &doc.setup;
     let size = s.size();
     let footer_ref = if has_footer { "<w:footerReference w:type=\"default\" r:id=\"rIdFooter\"/>" } else { "" };
     let orient = if size.x > size.y { " w:orient=\"landscape\"" } else { "" };
-    format!(
+    let xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
 <w:document xmlns:w=\"{NS_W}\" xmlns:r=\"{NS_R}\"><w:body>{}<w:sectPr>{footer_ref}\
 <w:pgSz w:w=\"{}\" w:h=\"{}\"{orient}/>\
@@ -183,7 +245,31 @@ fn document_xml(doc: &Doc, has_footer: bool) -> String {
         twips(s.margin_left),
         twips(s.margin_top / 2.0),
         twips(s.margin_bottom / 2.0),
-    )
+    );
+    (xml, body.numbered_lists)
+}
+
+/// Bullet and numbering definitions: one bullet list, and one numbered list per run of numbered paragraphs.
+fn numbering_xml(numbered_lists: u32) -> String {
+    let level = |fmt: &str, text: &str| {
+        format!(
+            "<w:lvl w:ilvl=\"0\"><w:start w:val=\"1\"/><w:numFmt w:val=\"{fmt}\"/><w:lvlText w:val=\"{text}\"/>\
+<w:lvlJc w:val=\"left\"/><w:pPr><w:ind w:left=\"560\" w:hanging=\"360\"/></w:pPr></w:lvl>"
+        )
+    };
+    let mut s = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:numbering xmlns:w=\"{NS_W}\">");
+    let _ = write!(s, "<w:abstractNum w:abstractNumId=\"0\"><w:multiLevelType w:val=\"singleLevel\"/>{}</w:abstractNum>", level("bullet", "\u{2022}"));
+    let _ = write!(s, "<w:abstractNum w:abstractNumId=\"1\"><w:multiLevelType w:val=\"singleLevel\"/>{}</w:abstractNum>", level("decimal", "%1."));
+    s.push_str("<w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num>");
+    for k in 0..numbered_lists {
+        let _ = write!(
+            s,
+            "<w:num w:numId=\"{}\"><w:abstractNumId w:val=\"1\"/><w:lvlOverride w:ilvl=\"0\"><w:startOverride w:val=\"1\"/></w:lvlOverride></w:num>",
+            k + 2
+        );
+    }
+    s.push_str("</w:numbering>");
+    s
 }
 
 fn styles_xml(default: &Style) -> String {
@@ -254,6 +340,8 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
     let has_footer = doc.setup.page_numbers;
     let has_comments = !doc.notes.is_empty();
     let default = doc.flow.styles.first().cloned().unwrap_or_else(|| Style::new("Times New Roman"));
+    let (document, numbered_lists) = document_xml(doc, has_footer);
+    let has_numbering = document.contains("<w:numPr>");
 
     let mut content_types = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
@@ -272,6 +360,10 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
         let _ = write!(content_types, "<Override PartName=\"/word/comments.xml\" ContentType=\"{CT}.comments+xml\"/>");
         let _ = write!(rels, "<Relationship Id=\"rIdComments\" Type=\"{REL}/comments\" Target=\"comments.xml\"/>");
     }
+    if has_numbering {
+        let _ = write!(content_types, "<Override PartName=\"/word/numbering.xml\" ContentType=\"{CT}.numbering+xml\"/>");
+        let _ = write!(rels, "<Relationship Id=\"rIdNumbering\" Type=\"{REL}/numbering\" Target=\"numbering.xml\"/>");
+    }
     if has_footer {
         let _ = write!(content_types, "<Override PartName=\"/word/footer1.xml\" ContentType=\"{CT}.footer+xml\"/>");
         let _ = write!(rels, "<Relationship Id=\"rIdFooter\" Type=\"{REL}/footer\" Target=\"footer1.xml\"/>");
@@ -288,12 +380,15 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
     let mut parts: Vec<(&str, String)> = vec![
         ("[Content_Types].xml", content_types),
         ("_rels/.rels", root_rels),
-        ("word/document.xml", document_xml(doc, has_footer)),
+        ("word/document.xml", document),
         ("word/_rels/document.xml.rels", rels),
         ("word/styles.xml", styles_xml(&default)),
     ];
     if has_comments {
         parts.push(("word/comments.xml", comments_xml(&doc.notes)));
+    }
+    if has_numbering {
+        parts.push(("word/numbering.xml", numbering_xml(numbered_lists)));
     }
     if has_footer {
         parts.push(("word/footer1.xml", footer_xml(&default)));
@@ -311,6 +406,7 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Orientation;
     use std::io::Read;
 
     fn read_part(bytes: &[u8], name: &str) -> Option<String> {
@@ -321,18 +417,26 @@ mod tests {
         Some(s)
     }
 
-    fn doc_with(text: &str, styles: Vec<Style>) -> Doc {
+    /// A document with this text (which must end in the final paragraph mark), all in `style`.
+    fn doc_with(text: &str, style: Style) -> Doc {
+        assert!(text.ends_with('\n'));
         let mut d = Doc::new();
         d.flow.text = text.to_owned();
-        d.flow.styles = styles;
+        d.flow.styles = vec![style; text.chars().count()];
         d
+    }
+
+    fn count(xml: &str, tag: &str) -> usize {
+        roxmltree::Document::parse(xml).unwrap().descendants().filter(|n| n.tag_name().name() == tag).count()
     }
 
     #[test]
     fn every_part_is_well_formed_xml() {
         let st = Style::new("Liberation Serif");
-        let mut d = doc_with("a < b & c\n\u{c}tab\there", vec![st; 18]);
+        let mut d = doc_with("a < b & c\n\u{c}tab\there\nitem\n", st.clone());
         d.setup.page_numbers = true;
+        let n = d.flow.styles.len();
+        d.flow.styles[n - 1].para = ParaAttrs { list: ListKind::Numbered, ..Default::default() };
         d.notes.push(Note { id: 1, start: 0, end: 5, text: "x & <y>\nsecond".into(), color: 0 });
         let bytes = to_docx(&d).unwrap();
         for name in [
@@ -343,6 +447,7 @@ mod tests {
             "word/styles.xml",
             "word/comments.xml",
             "word/footer1.xml",
+            "word/numbering.xml",
         ] {
             let xml = read_part(&bytes, name).unwrap_or_else(|| panic!("missing {name}"));
             roxmltree::Document::parse(&xml).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -353,16 +458,14 @@ mod tests {
     fn text_styles_breaks_and_setup_are_written() {
         let plain = Style::new("Liberation Serif");
         let bold = Style { bold: true, underline: true, size: 14.0, ..plain.clone() };
-        let mut styles = vec![bold.clone(); 2];
-        styles.extend(vec![plain.clone(); 3]); // "hi" bold, "\n\u{c}x"... see below
-        let mut d = doc_with("hi\n\u{c}x", { styles.push(plain.clone()); styles });
-        d.setup.orientation = crate::model::Orientation::Landscape;
+        let mut d = doc_with("hi\n\u{c}x\n", plain.clone());
+        d.flow.styles[0] = bold.clone();
+        d.flow.styles[1] = bold.clone();
+        d.setup.orientation = Orientation::Landscape;
         let bytes = to_docx(&d).unwrap();
         let xml = read_part(&bytes, "word/document.xml").unwrap();
-        let doc = roxmltree::Document::parse(&xml).unwrap();
-        let w = |name: &str| doc.descendants().filter(|n| n.tag_name().name() == name).count();
-        assert_eq!(w("p"), 2, "one paragraph per line");
-        assert_eq!(w("br"), 1, "hard page break");
+        assert_eq!(count(&xml, "p"), 2, "a paragraph for each of the two lines, none for the bare break");
+        assert_eq!(count(&xml, "pageBreakBefore"), 1, "the paragraph after the break starts a page");
         assert!(xml.contains("w:ascii=\"Times New Roman\""), "look-alike font gets its Office name");
         assert!(xml.contains("<w:b/>") && xml.contains("<w:u w:val=\"single\"/>"));
         assert!(xml.contains("w:val=\"28\""), "14pt = 28 half-points");
@@ -370,12 +473,57 @@ mod tests {
         assert!(xml.contains("w:w=\"16840\" w:h=\"11900\""), "A4 landscape in twips");
         assert!(xml.contains("w:top=\"1440\"") && xml.contains("w:left=\"1440\""), "1 inch margins");
         assert!(read_part(&bytes, "word/footer1.xml").is_none(), "no footer without page numbers");
+        assert!(read_part(&bytes, "word/numbering.xml").is_none(), "no numbering part without lists");
+    }
+
+    #[test]
+    fn an_empty_page_between_breaks_is_kept() {
+        let st = Style::new("Arial");
+        let d = doc_with("a\u{c}\u{c}b\n", st);
+        let xml = read_part(&to_docx(&d).unwrap(), "word/document.xml").unwrap();
+        assert_eq!(count(&xml, "p"), 3, "a, an empty page, b");
+        assert_eq!(count(&xml, "pageBreakBefore"), 2);
+    }
+
+    #[test]
+    fn paragraph_formats_are_written() {
+        let st = Style::new("Arial");
+        let mut d = doc_with("one\ntwo\nthree\nfour\nfive\n", st);
+        let para = |d: &mut Doc, end: usize, p: ParaAttrs| d.flow.styles[end].para = p;
+        para(&mut d, 3, ParaAttrs { align: Align::Center, ..Default::default() });
+        para(&mut d, 7, ParaAttrs { align: Align::Justify, spacing: 1.5, ..Default::default() });
+        para(&mut d, 13, ParaAttrs { list: ListKind::Bullet, ..Default::default() });
+        para(&mut d, 18, ParaAttrs { list: ListKind::Numbered, ..Default::default() });
+        para(&mut d, 23, ParaAttrs { list: ListKind::Numbered, ..Default::default() });
+        let bytes = to_docx(&d).unwrap();
+        let xml = read_part(&bytes, "word/document.xml").unwrap();
+        assert!(xml.contains("<w:jc w:val=\"center\"/>") && xml.contains("<w:jc w:val=\"both\"/>"));
+        assert!(xml.contains("w:line=\"360\""), "1.5 line spacing");
+        assert_eq!(count(&xml, "numPr"), 3);
+        let numbering = read_part(&bytes, "word/numbering.xml").unwrap();
+        assert!(numbering.contains("w:numFmt w:val=\"bullet\"") && numbering.contains("w:numFmt w:val=\"decimal\""));
+        assert_eq!(count(&numbering, "num"), 2, "one bullet list and one numbered list");
+    }
+
+    #[test]
+    fn two_separate_numbered_lists_each_restart() {
+        let st = Style::new("Arial");
+        let mut d = doc_with("a\nb\nbreak\nc\n", st);
+        let numbered = ParaAttrs { list: ListKind::Numbered, ..Default::default() };
+        for end in [1, 3, 11] {
+            d.flow.styles[end].para = numbered;
+        }
+        let bytes = to_docx(&d).unwrap();
+        let numbering = read_part(&bytes, "word/numbering.xml").unwrap();
+        assert_eq!(numbering.matches("startOverride").count(), 2);
+        let xml = read_part(&bytes, "word/document.xml").unwrap();
+        assert!(xml.contains("<w:numId w:val=\"2\"/>") && xml.contains("<w:numId w:val=\"3\"/>"));
     }
 
     #[test]
     fn notes_become_comments_over_the_same_text() {
         let st = Style::new("Arial");
-        let mut d = doc_with("one two three", vec![st; 13]);
+        let mut d = doc_with("one two three\n", st);
         d.notes.push(Note { id: 1, start: 4, end: 7, text: "check".into(), color: 0 });
         let bytes = to_docx(&d).unwrap();
         let xml = read_part(&bytes, "word/document.xml").unwrap();
@@ -398,13 +546,14 @@ mod tests {
     fn an_empty_document_still_has_a_paragraph() {
         let bytes = to_docx(&Doc::new()).unwrap();
         let xml = read_part(&bytes, "word/document.xml").unwrap();
-        assert!(xml.contains("<w:p></w:p>"));
+        assert_eq!(count(&xml, "p"), 1);
     }
 }
 
 #[cfg(test)]
 mod sample {
     use super::*;
+    use crate::model::is_terminator;
 
     /// Writes a sample document for checking in real office suites:
     /// `CAPRICE_SAMPLE_OUT=/some/file.docx cargo test sample_docx`
@@ -414,21 +563,43 @@ mod sample {
         let plain = Style::new("Liberation Serif");
         let bold = Style { bold: true, size: 20.0, ..plain.clone() };
         let under = Style { underline: true, ..plain.clone() };
+        let centered = ParaAttrs { align: Align::Center, ..Default::default() };
+        let bullet = ParaAttrs { list: ListKind::Bullet, ..Default::default() };
+        let numbered = ParaAttrs { list: ListKind::Numbered, ..Default::default() };
+        let double = ParaAttrs { spacing: 2.0, align: Align::Justify, ..Default::default() };
         let mut d = Doc::new();
-        let parts: [(&str, &Style); 5] = [
-            ("Title in bold twenty\n", &bold),
-            ("Plain text, then ", &plain),
-            ("underlined words", &under),
-            (" and more plain text.\n", &plain),
-            ("\u{c}Second page starts here.", &plain),
+        d.flow.text.clear();
+        d.flow.styles.clear();
+        let parts: Vec<(&str, &Style, ParaAttrs)> = vec![
+            ("A centered title", &bold, ParaAttrs::default()),
+            ("\n", &bold, centered),
+            ("Plain text, then ", &plain, ParaAttrs::default()),
+            ("underlined words", &under, ParaAttrs::default()),
+            (" and more plain text.", &plain, ParaAttrs::default()),
+            ("\n", &plain, ParaAttrs::default()),
+            ("first bullet", &plain, ParaAttrs::default()),
+            ("\n", &plain, bullet),
+            ("second bullet", &plain, ParaAttrs::default()),
+            ("\n", &plain, bullet),
+            ("step one", &plain, ParaAttrs::default()),
+            ("\n", &plain, numbered),
+            ("step two", &plain, ParaAttrs::default()),
+            ("\n", &plain, numbered),
+            ("A justified paragraph with double line spacing that is long enough to wrap onto several lines so that the spacing can be seen clearly.", &plain, ParaAttrs::default()),
+            ("\n", &plain, double),
+            ("\u{c}", &plain, ParaAttrs::default()),
+            ("Second page starts here.", &plain, ParaAttrs::default()),
+            ("\n", &plain, ParaAttrs::default()),
         ];
-        for (t, s) in parts {
+        for (t, s, p) in parts {
             d.flow.text.push_str(t);
-            d.flow.styles.extend(std::iter::repeat_n(s.clone(), t.chars().count()));
+            for ch in t.chars() {
+                d.flow.styles.push(if is_terminator(ch) { s.with_para(p) } else { s.clone() });
+            }
         }
         d.setup.page_numbers = true;
         d.setup.margin_left = 100.0;
-        d.notes.push(Note { id: 1, start: 28, end: 44, text: "Remember to rephrase this.".into(), color: 1 });
+        d.notes.push(Note { id: 1, start: 26, end: 42, text: "Remember to rephrase this.".into(), color: 1 });
         std::fs::write(out, to_docx(&d).unwrap()).unwrap();
     }
 }

@@ -1,266 +1,504 @@
-//! Editing the current page. The page's text is copied into `App::view` (what egui's `TextEdit`
-//! edits); every change is written back into the document flow and the pages are recomputed.
+//! The text editor: caret, selection, typing, deleting, clipboard and keyboard/mouse handling.
+//! It edits the document flow directly (through `Doc::apply`); the page is only a view of it.
 
-use eframe::egui::{self, FontId, Id, Key, Modifiers, Rect, TextEdit, UiBuilder, Vec2};
-use egui::text::{CCursor, CCursorRange};
-use egui::widgets::text_edit::TextEditState;
+use eframe::egui::{self, Event, Id, Key, Modifiers, Rect, Sense, Stroke, Vec2, pos2, vec2};
+use egui::output::IMEOutput;
 
 use crate::App;
 use crate::edit::{Edit, Piece};
-use crate::layout::build_job;
-use crate::model::{EditBuf, FONT_SIZE, PAGE_BREAK, PageSetup, Style};
+use crate::layout::PageLayout;
+use crate::model::{Align, ListKind, PAGE_BREAK, PageSetup, ParaAttrs, Style, is_terminator};
 use crate::theme::INK;
+
+/// Roughly how a word processor groups characters when jumping by word.
+fn char_class(c: char) -> u8 {
+    if c.is_whitespace() && !is_terminator(c) {
+        0
+    } else if c.is_alphanumeric() || c == '_' {
+        1
+    } else if is_terminator(c) {
+        3
+    } else {
+        2
+    }
+}
 
 impl App {
     pub fn last(&self) -> usize {
         self.doc.pages() - 1
     }
 
-    pub fn page_id(i: usize) -> Id {
-        Id::new(("page", i))
+    /// The caret may sit anywhere in the text except after the final paragraph mark.
+    fn max_caret(&self) -> usize {
+        self.doc.total_chars() - 1
     }
 
-    /// (cursor, other end of the selection) in chars, relative to the page.
-    pub fn cursor_state(ctx: &egui::Context, page: usize) -> Option<(usize, usize)> {
-        let range = TextEditState::load(ctx, Self::page_id(page))?.cursor.char_range()?;
-        Some((usize::from(range.primary.index), usize::from(range.secondary.index)))
+    pub fn selection(&self) -> (usize, usize) {
+        (self.caret.min(self.anchor), self.caret.max(self.anchor))
     }
 
-    pub fn cursor_of(ctx: &egui::Context, page: usize) -> Option<usize> {
-        Self::cursor_state(ctx, page).map(|(p, _)| p)
+    pub fn has_selection(&self) -> bool {
+        self.caret != self.anchor
     }
 
-    /// Which page and which offset in it a flow position `g` belongs to. `prefer` wins when `g`
-    /// sits exactly on a boundary, except right after a line break (the cursor is on the next page then).
-    pub fn locate(&self, g: usize, prefer: usize) -> (usize, usize) {
-        let sp = &self.doc.spans;
-        let n = sp.len();
-        let prefer = prefer.min(n - 1);
-        let s = sp[prefer];
-        if g >= s.start && g <= s.end {
-            let on_soft_boundary = g == s.end && prefer + 1 < n && sp[prefer + 1].start == g;
-            if on_soft_boundary && g > 0 && self.doc.char_at(g - 1) == Some('\n') {
-                return (prefer + 1, 0);
-            }
-            return (prefer, g - s.start);
+    pub fn selected_text(&self) -> String {
+        let (a, b) = self.selection();
+        let (ba, bb) = (self.doc.char_to_byte(a), self.doc.char_to_byte(b));
+        self.doc.flow.text[ba..bb].replace(PAGE_BREAK, "\n")
+    }
+
+    /// Move the caret (and the selection end, if `extend`), and flip to the page it is on.
+    pub fn set_caret(&mut self, ctx: &egui::Context, c: usize, extend: bool) {
+        let c = c.min(self.max_caret());
+        if std::env::var_os("CAPRICE_DEBUG").is_some() && c + 1 < self.caret.saturating_sub(0) && c < 3 {
+            eprintln!("caret jump {} -> {c}\n{}", self.caret, std::backtrace::Backtrace::force_capture());
         }
-        let p = sp.iter().position(|s| g <= s.end).unwrap_or(n - 1);
-        (p, g.saturating_sub(sp[p].start).min(sp[p].chars()))
+        let moved = c != self.caret;
+        self.caret = c;
+        if !extend {
+            self.anchor = c;
+        }
+        self.prefer_next = true;
+        self.target = self.doc.page_of(c);
+        self.blink_epoch = ctx.input(|i| i.time);
+        if moved && !extend {
+            self.typing_follows_caret();
+        }
+        ctx.request_repaint();
     }
 
-    /// Recompute all pages and put the cursor back where it was in the text.
-    pub fn repaginate_keeping_cursor(&mut self, ctx: &egui::Context) {
-        let i = self.target.min(self.last());
-        let g = self.doc.spans[i].start + Self::cursor_of(ctx, i).unwrap_or(0).min(self.doc.spans[i].chars());
-        self.doc.full_paginate(ctx, &self.typing);
-        let (p, local) = self.locate(g, i);
-        self.view_for = None;
-        self.target = p;
-        self.cursor_req = Some((p, local));
-        ctx.request_repaint();
+    /// Typing continues in the style of the character before the caret (or after it, at a paragraph start).
+    pub fn typing_follows_caret(&mut self) {
+        let c = self.caret;
+        let before_is_char = c > 0 && !self.doc.char_at(c - 1).is_some_and(is_terminator);
+        let k = if before_is_char { c - 1 } else { c };
+        if let Some(st) = self.doc.flow.styles.get(k) {
+            self.typing = st.with_para(ParaAttrs::default());
+        }
+    }
+
+    // ------------------------------------------------------------------ editing
+
+    /// Replace the chars `a..b` by `text`, put the caret after it, keep the pages up to date.
+    pub fn replace_range(&mut self, ctx: &egui::Context, a: usize, b: usize, text: &str) {
+        // Page breaks are structure, not text: typed or pasted ones are dropped.
+        let text: String = text.chars().filter(|&c| c != '\r' && c != PAGE_BREAK).collect();
+        self.replace_raw(ctx, a, b, &text);
+    }
+
+    fn replace_raw(&mut self, ctx: &egui::Context, a: usize, b: usize, text: &str) {
+        let max = self.max_caret();
+        let (a, b) = (a.min(max), b.min(max));
+        let text = text.to_owned();
+        if a == b && text.is_empty() {
+            return;
+        }
+        let (ba, bb) = (self.doc.char_to_byte(a), self.doc.char_to_byte(b));
+        let old = Piece { text: self.doc.flow.text[ba..bb].to_owned(), styles: self.doc.flow.styles[a..b].to_vec() };
+        let line_format = self.doc.para_attrs_at(a);
+        let styles = text
+            .chars()
+            .map(|c| if is_terminator(c) { self.typing.with_para(line_format) } else { self.typing.with_para(ParaAttrs::default()) })
+            .collect();
+        let edit = Edit::Replace { at: a, old, new: Piece { text, styles } };
+        self.apply_edit(ctx, edit, b);
+    }
+
+    /// Apply an edit made around the caret and park the caret after it.
+    fn apply_edit(&mut self, ctx: &egui::Context, edit: Edit, old_end: usize) {
+        let (dchars, dbytes) = edit.delta();
+        let at = match &edit {
+            Edit::Replace { at, .. } | Edit::Restyle { at, .. } => *at,
+        };
+        let caret = edit.caret_after();
+        let now = ctx.input(|i| i.time);
+        self.doc.apply(edit, now);
+        self.doc.paginate_after(ctx, &self.typing, at, old_end, dchars, dbytes);
+        self.set_caret(ctx, caret, false);
+    }
+
+    pub fn insert_text(&mut self, ctx: &egui::Context, text: &str) {
+        let (a, b) = self.selection();
+        self.replace_range(ctx, a, b, text);
+    }
+
+    pub fn press_enter(&mut self, ctx: &egui::Context) {
+        let attrs = self.doc.para_attrs_at(self.caret);
+        let (ps, _) = self.doc.para_start(self.caret);
+        let empty_item = attrs.list != ListKind::None
+            && !self.has_selection()
+            && ps == self.caret
+            && self.doc.char_at(self.caret).is_some_and(is_terminator);
+        if empty_item {
+            // Enter on an empty list item ends the list.
+            self.set_para(ctx, |p| p.list = ListKind::None);
+        } else {
+            self.insert_text(ctx, "\n");
+        }
+    }
+
+    pub fn backspace(&mut self, ctx: &egui::Context, by_word: bool) {
+        if self.has_selection() {
+            let (a, b) = self.selection();
+            return self.replace_range(ctx, a, b, "");
+        }
+        let (ps, _) = self.doc.para_start(self.caret);
+        if ps == self.caret && self.doc.para_attrs_at(self.caret).list != ListKind::None {
+            return self.set_para(ctx, |p| p.list = ListKind::None); // first remove the bullet
+        }
+        if self.caret == 0 {
+            return;
+        }
+        let from = if by_word { self.word_start_before(self.caret) } else { self.caret - 1 };
+        self.replace_range(ctx, from, self.caret, "");
+    }
+
+    pub fn delete_forward(&mut self, ctx: &egui::Context, by_word: bool) {
+        if self.has_selection() {
+            let (a, b) = self.selection();
+            return self.replace_range(ctx, a, b, "");
+        }
+        if self.caret >= self.max_caret() {
+            return;
+        }
+        let to = if by_word { self.word_end_after(self.caret) } else { self.caret + 1 };
+        self.replace_range(ctx, self.caret, to, "");
+    }
+
+    /// Insert a hard page break at the caret.
+    pub fn insert_page_break(&mut self, ctx: &egui::Context) {
+        let c = self.caret;
+        let (ps, _) = self.doc.para_start(c);
+        let at_end = self.doc.char_at(c).is_some_and(is_terminator);
+        // A break is a paragraph of its own: at a paragraph start it goes right here, at the end of a
+        // paragraph just after it, and in the middle the paragraph is split first. At the very end of
+        // the document the break ends the last paragraph instead, and the (empty) final one moves to the new page.
+        let (at, text) = if ps == c {
+            (c, PAGE_BREAK.to_string())
+        } else if at_end {
+            (if c < self.max_caret() { c + 1 } else { c }, PAGE_BREAK.to_string())
+        } else {
+            (c, format!("\n{PAGE_BREAK}"))
+        };
+        self.replace_raw(ctx, at, at, &text);
     }
 
     /// Insert an empty page after page `i`.
     pub fn insert_page_after(&mut self, ctx: &egui::Context, i: usize) {
-        let g = self.doc.spans[i].end;
-        // One break is enough if a break (or the end) already follows; otherwise the following text
-        // needs its own break too.
-        let follows = self.doc.char_at(g);
-        let breaks = if follows.is_none() || follows == Some(PAGE_BREAK) { 1 } else { 2 };
-        let text: String = std::iter::repeat_n(PAGE_BREAK, breaks).collect();
-        let now = ctx.input(|inp| inp.time);
-        self.doc.apply(Edit::insert(g, &text, &self.typing), now);
-        self.doc.full_paginate(ctx, &self.typing);
-        self.view_for = None;
-        self.target = (i + 1).min(self.last());
-        self.cursor_req = Some((self.target, 0));
+        let end = self.doc.spans[i].end;
+        let hard = self.doc.hard_end(i);
+        let at_doc_end = end >= self.max_caret();
+        // Between pages `i` and `i+1` we need two breaks, unless a break (or the end) is already there.
+        let text: String = if hard || at_doc_end { PAGE_BREAK.to_string() } else { format!("{PAGE_BREAK}{PAGE_BREAK}") };
+        let at = end.min(self.max_caret());
+        let old_end = at;
+        self.apply_insert_at(ctx, at, &text, old_end);
+        // The caret goes to the empty page.
+        let new_page = (i + 1).min(self.last());
+        let start = self.doc.spans[new_page].start;
+        self.set_caret(ctx, start, false);
     }
 
-    pub fn handle_boundary_keys(&mut self, ctx: &egui::Context, i: usize) {
-        let Some((p, s)) = Self::cursor_state(ctx, i) else { return };
-        if p != s {
-            return;
-        }
-        let len = self.doc.spans[i].chars();
-        let consume = |k: Key| ctx.input_mut(|inp| inp.consume_key(Modifiers::NONE, k));
-        if p == 0 && i > 0 {
-            if ctx.input(|inp| inp.key_pressed(Key::Backspace)) && consume(Key::Backspace) {
-                // Delete whatever sits before this page: a page break, or the last char of the page above.
-                let g = self.doc.spans[i].start;
-                let b = self.doc.char_to_byte(g - 1);
-                let ch = self.doc.flow.text[b..].chars().next().unwrap_or(PAGE_BREAK);
-                let old = Piece { text: ch.to_string(), styles: vec![self.doc.flow.styles[g - 1].clone()] };
-                let now = ctx.input(|inp| inp.time);
-                self.doc.apply(Edit::Replace { at: g - 1, old, new: Piece::default() }, now);
-                self.doc.full_paginate(ctx, &self.typing);
-                let (pg, local) = self.locate(g - 1, i - 1);
-                self.view_for = None;
-                self.pos = pg as f32;
-                self.target = pg;
-                self.cursor_req = Some((pg, local));
-            } else if consume(Key::ArrowLeft) {
-                self.target = i - 1;
-                self.cursor_req = Some((i - 1, self.doc.spans[i - 1].chars()));
-            }
-        } else if p == len && i < self.last() && consume(Key::ArrowRight) {
-            self.target = i + 1;
-            self.cursor_req = Some((i + 1, 0));
-        }
+    fn apply_insert_at(&mut self, ctx: &egui::Context, at: usize, text: &str, old_end: usize) {
+        let styles = text.chars().map(|_| self.typing.with_para(ParaAttrs::default())).collect();
+        let edit = Edit::Replace { at, old: Piece::default(), new: Piece { text: text.to_owned(), styles } };
+        self.apply_edit(ctx, edit, old_end);
     }
 
-    fn load_view(&mut self, i: usize) {
-        let text = self.doc.page_text(i).to_owned();
-        let styles = self.doc.page_styles(i).to_vec();
-        self.view = EditBuf::new(text, styles);
-        self.view_for = Some((i, self.doc.version));
-    }
+    // ------------------------------------------------------------------ movement
 
-    pub fn edit_page(&mut self, ui: &mut egui::Ui, page_rect: Rect, i: usize) {
-        let ctx = ui.ctx().clone();
-        if self.view_for != Some((i, self.doc.version)) {
-            self.load_view(i);
+    fn word_start_before(&self, c: usize) -> usize {
+        let b = self.doc.char_to_byte(c);
+        let mut chars = self.doc.flow.text[..b].chars().rev().peekable();
+        let mut n = 0;
+        while chars.peek().is_some_and(|&ch| char_class(ch) == 0) {
+            chars.next();
+            n += 1;
         }
-        let id = Self::page_id(i);
-        let sc = self.scale_of(page_rect);
-        let setup = &self.doc.setup;
-        let content = Rect::from_min_size(page_rect.min + setup.margin_origin() * sc, setup.content_size() * sc);
-
-        if let Some((p, idx)) = self.cursor_req {
-            if p == i && !self.scrubbing {
-                let mut state = TextEditState::load(&ctx, id).unwrap_or_default();
-                let idx = idx.min(self.view.text.chars().count());
-                state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(idx))));
-                state.store(&ctx, id);
-                ctx.memory_mut(|m| m.request_focus(id));
-                self.cursor_req = None;
-            }
-        } else if !ctx.memory(|m| m.has_focus(id)) && !self.scrubbing && !Self::ui_field_focused(&ctx) {
-            ctx.memory_mut(|m| m.request_focus(id));
-        }
-
-        let typing = self.typing.clone();
-        let wrap_w = content.width();
-        let marks = self.page_marks(i);
-        let EditBuf { text, rich } = &mut self.view;
-        let rich = &*rich;
-        let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
-            let mut r = rich.borrow_mut();
-            r.sync(buf.as_str(), &typing);
-            let job = build_job(buf.as_str(), &r.styles, &typing, sc, wrap_w, &marks);
-            ui.fonts_mut(|f| f.layout_job(job))
-        };
-        let edit = TextEdit::multiline(text)
-            .id(id)
-            .font(FontId::proportional(FONT_SIZE * sc))
-            .text_color(INK)
-            .frame(egui::Frame::NONE)
-            .margin(egui::Margin::ZERO)
-            .desired_width(content.width())
-            .min_size(Vec2::new(content.width(), content.height()))
-            .lock_focus(true)
-            .layouter(&mut layouter);
-        if self.cursor_req.is_none() && !self.held_input.is_empty() {
-            // Replay what was typed while the page was turning, ahead of this frame's own input.
-            let mut events = std::mem::take(&mut self.held_input);
-            ctx.input_mut(|i| {
-                events.extend(std::mem::take(&mut i.events));
-                i.events = events;
-            });
-        }
-        ui.scope_builder(UiBuilder::new().max_rect(content), |ui| {
-            ui.add(edit);
-        });
-
-        // Page breaks are structure, not text: drop any that arrive through paste.
-        self.view.text.retain(|c| c != PAGE_BREAK);
-        let text_now = self.view.text.clone();
-        self.view.rich.get_mut().sync(&text_now, &typing);
-
-        if self.view.text != self.doc.page_text(i) {
-            self.commit_view(&ctx, i);
-        }
-
-        // The toolbox follows the character before the cursor.
-        if let Some(c) = Self::cursor_of(&ctx, i) {
-            if self.last_cursor != Some((i, c)) {
-                self.last_cursor = Some((i, c));
-                if let Some(st) = self.view.rich.get_mut().styles.get(c.saturating_sub(1)) {
-                    self.typing = st.clone();
+        match chars.next() {
+            None => return c - n,
+            Some(first) => {
+                n += 1;
+                let class = char_class(first);
+                if class != 3 {
+                    while chars.peek().is_some_and(|&ch| char_class(ch) == class) {
+                        chars.next();
+                        n += 1;
+                    }
                 }
             }
         }
+        c - n
     }
 
-    /// Write the edited page back into the flow (as one edit) and recompute the pages.
-    fn commit_view(&mut self, ctx: &egui::Context, i: usize) {
-        let sp = self.doc.spans[i];
-        let new_chars: Vec<char> = self.view.text.chars().collect();
-        let mut new_styles = self.view.rich.get_mut().styles.clone();
-        new_styles.resize(new_chars.len(), self.typing.clone());
-        let cursor = Self::cursor_of(ctx, i).unwrap_or(new_chars.len()).min(new_chars.len());
-
-        // Only the part that actually differs becomes the edit.
-        let old_chars: Vec<char> = self.doc.page_text(i).chars().collect();
-        let max = old_chars.len().min(new_chars.len());
-        let p = old_chars.iter().zip(&new_chars).take_while(|(a, b)| a == b).count();
-        let s = old_chars[p..].iter().rev().zip(new_chars[p..].iter().rev()).take(max - p).take_while(|(a, b)| a == b).count();
-        let (old_end, new_end) = (old_chars.len() - s, new_chars.len() - s);
-        let edit = Edit::Replace {
-            at: sp.start + p,
-            old: Piece {
-                text: old_chars[p..old_end].iter().collect(),
-                styles: self.doc.page_styles(i)[p..old_end].to_vec(),
-            },
-            new: Piece { text: new_chars[p..new_end].iter().collect(), styles: new_styles[p..new_end].to_vec() },
-        };
-        let (dchars, dbytes) = edit.delta();
-        let now = ctx.input(|inp| inp.time);
-        self.doc.apply(edit, now);
-        self.doc.paginate_from(ctx, &self.typing, i, dchars, dbytes);
-        self.view_for = None;
-
-        // Text typed past the end of the page flows on to the next one, and the cursor with it.
-        let (pg, local) = self.locate(sp.start + cursor, i);
-        if pg != i {
-            self.cursor_req = Some((pg, local));
-            self.target = pg;
+    fn word_end_after(&self, c: usize) -> usize {
+        let b = self.doc.char_to_byte(c);
+        let mut chars = self.doc.flow.text[b..].chars().peekable();
+        let mut n = 0;
+        if let Some(&first) = chars.peek() {
+            let class = char_class(first);
+            chars.next();
+            n += 1;
+            if class != 3 {
+                while chars.peek().is_some_and(|&ch| char_class(ch) == class) {
+                    chars.next();
+                    n += 1;
+                }
+            }
         }
+        while chars.peek().is_some_and(|&ch| char_class(ch) == 0) {
+            chars.next();
+            n += 1;
+        }
+        (c + n).min(self.max_caret())
+    }
+
+    pub fn word_range_at(&self, c: usize) -> (usize, usize) {
+        let c = c.min(self.max_caret());
+        let b = self.doc.char_to_byte(c);
+        let class_at = |ch: Option<char>| ch.map_or(3, char_class);
+        let here = class_at(self.doc.flow.text[b..].chars().next());
+        if here == 3 {
+            return (c, c);
+        }
+        let back = self.doc.flow.text[..b].chars().rev().take_while(|&ch| char_class(ch) == here).count();
+        let fwd = self.doc.flow.text[b..].chars().take_while(|&ch| char_class(ch) == here).count();
+        (c - back, c + fwd)
+    }
+
+    /// Horizontal move by one char or word; collapses a selection to the side being moved towards.
+    fn move_horizontal(&mut self, ctx: &egui::Context, forward: bool, word: bool, extend: bool) {
+        self.want_x = None;
+        if self.has_selection() && !extend {
+            let (a, b) = self.selection();
+            return self.set_caret(ctx, if forward { b } else { a }, false);
+        }
+        let to = match (forward, word) {
+            (true, false) => (self.caret + 1).min(self.max_caret()),
+            (false, false) => self.caret.saturating_sub(1),
+            (true, true) => self.word_end_after(self.caret),
+            (false, true) => self.word_start_before(self.caret),
+        };
+        self.set_caret(ctx, to, extend);
+    }
+
+    fn layout_at_scale_one(&self, ctx: &egui::Context, page: usize) -> PageLayout {
+        self.doc.layout_page(ctx, page, 1.0, &[])
+    }
+
+    /// The flow position one visual row above/below the caret, keeping the horizontal position.
+    fn vertical_target(&mut self, ctx: &egui::Context, up: bool) -> Option<usize> {
+        let page = self.doc.page_of(self.caret);
+        let layout = self.layout_at_scale_one(ctx, page);
+        let start = self.doc.spans[page].start;
+        let local = self.caret - start;
+        let here = layout.row_of(local, self.prefer_next)?;
+        let x = match self.want_x {
+            Some(x) => x,
+            None => layout.caret_rect(local, self.prefer_next).left(),
+        };
+        self.want_x = Some(x);
+        let rows = layout.rows();
+        let idx = rows.iter().position(|r| r.para == here.para && r.start == here.start)?;
+        let (target_layout, target_start, row) = if up && idx > 0 {
+            (layout, start, rows[idx - 1])
+        } else if !up && idx + 1 < rows.len() {
+            (layout, start, rows[idx + 1])
+        } else if up && page > 0 {
+            let l = self.layout_at_scale_one(ctx, page - 1);
+            let r = *l.rows().last()?;
+            (l, self.doc.spans[page - 1].start, r)
+        } else if !up && page < self.last() {
+            let l = self.layout_at_scale_one(ctx, page + 1);
+            let r = *l.rows().first()?;
+            (l, self.doc.spans[page + 1].start, r)
+        } else {
+            return None;
+        };
+        let p = &target_layout.paras[row.para];
+        let hit = target_layout.hit(vec2(x, row.top + row.height / 2.0));
+        let mut local = hit.clamp(row.start, row.end);
+        let last_row_of_piece = p.end == row.end;
+        if local == row.end && !last_row_of_piece {
+            local = local.saturating_sub(1).max(row.start);
+        }
+        Some(target_start + local)
+    }
+
+    fn move_vertical(&mut self, ctx: &egui::Context, up: bool, extend: bool) {
+        let want = self.want_x;
+        match self.vertical_target(ctx, up) {
+            Some(to) => {
+                self.set_caret(ctx, to, extend);
+                self.want_x = want.or(self.want_x);
+            }
+            None => {
+                let edge = if up { 0 } else { self.max_caret() };
+                self.set_caret(ctx, edge, extend);
+                self.want_x = None;
+            }
+        }
+    }
+
+    fn home_end(&mut self, ctx: &egui::Context, end: bool, whole_doc: bool, extend: bool) {
+        self.want_x = None;
+        if whole_doc {
+            return self.set_caret(ctx, if end { self.max_caret() } else { 0 }, extend);
+        }
+        let page = self.doc.page_of(self.caret);
+        let layout = self.layout_at_scale_one(ctx, page);
+        let start = self.doc.spans[page].start;
+        if let Some(row) = layout.row_of(self.caret - start, self.prefer_next) {
+            self.set_caret(ctx, start + if end { row.end } else { row.start }, extend);
+            self.prefer_next = !end;
+        }
+    }
+
+    pub fn select_all(&mut self, ctx: &egui::Context) {
+        self.anchor = 0;
+        self.set_caret(ctx, self.max_caret(), true);
+    }
+
+    // ------------------------------------------------------------------ input
+
+    /// Handle this frame's typing, keys and clipboard events.
+    pub fn process_input(&mut self, ctx: &egui::Context) {
+        if ctx.egui_wants_keyboard_input() {
+            return; // the search box, a note or a number field has the keyboard
+        }
+        let events = ctx.input(|i| i.events.clone());
+        for e in events {
+            match e {
+                Event::Text(t) => self.insert_text(ctx, &t),
+                Event::Ime(egui::ImeEvent::Commit(t)) => self.insert_text(ctx, &t),
+                Event::Paste(t) => self.insert_text(ctx, &t),
+                Event::Copy => {
+                    if self.has_selection() {
+                        ctx.copy_text(self.selected_text());
+                    }
+                }
+                Event::Cut => {
+                    if self.has_selection() {
+                        ctx.copy_text(self.selected_text());
+                        let (a, b) = self.selection();
+                        self.replace_range(ctx, a, b, "");
+                    }
+                }
+                Event::Key { key, pressed: true, modifiers, .. } => self.handle_key(ctx, key, modifiers),
+                _ => {}
+            }
+        }
+    }
+
+    /// Keys are handled in the order they arrived, together with typing, so that e.g. pressing a
+    /// formatting shortcut right after Enter formats the new paragraph.
+    fn handle_key(&mut self, ctx: &egui::Context, key: Key, m: Modifiers) {
+        let (word, shift) = (m.command || m.ctrl, m.shift);
+        if m.command {
+            match key {
+                Key::Z => return self.step_history(ctx, shift),
+                Key::Y => return self.step_history(ctx, true),
+                Key::Enter => return self.insert_page_break(ctx),
+                Key::N if m.alt => return self.add_note(ctx),
+                Key::L if shift => {
+                    let on = self.doc.para_attrs_at(self.caret).list == ListKind::Bullet;
+                    return self.set_para(ctx, |p| p.list = if on { ListKind::None } else { ListKind::Bullet });
+                }
+                Key::L => return self.set_para(ctx, |p| p.align = Align::Left),
+                Key::E => return self.set_para(ctx, |p| p.align = Align::Center),
+                Key::R => return self.set_para(ctx, |p| p.align = Align::Right),
+                Key::J => return self.set_para(ctx, |p| p.align = Align::Justify),
+                Key::B => {
+                    let on = !self.typing.bold;
+                    return self.apply_style(ctx, |s| s.bold = on);
+                }
+                Key::U => {
+                    let on = !self.typing.underline;
+                    return self.apply_style(ctx, |s| s.underline = on);
+                }
+                _ => {}
+            }
+        }
+        match key {
+            Key::PageDown | Key::PageUp => {
+                // Jump to the start of the next / previous page.
+                let page = self.doc.page_of(self.caret);
+                let to = if key == Key::PageDown { (page + 1).min(self.last()) } else { page.saturating_sub(1) };
+                let start = self.doc.spans[to].start;
+                self.set_caret(ctx, start, shift);
+            }
+            Key::ArrowLeft => self.move_horizontal(ctx, false, word, shift),
+            Key::ArrowRight => self.move_horizontal(ctx, true, word, shift),
+            Key::ArrowUp => self.move_vertical(ctx, true, shift),
+            Key::ArrowDown => self.move_vertical(ctx, false, shift),
+            Key::Home => self.home_end(ctx, false, word, shift),
+            Key::End => self.home_end(ctx, true, word, shift),
+            Key::Backspace => self.backspace(ctx, word),
+            Key::Delete => self.delete_forward(ctx, word),
+            Key::Enter if !m.command => self.press_enter(ctx),
+            Key::Tab if !m.command => self.insert_text(ctx, "\t"),
+            Key::A if m.command => self.select_all(ctx),
+            _ => {}
+        }
+    }
+
+    // ------------------------------------------------------------------ formatting
+
+    /// Set a character style property on the selection (if any) and on what is typed next.
+    pub fn apply_style(&mut self, ctx: &egui::Context, edit: impl Fn(&mut Style)) {
+        edit(&mut self.typing);
+        let (a, b) = self.selection();
+        if a == b {
+            return;
+        }
+        let old = self.doc.flow.styles[a..b].to_vec();
+        let mut new = old.clone();
+        for st in &mut new {
+            let para = st.para;
+            edit(st);
+            st.para = para; // character edits never touch paragraph formatting
+        }
+        if new == old {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        self.doc.apply(Edit::Restyle { at: a, old, new }, now);
+        self.doc.paginate_after(ctx, &self.typing, a, b, 0, 0);
         ctx.request_repaint();
     }
+
+    /// Change the format of every paragraph the selection touches.
+    pub fn set_para(&mut self, ctx: &egui::Context, edit: impl Fn(&mut ParaAttrs)) {
+        let (a, b) = self.selection();
+        let (ps, _) = self.doc.para_start(a);
+        let last_char = b.min(self.max_caret());
+        let (end, _) = self.doc.term_from(last_char, self.doc.char_to_byte(last_char));
+        let range = ps..end + 1;
+        let old = self.doc.flow.styles[range.clone()].to_vec();
+        let mut new = old.clone();
+        for (k, st) in new.iter_mut().enumerate() {
+            if self.doc.char_at(ps + k).is_some_and(is_terminator) {
+                edit(&mut st.para);
+            }
+        }
+        if new == old {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        let len = range.len();
+        self.doc.apply(Edit::Restyle { at: ps, old, new }, now);
+        self.doc.paginate_after(ctx, &self.typing, ps, ps + len, 0, 0);
+        ctx.request_repaint();
+    }
+
+    // ------------------------------------------------------------------ history, setup
 
     /// Undo or redo one step and put the caret where the change happened.
     pub fn step_history(&mut self, ctx: &egui::Context, redo: bool) {
         let caret = if redo { self.doc.redo() } else { self.doc.undo() };
         let Some(caret) = caret else { return };
         self.doc.full_paginate(ctx, &self.typing);
-        let (p, local) = self.locate(caret.min(self.doc.total_chars()), self.target.min(self.last()));
-        self.view_for = None;
-        self.target = p;
-        self.cursor_req = Some((p, local));
-        ctx.request_repaint();
-    }
-
-    /// Set a style property on the selection (if any) and on what gets typed next.
-    pub fn apply_style(&mut self, ctx: &egui::Context, edit: impl Fn(&mut Style)) {
-        edit(&mut self.typing);
-        let i = self.target.min(self.last());
-        let Some((a, b)) = Self::cursor_state(ctx, i) else { return };
-        let (a, b) = (a.min(b), a.max(b));
-        if a == b {
-            return;
-        }
-        let at = self.doc.spans[i].start + a;
-        let old = self.doc.flow.styles[at..at + (b - a)].to_vec();
-        let mut new = old.clone();
-        new.iter_mut().for_each(&edit);
-        if new == old {
-            return;
-        }
-        let now = ctx.input(|inp| inp.time);
-        self.doc.apply(Edit::Restyle { at, old, new }, now);
-        self.doc.paginate_from(ctx, &self.typing, i, 0, 0);
-        self.view_for = None;
-        ctx.request_repaint();
+        self.set_caret(ctx, caret.min(self.max_caret()), false);
     }
 
     /// Swap in new page settings and reflow the whole document.
@@ -268,6 +506,119 @@ impl App {
         setup.clamp_margins();
         self.doc.setup = setup;
         self.doc.version += 1;
-        self.repaginate_keeping_cursor(ctx);
+        self.doc.full_paginate(ctx, &self.typing);
+        let c = self.caret;
+        self.set_caret(ctx, c, false);
+    }
+
+    // ------------------------------------------------------------------ the page surface
+
+    /// Draw the page that is being edited, and handle clicking and dragging on it.
+    pub fn editor_surface(&mut self, ui: &mut egui::Ui, page_rect: Rect, i: usize, interactive: bool) {
+        let ctx = ui.ctx().clone();
+        let sc = self.scale_of(page_rect);
+        let setup = &self.doc.setup;
+        let content = Rect::from_min_size(page_rect.min + setup.margin_origin() * sc, setup.content_size() * sc);
+        let layout = self.page_layout(&ctx, i, sc);
+        let start = self.doc.spans[i].start;
+        let page_len = self.doc.spans[i].chars() + usize::from(self.doc.hard_end(i));
+
+        // Selection, then text, then caret.
+        let (a, b) = self.selection();
+        if a != b && b > start && a < start + page_len + 1 {
+            let (la, lb) = (a.saturating_sub(start), (b - start).min(page_len + 1));
+            for r in layout.selection_rects(la, lb) {
+                let color = crate::theme::ACCENT.gamma_multiply(0.45);
+                ui.painter().rect_filled(r.translate(content.min.to_vec2()), 1.0, color);
+            }
+        }
+        Self::paint_layout(ui.painter(), &layout, content.min);
+
+        let caret_here = self.doc.page_of(self.caret) == i;
+        if caret_here {
+            let local = self.caret - start;
+            let r = layout.caret_rect(local, self.prefer_next).translate(content.min.to_vec2());
+            let now = ctx.input(|inp| inp.time);
+            let phase = (now - self.blink_epoch) % 1.06;
+            if phase < 0.53 && !ctx.egui_wants_keyboard_input() {
+                let x = r.left();
+                ui.painter().line_segment([pos2(x, r.top()), pos2(x, r.bottom())], Stroke::new((1.4 * sc).max(1.0), INK));
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(if phase < 0.53 { (530.0 - phase * 1000.0) as u64 } else { (1060.0 - phase * 1000.0) as u64 } + 20));
+            if !ctx.egui_wants_keyboard_input() {
+                ui.output_mut(|o| {
+                    o.ime = Some(IMEOutput {
+                        purpose: egui::IMEPurpose::Normal,
+                        rect: content,
+                        cursor_rect: r,
+                        should_interrupt_composition: false,
+                    })
+                });
+            }
+        }
+
+        if !interactive {
+            return;
+        }
+        self.mouse(ui, &layout, content, i);
+    }
+
+    fn mouse(&mut self, ui: &mut egui::Ui, layout: &PageLayout, content: Rect, i: usize) {
+        let ctx = ui.ctx().clone();
+        let resp = ui.interact(content.expand(6.0), Id::new("editor"), Sense::click_and_drag());
+        if resp.hovered() && !self.ctrl_down {
+            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Text);
+        }
+        if self.ctrl_down {
+            return; // Ctrl+drag moves the page
+        }
+        let start = self.doc.spans[i].start;
+        let at = |p: Pos2Like| start + layout.hit(p - content.min);
+        let (pressed, shift) = ctx.input(|inp| (inp.pointer.primary_pressed(), inp.modifiers.shift));
+        if pressed && resp.contains_pointer() {
+            if let Some(p) = resp.interact_pointer_pos().or_else(|| ctx.input(|inp| inp.pointer.interact_pos())) {
+                let c = at(p);
+                self.set_caret(&ctx, c, shift);
+                self.want_x = None;
+            }
+        } else if resp.dragged() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let c = at(p);
+                self.set_caret(&ctx, c, true);
+            }
+        }
+        if resp.double_clicked() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let (a, b) = self.word_range_at(at(p));
+                self.anchor = a;
+                self.set_caret(&ctx, b, true);
+            }
+        } else if resp.triple_clicked() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let c = at(p);
+                let (ps, _) = self.doc.para_start(c);
+                let (end, _) = self.doc.term_from(c, self.doc.char_to_byte(c));
+                self.anchor = ps;
+                self.set_caret(&ctx, (end + 1).min(self.max_caret()), true);
+            }
+        }
+    }
+
+    pub fn paint_layout(painter: &egui::Painter, layout: &PageLayout, origin: egui::Pos2) {
+        for p in &layout.paras {
+            if let Some((g, at)) = &p.marker {
+                painter.galley(origin + vec2(at.x, p.y + at.y), g.clone(), INK);
+            }
+            painter.galley(origin + vec2(p.x, p.y), p.galley.clone(), INK);
+        }
+    }
+
+    /// Layout of page `i` for drawing, with note and search highlights.
+    pub fn page_layout(&self, ctx: &egui::Context, i: usize, scale: f32) -> PageLayout {
+        self.doc.layout_page(ctx, i, scale, &self.page_marks(i))
     }
 }
+
+type Pos2Like = egui::Pos2;
+#[allow(dead_code)]
+fn _unused(_: Vec2) {}
