@@ -22,19 +22,38 @@ impl App {
         painter.rect_filled(rect, 1.0, PAPER);
     }
 
-    /// Stack hints: sheets piled to the right (pages ahead) and left (pages behind).
+    /// Page-point offset between neighbouring sheets for a document of `n` pages. The whole pile
+    /// is `max * n / (n + STACK_KNEE)` thick: a few pages get thick, clearly separate sheets, and
+    /// the thickness then grows ever more slowly towards a tenth of the page width.
+    fn sheet_gap(&self, n: usize) -> f32 {
+        const STACK_KNEE: f32 = 18.0;
+        let max = self.doc.setup.size().x / 10.0;
+        max / (n as f32 + STACK_KNEE)
+    }
+
+    /// Stack hints: every sheet piled to the right (pages ahead) and left (pages behind).
     pub fn stack(&self, painter: &egui::Painter, rect: Rect, behind: usize, ahead: usize) {
-        let sc = self.scale_of(rect);
-        for k in (1..=ahead.min(5)).rev() {
-            let r = rect.translate(vec2(k as f32 * 2.2, k as f32 * 1.4) * sc);
-            painter.rect_filled(r, 1.0, Color32::from_rgb(232, 230, 224));
-            painter.rect_stroke(r, 1.0, Stroke::new(0.6, Color32::from_black_alpha(60)), egui::StrokeKind::Inside);
-        }
-        for k in (1..=behind.min(4)).rev() {
-            let r = rect.translate(vec2(-(k as f32) * 2.0, k as f32 * 1.0) * sc);
-            painter.rect_filled(r, 1.0, Color32::from_rgb(226, 224, 218));
-            painter.rect_stroke(r, 1.0, Stroke::new(0.6, Color32::from_black_alpha(50)), egui::StrokeKind::Inside);
-        }
+        let ctx = painter.ctx();
+        let target = self.sheet_gap(self.doc.pages());
+        // Ease the spacing when pages come and go, so the pile visibly thins or thickens.
+        let gap = ctx.animate_value_with_time(egui::Id::new("page-stack-gap"), target, 0.3) * self.scale_of(rect);
+        let gap_px = gap * ctx.pixels_per_point();
+        // Sheets closer than ~1.5 px would smear into one dark edge: draw every `step`th one only,
+        // and fade the edge lines as they crowd, leaving a soft blur for long documents.
+        let step = (1.5 / gap_px).ceil().max(1.0) as usize;
+        let line = (gap_px / 3.0).clamp(0.25, 1.0);
+
+        let side = |count: usize, dir: egui::Vec2, fill: Color32, alpha: f32| {
+            let sheets = std::iter::once(count).chain((1..count).rev().filter(|k| k % step == 0));
+            for k in sheets.filter(|&k| k > 0) {
+                let r = rect.translate(dir * k as f32 * gap);
+                painter.rect_filled(r, 1.0, fill);
+                let edge = Color32::from_black_alpha((alpha * line) as u8);
+                painter.rect_stroke(r, 1.0, Stroke::new(0.6, edge), egui::StrokeKind::Inside);
+            }
+        };
+        side(ahead, vec2(1.0, 0.64), Color32::from_rgb(232, 230, 224), 60.0);
+        side(behind, vec2(-1.0, 0.5), Color32::from_rgb(226, 224, 218), 50.0);
     }
 
     /// The page number, and where it goes relative to the page's top-left (None if turned off).
