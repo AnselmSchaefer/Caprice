@@ -172,6 +172,7 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
             image: Some(ImageBox { id, rect: Rect::from_min_size(pos2(x, 0.0), size), rotation }),
         };
     }
+    let galley = true_to_scale(ctx, spec, galley, wrap);
     let height = if spec.invisible { 0.0 } else { galley.size().y };
     let marker = spec.marker.as_ref().map(|text| {
         let st = spec.styles.first().unwrap_or(spec.term);
@@ -201,6 +202,32 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
         starts_paragraph: false,
         image: None,
     }
+}
+
+/// egui rounds every line's height to whole pixels, so zoomed text comes out a little shorter or
+/// taller than at page size, where the page breaks are worked out. Over a page that adds up to a
+/// line or more. Give the paragraph its page-size height times the zoom instead, spreading its
+/// lines to match (each placed on a whole pixel, so the text stays crisp).
+fn true_to_scale(ctx: &egui::Context, spec: &PieceSpec, galley: Arc<egui::Galley>, wrap: f32) -> Arc<egui::Galley> {
+    let sc = spec.scale;
+    if (sc - 1.0).abs() < 1e-4 || galley.size().y <= 0.0 {
+        return galley;
+    }
+    let job = paragraph_job(ctx, spec.text, spec.styles, spec.term, spec.attrs, 1.0, wrap / sc, &[]);
+    let page = ctx.fonts_mut(|f| f.layout_job(job));
+    let height = page.size().y * sc;
+    let k = height / galley.size().y;
+    if (k - 1.0).abs() < 1e-4 {
+        return galley;
+    }
+    let ppp = ctx.pixels_per_point();
+    let mut g = (*galley).clone();
+    for row in &mut g.rows {
+        row.pos.y = (row.pos.y * k * ppp).round() / ppp;
+    }
+    g.rect.max.y = g.rect.min.y + height;
+    g.mesh_bounds.max.y += height - galley.size().y;
+    Arc::new(g)
 }
 
 /// Number of the list item that starts at (char `c`, byte `b`) among consecutive numbered paragraphs.
@@ -482,6 +509,24 @@ mod tests {
             let text_w = left.1 - left.0;
             assert!((center.0 - (width - text_w) / 2.0).abs() < 2.0, "centered: {center:?} text_w {text_w}");
             assert!((right.1 - width).abs() < 2.0, "right aligned ends at the edge: {right:?}");
+        });
+    }
+
+    #[test]
+    fn text_fills_the_page_the_same_at_every_zoom() {
+        with_ctx(|ctx| {
+            let long = "a paragraph long enough to wrap onto a few rows of the page. ".repeat(4);
+            let text: String = (0..60).map(|k| if k % 5 == 0 { format!("{long}\n") } else { "qwe\n".into() }).collect();
+            let st = Style::new("x");
+            let mut d = Doc::new();
+            d.flow.text = text.clone();
+            d.flow.styles = vec![st.clone(); text.chars().count()];
+            d.full_paginate(ctx, &st);
+            let at_page_size = d.layout_page(ctx, 0, 1.0, &[]).height;
+            for sc in [0.8f32, 0.9, 0.94, 1.2, 1.37] {
+                let h = d.layout_page(ctx, 0, sc, &[]).height / sc;
+                assert!((h - at_page_size).abs() < 0.01, "at zoom {sc} the text is {h}pt tall instead of {at_page_size}pt");
+            }
         });
     }
 
