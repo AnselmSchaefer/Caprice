@@ -212,7 +212,7 @@ impl App {
             Ok(file) => {
                 let mut doc = file.into_doc();
                 doc.version = self.doc.version + 1;
-                self.open_note = None;
+                self.pads.clear();
                 self.search.matches.clear();
                 let fonts: BTreeSet<String> = doc.flow.styles.iter().map(|s| s.font.to_string()).collect();
                 for f in fonts {

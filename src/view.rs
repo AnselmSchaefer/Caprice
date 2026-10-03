@@ -66,7 +66,8 @@ impl App {
     pub fn page_rect(&mut self, ctx: &egui::Context, area: Rect) -> Rect {
         let view = Self::view_area(area);
         let size = self.doc.setup.size();
-        let fit = ((view.height() - 16.0) / size.y).min((view.width() - 48.0) / size.x).clamp(MIN_ZOOM, 3.0);
+        // Leave room on both sides for post-its sticking out of the page and the stacks.
+        let fit = ((view.height() - 16.0) / size.y).min((view.width() - 48.0) / (size.x + 2.0 * crate::notes::NOTE_OUT)).clamp(MIN_ZOOM, 3.0);
         let (pinch, scroll, hover) = ctx.input(|i| (i.zoom_delta(), i.smooth_scroll_delta, i.pointer.hover_pos()));
         let keys = ctx.input_mut(|i| {
             let mut z = 1.0;

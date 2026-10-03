@@ -95,10 +95,9 @@ pub struct App {
     pub target: usize,
     pub scrubbing: bool,
     pub search: Search,
-    /// The note whose editor window is open, where to put it, and whether to focus its text field.
-    pub open_note: Option<u64>,
-    pub note_pos: Pos2,
-    pub note_focus: bool,
+    /// The note to put the keyboard on (a new one), and which sheet each note's pad shows.
+    pub note_focus: Option<u64>,
+    pub pads: HashMap<u64, notes::Pad>,
     pub last_page_rect: Rect,
     /// Textures of the document's pictures, by picture id.
     pub textures: HashMap<u32, egui::TextureHandle>,
@@ -147,9 +146,8 @@ impl App {
             target: 0,
             scrubbing: false,
             search: Search::default(),
-            open_note: None,
-            note_pos: Pos2::ZERO,
-            note_focus: false,
+            note_focus: None,
+            pads: HashMap::new(),
             last_page_rect: Rect::NOTHING,
             textures: HashMap::new(),
             startup_file: None,
@@ -246,6 +244,7 @@ impl App {
         // Pages can disappear (backspacing away a break), so keep the position valid.
         self.target = self.target.min(self.last());
         self.animate(ui);
+        self.animate_pads(ui);
         self.pos = self.pos.clamp(0.0, self.last() as f32);
 
         let page_rect = self.page_rect(&ctx, area);
@@ -276,7 +275,6 @@ impl App {
         self.format_bar(ui, area);
         self.page_bar(ui, area);
         self.search_bar(ui, area);
-        self.note_window(&ctx);
         self.picture_menu(&ctx);
     }
 }
@@ -450,12 +448,85 @@ mod tests {
         h.type_text("remember");
         assert_eq!(h.app.doc.notes[0].text, "remember");
         assert_eq!(h.app.doc.visible_text(), "first line\nsecond line");
-        // ...and the page gets it back when it closes.
-        h.app.open_note = None;
-        h.frames(5, vec![], Modifiers::NONE);
+        // ...and the page gets it back after Escape.
+        h.key(Key::Escape, Modifiers::NONE);
         h.type_text("!"); // typed right after the note's end: not part of it
         assert_eq!(h.app.doc.visible_text(), "first line\nsecond line!");
         assert_eq!((h.app.doc.notes[0].start, h.app.doc.notes[0].end), (11, 22));
+    }
+
+    #[test]
+    fn post_its_follow_their_line_without_overlapping_or_leaving_the_page() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        for _ in 0..60 {
+            h.type_text("a line of text\n");
+        }
+        // Notes on five lines close together near the bottom of page 1, and one far down the text.
+        let ctx = h.ctx.clone();
+        let line = |k: usize| k * "a line of text\n".chars().count();
+        for k in 30..35 {
+            h.app.doc.notes.push(model::Note { id: k as u64, start: line(k), end: line(k) + 4, text: String::new(), color: 0 });
+        }
+        h.app.doc.notes.push(model::Note { id: 99, start: line(59), end: line(59) + 4, text: String::new(), color: 1 });
+        let places = h.app.note_places(&ctx);
+        let page_h = h.app.doc.setup.size().y;
+        for (page, list) in &places {
+            for &(k, y) in list {
+                assert_eq!(*page, h.app.doc.page_of(h.app.doc.notes[k].start), "a post-it is on its line's page");
+                assert!(y >= 0.0 && y + notes::NOTE_SIZE <= page_h + 0.01, "inside the page: {y}");
+            }
+            for w in list.windows(2) {
+                assert!(w[1].1 >= w[0].1 + notes::NOTE_SIZE, "no overlap: {:?}", w);
+            }
+        }
+        assert_eq!(places.values().map(Vec::len).sum::<usize>(), 6);
+    }
+
+    #[test]
+    fn post_its_do_not_change_where_pages_break() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        for _ in 0..120 {
+            h.type_text("a line of text\n");
+        }
+        h.frames(30, vec![], Modifiers::NONE);
+        let before = h.app.doc.spans.clone();
+        // Post-its near the bottom of the first page, one of them long enough for several sheets.
+        let line = "a line of text\n".chars().count();
+        let last_on_first = h.app.doc.spans[0].end / line - 1;
+        for (id, k) in [(1, last_on_first - 1), (2, last_on_first)] {
+            let text = if id == 1 { "x\n".repeat(30) } else { "short".into() };
+            h.app.doc.notes.push(model::Note { id, start: k * line, end: k * line + 4, text, color: 0 });
+        }
+        h.app.target = 0;
+        h.frames(120, vec![], Modifiers::NONE);
+        h.app.set_setup(&h.ctx.clone(), h.app.doc.setup.clone()); // a full repagination
+        h.frames(5, vec![], Modifiers::NONE);
+        assert_eq!(h.app.doc.spans, before, "pages break at the same places with post-its on them");
+        let ctx = h.ctx.clone();
+        let layout = h.app.doc.layout_page(&ctx, 0, 1.0, &[]);
+        let room = h.app.doc.setup.content_size().y;
+        assert!(room - layout.height < 20.0, "the first page is filled down to its bottom margin: {} of {room}", layout.height);
+    }
+
+    #[test]
+    fn a_long_note_continues_on_the_next_sheet_of_its_pad() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("a line");
+        let ctx = h.ctx.clone();
+        h.app.add_note(&ctx);
+        h.frames(3, vec![], Modifiers::NONE);
+        let id = h.app.doc.notes[0].id;
+        for k in 0..20 {
+            h.type_text(&format!("thought {k}\n"));
+        }
+        h.frames(30, vec![], Modifiers::NONE);
+        let pad = h.app.pads[&id];
+        assert!(pad.sheet >= 1, "the pad flipped on as the text grew: {}", pad.sheet);
+        assert_eq!(pad.pos, pad.sheet as f32, "and the flip animation finished");
+        assert_eq!(h.app.doc.visible_text(), "a line", "the page text is untouched");
     }
 
     #[test]
@@ -480,6 +551,36 @@ mod tests {
         h.frames(60, vec![], Modifiers::NONE);
         assert!((h.app.origin - fit_origin).length() < 0.01 && (h.app.zoom - fit_zoom).abs() < 1e-4);
         assert!(!h.app.fit_settling);
+    }
+
+    #[test]
+    fn the_cross_on_a_post_it_deletes_it() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("first line\nsecond line");
+        let ctx = h.ctx.clone();
+        h.app.add_note(&ctx);
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("keep me");
+        h.app.add_note(&ctx);
+        h.frames(3, vec![], Modifiers::NONE);
+        assert_eq!(h.app.doc.notes.len(), 2);
+        let doomed = h.app.doc.notes[1].id;
+
+        let page = h.app.last_page_rect;
+        let sc = h.app.scale_of(page);
+        let (k, y) = h.app.note_places(&ctx)[&0].iter().copied().find(|&(k, _)| h.app.doc.notes[k].id == doomed).unwrap();
+        assert_eq!(h.app.doc.notes[k].id, doomed);
+        let r = notes::note_rect(page, sc, y);
+        let pos = egui::pos2(r.right() - 7.0 * sc, r.top() + 7.0 * sc);
+        h.frames(2, vec![egui::Event::PointerMoved(pos)], Modifiers::NONE);
+        let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        h.frames(1, vec![button(true)], Modifiers::NONE);
+        h.frames(2, vec![button(false)], Modifiers::NONE);
+
+        assert_eq!(h.app.doc.notes.len(), 1, "the clicked post-it is gone");
+        assert_eq!(h.app.doc.notes[0].text, "keep me", "the other one stays");
+        assert_eq!(h.app.doc.visible_text(), "first line\nsecond line");
     }
 
     // ----------------------------------------------------------- the editor

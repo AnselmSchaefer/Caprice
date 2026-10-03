@@ -6,6 +6,7 @@ use eframe::egui::{self, Color32, FontId, Pos2, Rect, Shape, Stroke, pos2, vec2}
 use egui::epaint::{Mesh, TessellationOptions, Tessellator, WHITE_UV};
 
 use crate::App;
+use crate::notes::{NoteLook, note_color, note_rect};
 use crate::theme::{INK, PAPER};
 
 impl App {
@@ -43,17 +44,33 @@ impl App {
         let step = (1.5 / gap_px).ceil().max(1.0) as usize;
         let line = (gap_px / 3.0).clamp(0.25, 1.0);
 
-        let side = |count: usize, dir: egui::Vec2, fill: Color32, alpha: f32| {
-            let sheets = std::iter::once(count).chain((1..count).rev().filter(|k| k % step == 0));
-            for k in sheets.filter(|&k| k > 0) {
+        // Post-its of the pages in the pile peek out of it: to the right from pages ahead, and
+        // (those pages being turned over) to the left from pages behind.
+        let sc = self.scale_of(rect);
+        let places = if self.doc.notes.is_empty() { Default::default() } else { self.note_places(ctx) };
+        let n = self.doc.pages();
+
+        let side = |count: usize, dir: egui::Vec2, fill: Color32, alpha: f32, page_at: &dyn Fn(usize) -> usize, turned: bool| {
+            for k in (1..=count).rev() {
                 let r = rect.translate(dir * k as f32 * gap);
-                painter.rect_filled(r, 1.0, fill);
-                let edge = Color32::from_black_alpha((alpha * line) as u8);
-                painter.rect_stroke(r, 1.0, Stroke::new(0.6, edge), egui::StrokeKind::Inside);
+                for &(note, y) in places.get(&page_at(k)).into_iter().flatten() {
+                    let mut pr = note_rect(r, sc, y);
+                    if turned {
+                        pr = pr.translate(vec2(r.left() + r.right() - pr.left() - pr.right(), 0.0));
+                    }
+                    let c = note_color(self.doc.notes[note].color);
+                    painter.rect_filled(pr, 1.0, c.gamma_multiply(if turned { 0.8 } else { 0.92 }).to_opaque());
+                    painter.rect_stroke(pr, 1.0, Stroke::new(0.6, Color32::from_black_alpha(40)), egui::StrokeKind::Inside);
+                }
+                if k == count || k % step == 0 {
+                    painter.rect_filled(r, 1.0, fill);
+                    let edge = Color32::from_black_alpha((alpha * line) as u8);
+                    painter.rect_stroke(r, 1.0, Stroke::new(0.6, edge), egui::StrokeKind::Inside);
+                }
             }
         };
-        side(ahead, vec2(1.0, 0.64), Color32::from_rgb(232, 230, 224), 60.0);
-        side(behind, vec2(-1.0, 0.5), Color32::from_rgb(226, 224, 218), 50.0);
+        side(ahead, vec2(1.0, 0.64), Color32::from_rgb(232, 230, 224), 60.0, &|k| n - ahead + k - 1, false);
+        side(behind, vec2(-1.0, 0.5), Color32::from_rgb(226, 224, 218), 50.0, &|k| behind - k, true);
     }
 
     /// The page number, and where it goes relative to the page's top-left (None if turned off).
@@ -82,6 +99,7 @@ impl App {
         let layout = self.page_layout(ui.ctx(), i, sc);
         self.paint_layout(ui.painter(), &layout, rect.min + self.doc.setup.margin_origin() * sc);
         self.draw_footer(ui, rect, i);
+        self.paint_notes(ui.ctx(), ui.painter(), rect, i, &NoteLook::FLAT);
     }
 
     /// Draw page `i` hinged on its left edge, turned by `theta` (0 = flat, PI = fully flipped).
@@ -140,6 +158,13 @@ impl App {
             sh.add_triangle(1, 3, 2);
             painter.add(Shape::mesh(sh));
         }
+        // Seen from behind, the post-its are under the paper: only what sticks out shows.
+        let on_page = |p: Pos2| map(p.x - spine, p.y);
+        let shade = 1.0 - 0.28 * sin * 0.5 - 0.10 * sin;
+        if !front {
+            let look = NoteLook { map: &on_page, shade, alpha: fade, back: true, no_text: false };
+            self.paint_notes(ui.ctx(), painter, rect, i, &look);
+        }
         painter.add(Shape::mesh(mesh));
 
         if front {
@@ -161,7 +186,6 @@ impl App {
             if let Some((g, at)) = self.footer(ctx, i, sc) {
                 tess.tessellate_shape(Shape::galley(at, g, INK), &mut text_mesh);
             }
-            let shade = 1.0 - 0.28 * sin * 0.5 - 0.10 * sin;
             for v in &mut text_mesh.vertices {
                 v.pos = map(v.pos.x, rect.top() + v.pos.y);
                 let c = v.color;
@@ -201,6 +225,9 @@ impl App {
                 }
                 painter.add(Shape::mesh(quad));
             }
+
+            let look = NoteLook { map: &on_page, shade, alpha: fade, back: false, no_text: false };
+            self.paint_notes(ctx, painter, rect, i, &look);
         }
     }
 }
