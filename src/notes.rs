@@ -143,15 +143,14 @@ pub struct NoteLook<'a> {
     pub map: &'a dyn Fn(Pos2) -> Pos2,
     pub shade: f32,
     pub alpha: f32,
-    /// Seen from behind (on the back of a turning page, where `map` mirrors): the post-it is
-    /// turned back round about its own middle, so its writing still reads.
-    pub mirrored: bool,
+    /// Seen from behind (on the back of a turning page): blank, and darker.
+    pub back: bool,
     /// Leave the top sheet's text out (a text field draws it instead).
     pub no_text: bool,
 }
 
 impl NoteLook<'_> {
-    pub const FLAT: NoteLook<'static> = NoteLook { map: &|p| p, shade: 1.0, alpha: 1.0, mirrored: false, no_text: false };
+    pub const FLAT: NoteLook<'static> = NoteLook { map: &|p| p, shade: 1.0, alpha: 1.0, back: false, no_text: false };
 }
 
 impl App {
@@ -197,6 +196,14 @@ impl App {
         self.doc.notes.push(Note { id, start, end, text: String::new(), color: 0 });
         self.note_focus = Some(id);
         ctx.request_repaint();
+    }
+
+    /// Turn to a note's page, with the caret at its text, and start writing on it there.
+    pub fn go_to_note(&mut self, ctx: &egui::Context, id: u64) {
+        if let Some(start) = self.doc.notes.iter().find(|n| n.id == id).map(|n| n.start) {
+            self.set_caret(ctx, start, false);
+            self.note_focus = Some(id);
+        }
     }
 
     /// Notes by the page they are on, each with the top of its post-it in page points: level with
@@ -253,9 +260,11 @@ impl App {
     /// The shapes of one note's post-it at `r`, with its pad showing sheet position `pos`
     /// (2.4: sheet 2 is lifting away, 40% of the way, uncovering sheet 3).
     pub fn note_shapes(&self, ctx: &egui::Context, note: &Note, r: Rect, sc: f32, pos: f32, look: &NoteLook) -> Vec<Shape> {
-        let unmirror = |p: Pos2| (look.map)(pos2(r.left() + r.right() - p.x, p.y));
-        let map: &dyn Fn(Pos2) -> Pos2 = if look.mirrored { &unmirror } else { look.map };
+        let map = look.map;
         let color = note_color(note.color);
+        if look.back {
+            return vec![Shape::mesh(quad_mesh(r, shaded(color, look.shade * 0.8, look.alpha), map))];
+        }
         let s = sheets(ctx, &note.text, sc);
         let n = s.count();
         let pos = pos.clamp(0.0, (n - 1) as f32);

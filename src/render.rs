@@ -9,6 +9,10 @@ use crate::App;
 use crate::notes::{NoteLook, mirror_note, note_color, note_rect};
 use crate::theme::{INK, PAPER};
 
+/// Which way, per sheet, the piles of pages ahead and behind spread out from under the page.
+const AHEAD: egui::Vec2 = egui::vec2(1.0, 0.64);
+const BEHIND: egui::Vec2 = egui::vec2(-1.0, 0.5);
+
 impl App {
     /// Screen points per page point for a page drawn into `rect`.
     pub fn scale_of(&self, rect: Rect) -> f32 {
@@ -39,21 +43,35 @@ impl App {
         ctx.animate_value_with_time(egui::Id::new("page-stack-gap"), target, 0.3) * self.scale_of(rect)
     }
 
-    /// Where the page last turned over lies in the pile to the left of the page at `rect`.
-    fn turned_rect(&self, ctx: &egui::Context, rect: Rect) -> Rect {
-        rect.translate(vec2(-1.0, 0.5) * self.stack_gap(ctx, rect))
-    }
-
-    /// The post-its of page `i`, the one last turned over: they stick out to the left now, and lie
-    /// on top of the page so what is written on them can still be read.
-    pub fn paint_turned_notes(&self, ctx: &egui::Context, painter: &egui::Painter, rect: Rect, i: usize) {
-        let r = self.turned_rect(ctx, rect);
-        let look = NoteLook { shade: 0.96, ..NoteLook::FLAT };
-        let sc = self.scale_of(r);
-        for &(k, y) in self.note_places(ctx).get(&i).into_iter().flatten() {
-            let note = &self.doc.notes[k];
-            painter.extend(self.note_shapes(ctx, note, mirror_note(r, note_rect(r, sc, y)), sc, self.pad(note.id).sheet as f32, &look));
+    /// The post-its of the pages in the piles beside the page at `rect`, deepest first: each one's
+    /// id and page, and the part of it that sticks out from under the pages on top.
+    pub fn pile_note_hits(&self, ctx: &egui::Context, rect: Rect, behind: usize, ahead: usize) -> Vec<(u64, usize, Rect)> {
+        if self.doc.notes.is_empty() {
+            return Vec::new();
         }
+        let (gap, sc) = (self.stack_gap(ctx, rect), self.scale_of(rect));
+        let places = self.note_places(ctx);
+        let n = self.doc.pages();
+        let mut hits = Vec::new();
+        let mut add = |page: usize, visible: &dyn Fn(Rect) -> Rect, r: Rect| {
+            for &(k, y) in places.get(&page).into_iter().flatten() {
+                hits.push((self.doc.notes[k].id, page, visible(note_rect(r, sc, y))));
+            }
+        };
+        for k in (1..=ahead).rev() {
+            let above = rect.translate(AHEAD * (k - 1) as f32 * gap).right();
+            let r = rect.translate(AHEAD * k as f32 * gap);
+            add(n - ahead + k - 1, &|pr| Rect::from_min_max(pos2(pr.left().max(above), pr.top()), pr.max), r);
+        }
+        for k in (1..=behind).rev() {
+            let above = rect.translate(BEHIND * (k - 1) as f32 * gap).left();
+            let r = rect.translate(BEHIND * k as f32 * gap);
+            add(behind - k, &|pr| {
+                let pr = mirror_note(r, pr);
+                Rect::from_min_max(pr.min, pos2(pr.right().min(above), pr.bottom()))
+            }, r);
+        }
+        hits
     }
 
     /// Stack hints: every sheet piled to the right (pages ahead) and left (pages behind).
@@ -67,9 +85,7 @@ impl App {
         let line = (gap_px / 3.0).clamp(0.25, 1.0);
 
         // Post-its of the pages in the pile peek out of it: to the right from pages ahead, and
-        // (those pages being turned over) to the left from pages behind. Those of the page just
-        // ahead show their writing; those of the page just behind are drawn over the page instead
-        // (`paint_turned_notes`).
+        // (those pages being turned over) to the left from pages behind.
         let sc = self.scale_of(rect);
         let places = if self.doc.notes.is_empty() { Default::default() } else { self.note_places(ctx) };
         let n = self.doc.pages();
@@ -77,21 +93,19 @@ impl App {
         let side = |count: usize, dir: egui::Vec2, fill: Color32, alpha: f32, page_at: &dyn Fn(usize) -> usize, turned: bool| {
             for k in (1..=count).rev() {
                 let r = rect.translate(dir * k as f32 * gap);
-                let notes = if turned && k == 1 { None } else { places.get(&page_at(k)) };
-                for &(note, y) in notes.into_iter().flatten() {
-                    let mut pr = note_rect(r, sc, y);
-                    if turned {
-                        pr = mirror_note(r, pr);
-                    }
+                for &(note, y) in places.get(&page_at(k)).into_iter().flatten() {
                     let n = &self.doc.notes[note];
-                    if !turned && k == 1 {
-                        // The next page's post-its keep their writing: the pages on top hide the rest.
+                    let pr = note_rect(r, sc, y);
+                    if turned {
+                        // Turned over, a post-it shows its blank back.
+                        let pr = mirror_note(r, pr);
+                        painter.rect_filled(pr, 1.0, note_color(n.color).gamma_multiply(0.8).to_opaque());
+                        painter.rect_stroke(pr, 1.0, Stroke::new(0.6, Color32::from_black_alpha(40)), egui::StrokeKind::Inside);
+                    } else {
+                        // It keeps its writing: the pages on top hide the rest.
                         let look = NoteLook { shade: 0.96, ..NoteLook::FLAT };
                         painter.extend(self.note_shapes(ctx, n, pr, sc, self.pad(n.id).sheet as f32, &look));
-                        continue;
                     }
-                    painter.rect_filled(pr, 1.0, note_color(n.color).gamma_multiply(if turned { 0.8 } else { 0.92 }).to_opaque());
-                    painter.rect_stroke(pr, 1.0, Stroke::new(0.6, Color32::from_black_alpha(40)), egui::StrokeKind::Inside);
                 }
                 if k == count || k % step == 0 {
                     painter.rect_filled(r, 1.0, fill);
@@ -100,8 +114,8 @@ impl App {
                 }
             }
         };
-        side(ahead, vec2(1.0, 0.64), Color32::from_rgb(232, 230, 224), 60.0, &|k| n - ahead + k - 1, false);
-        side(behind, vec2(-1.0, 0.5), Color32::from_rgb(226, 224, 218), 50.0, &|k| behind - k, true);
+        side(ahead, AHEAD, Color32::from_rgb(232, 230, 224), 60.0, &|k| n - ahead + k - 1, false);
+        side(behind, BEHIND, Color32::from_rgb(226, 224, 218), 50.0, &|k| behind - k, true);
     }
 
     /// The page number, and where it goes relative to the page's top-left (None if turned off).
@@ -189,14 +203,14 @@ impl App {
             sh.add_triangle(1, 3, 2);
             painter.add(Shape::mesh(sh));
         }
+        // Seen from behind, the post-its are under the paper: only what sticks out shows.
         let on_page = |p: Pos2| map(p.x - spine, p.y);
         let shade = 1.0 - 0.28 * sin * 0.5 - 0.10 * sin;
-        painter.add(Shape::mesh(mesh));
         if !front {
-            // Seen from behind, the post-its still show what is written on them.
-            let look = NoteLook { map: &on_page, shade, alpha: fade, mirrored: true, no_text: false };
+            let look = NoteLook { map: &on_page, shade, alpha: fade, back: true, no_text: false };
             self.paint_notes(ui.ctx(), painter, rect, i, &look);
         }
+        painter.add(Shape::mesh(mesh));
 
         if front {
             // Text: tessellate the galleys, then squash/lift the vertices with the paper.
@@ -257,7 +271,7 @@ impl App {
                 painter.add(Shape::mesh(quad));
             }
 
-            let look = NoteLook { map: &on_page, shade, alpha: fade, mirrored: false, no_text: false };
+            let look = NoteLook { map: &on_page, shade, alpha: fade, back: false, no_text: false };
             self.paint_notes(ctx, painter, rect, i, &look);
         }
     }
