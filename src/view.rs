@@ -86,7 +86,7 @@ impl App {
         if self.fit {
             let centered = pos2(view.center().x - size.x * fit / 2.0, view.center().y - size.y * fit / 2.0);
             if self.fit_settling {
-                // Reaching "fit" by zooming glides the page back to the middle instead of jumping there.
+                // Asking for "fit" glides the page to the middle instead of jumping there.
                 let dt = ctx.input(|i| i.stable_dt).min(0.05);
                 let k = 1.0 - (-12.0 * dt).exp();
                 self.zoom += (fit - self.zoom) * k;
@@ -105,11 +105,17 @@ impl App {
         let z = pinch * keys;
         if (z - 1.0).abs() > 1e-4 {
             let anchor = hover.filter(|p| view.contains(*p)).unwrap_or(view.center());
-            let new = (self.zoom * z).clamp(MIN_ZOOM, MAX_ZOOM);
+            let mut new = (self.zoom * z).clamp(MIN_ZOOM, MAX_ZOOM);
+            if (new - fit).abs() < 0.02 {
+                new = fit; // stop at the fitting size on the way through
+            }
             self.origin = anchor + (self.origin - anchor) * (new / self.zoom);
             self.zoom = new;
-            self.fit = (new - fit).abs() < 0.02;
-            self.fit_settling = self.fit;
+            // Zooming never moves the page to the middle by itself: only a page that is already
+            // centred at the fitting size counts as fitted (and then follows the window size).
+            let centered = pos2(view.center().x - size.x * fit / 2.0, view.center().y - size.y * fit / 2.0);
+            self.fit = new == fit && (self.origin - centered).length() < 1.0;
+            self.fit_settling = false;
         }
         if !self.fit {
             self.origin += scroll;

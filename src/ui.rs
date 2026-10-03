@@ -461,6 +461,7 @@ impl App {
         let fit_tip = "Show the full page (Ctrl+0). Ctrl+drag moves the page.";
         if ui.put(fit_btn, egui::Button::new("Fit").selected(self.fit)).on_hover_text(fit_tip).clicked() {
             self.fit = true;
+            self.fit_settling = true;
         }
         ui.painter().text(
             pos2(fit_btn.left() - 8.0, cy),

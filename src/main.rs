@@ -530,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn zooming_back_to_fit_glides_to_the_centre_instead_of_jumping() {
+    fn zooming_back_to_the_fitting_size_leaves_the_page_where_it_is() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         let (fit_origin, fit_zoom) = (h.app.origin, h.app.zoom);
@@ -538,19 +538,20 @@ mod tests {
         h.frames(1, vec![egui::Event::Zoom(1.5)], Modifiers::NONE);
         h.app.origin += egui::vec2(-150.0, 60.0);
         h.frames(2, vec![], Modifiers::NONE);
-        let before = h.app.origin;
-        // ...then zoom back out to the fitting size.
+        // ...then zoom back out to the fitting size: the page stays off-centre.
         h.frames(1, vec![egui::Event::Zoom(1.0 / 1.5)], Modifiers::NONE);
-        assert!(h.app.fit);
-        let after_zoom = h.app.origin;
-        h.frames(1, vec![], Modifiers::NONE);
-        let step = (h.app.origin - after_zoom).length();
-        let rest = (fit_origin - after_zoom).length();
-        assert!(rest > 50.0, "the page is still off-centre: {before:?} {after_zoom:?}");
-        assert!(step < rest * 0.5, "one frame moves only part of the way ({step} of {rest})");
+        let there = h.app.origin;
         h.frames(60, vec![], Modifiers::NONE);
-        assert!((h.app.origin - fit_origin).length() < 0.01 && (h.app.zoom - fit_zoom).abs() < 1e-4);
-        assert!(!h.app.fit_settling);
+        assert_eq!(h.app.zoom, fit_zoom, "the zoom stops at the fitting size");
+        assert_eq!(h.app.origin, there, "nothing moves the page afterwards");
+        assert!((there - fit_origin).length() > 50.0 && !h.app.fit);
+
+        // Ctrl+0 (like the Fit button) centres it, gliding there rather than jumping.
+        h.frames(1, vec![egui::Event::Key { key: Key::Num0, physical_key: Some(Key::Num0), pressed: true, repeat: false, modifiers: Modifiers::COMMAND }], Modifiers::COMMAND);
+        let first = (h.app.origin - there).length();
+        assert!(first > 0.0 && first < (fit_origin - there).length() * 0.5, "one frame moves only part of the way ({first})");
+        h.frames(60, vec![], Modifiers::NONE);
+        assert!((h.app.origin - fit_origin).length() < 0.01 && h.app.fit && !h.app.fit_settling);
     }
 
     #[test]
