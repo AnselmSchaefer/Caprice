@@ -78,6 +78,8 @@ pub struct App {
     pub origin: Pos2,
     /// Follow the window size until the user zooms by hand.
     pub fit: bool,
+    /// Gliding into the fitted position (after zooming back to it), rather than already there.
+    pub fit_settling: bool,
     pub ctrl_down: bool,
     /// True while Ctrl is known from its own key events (then only its key release ends it).
     pub ctrl_via_key: bool,
@@ -133,6 +135,7 @@ impl App {
             zoom: 1.0,
             origin: Pos2::ZERO,
             fit: true,
+            fit_settling: false,
             ctrl_down: false,
             ctrl_via_key: false,
             toolbar_w: 0.0,
@@ -453,6 +456,30 @@ mod tests {
         h.type_text("!"); // typed right after the note's end: not part of it
         assert_eq!(h.app.doc.visible_text(), "first line\nsecond line!");
         assert_eq!((h.app.doc.notes[0].start, h.app.doc.notes[0].end), (11, 22));
+    }
+
+    #[test]
+    fn zooming_back_to_fit_glides_to_the_centre_instead_of_jumping() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let (fit_origin, fit_zoom) = (h.app.origin, h.app.zoom);
+        // Zoom in and move the page off-centre...
+        h.frames(1, vec![egui::Event::Zoom(1.5)], Modifiers::NONE);
+        h.app.origin += egui::vec2(-150.0, 60.0);
+        h.frames(2, vec![], Modifiers::NONE);
+        let before = h.app.origin;
+        // ...then zoom back out to the fitting size.
+        h.frames(1, vec![egui::Event::Zoom(1.0 / 1.5)], Modifiers::NONE);
+        assert!(h.app.fit);
+        let after_zoom = h.app.origin;
+        h.frames(1, vec![], Modifiers::NONE);
+        let step = (h.app.origin - after_zoom).length();
+        let rest = (fit_origin - after_zoom).length();
+        assert!(rest > 50.0, "the page is still off-centre: {before:?} {after_zoom:?}");
+        assert!(step < rest * 0.5, "one frame moves only part of the way ({step} of {rest})");
+        h.frames(60, vec![], Modifiers::NONE);
+        assert!((h.app.origin - fit_origin).length() < 0.01 && (h.app.zoom - fit_zoom).abs() < 1e-4);
+        assert!(!h.app.fit_settling);
     }
 
     // ----------------------------------------------------------- the editor

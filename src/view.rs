@@ -80,10 +80,26 @@ impl App {
         });
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Num0)) {
             self.fit = true;
+            self.fit_settling = true;
         }
         if self.fit {
-            self.zoom = fit;
-            self.origin = pos2(view.center().x - size.x * fit / 2.0, view.center().y - size.y * fit / 2.0);
+            let centered = pos2(view.center().x - size.x * fit / 2.0, view.center().y - size.y * fit / 2.0);
+            if self.fit_settling {
+                // Reaching "fit" by zooming glides the page back to the middle instead of jumping there.
+                let dt = ctx.input(|i| i.stable_dt).min(0.05);
+                let k = 1.0 - (-12.0 * dt).exp();
+                self.zoom += (fit - self.zoom) * k;
+                self.origin += (centered - self.origin) * k;
+                if (self.origin - centered).length() < 0.5 && (self.zoom - fit).abs() < 1e-3 {
+                    self.fit_settling = false;
+                }
+                ctx.request_repaint();
+            }
+            if !self.fit_settling {
+                // Settled: follow the window size exactly.
+                self.zoom = fit;
+                self.origin = centered;
+            }
         }
         let z = pinch * keys;
         if (z - 1.0).abs() > 1e-4 {
@@ -92,6 +108,7 @@ impl App {
             self.origin = anchor + (self.origin - anchor) * (new / self.zoom);
             self.zoom = new;
             self.fit = (new - fit).abs() < 0.02;
+            self.fit_settling = self.fit;
         }
         if !self.fit {
             self.origin += scroll;
