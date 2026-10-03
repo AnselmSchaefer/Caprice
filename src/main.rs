@@ -1,3 +1,4 @@
+mod claude;
 mod edit;
 mod editor;
 mod export;
@@ -112,6 +113,11 @@ pub struct App {
     pub resize: Option<images::ResizeDrag>,
     pub status_at: f64,
     pub title: String,
+    /// The pen is on: dragging on the page draws a loop around text to ask Claude about.
+    pub pen: bool,
+    pub lasso: Option<claude::Lasso>,
+    /// Claude's answer being shown, if any.
+    pub answer: Option<claude::Answer>,
 }
 
 impl App {
@@ -158,6 +164,9 @@ impl App {
             resize: None,
             status_at: f64::NEG_INFINITY,
             title: String::new(),
+            pen: false,
+            lasso: None,
+            answer: None,
         }
     }
 
@@ -266,8 +275,9 @@ impl App {
             }
             Self::paper(ui.painter(), page_rect);
             self.draw_footer(ui, page_rect, i);
-            self.editor_surface(ui, page_rect, i, true);
+            self.editor_surface(ui, page_rect, i, !self.pen);
             self.draw_notes(ui, page_rect, i);
+            self.pen_surface(ui, page_rect, i);
         } else {
             // Mid-flip: page `base` turns over, revealing `base + 1`.
             self.stack(ui.painter(), page_rect, base, n - 1 - base - 1);
@@ -283,6 +293,7 @@ impl App {
         self.page_bar(ui, area);
         self.search_bar(ui, area);
         self.picture_menu(&ctx);
+        self.answer_panel(&ctx);
     }
 }
 
@@ -618,6 +629,54 @@ mod tests {
             self.frames(1, vec![button(false)], Modifiers::NONE);
             self.frames(2, vec![], Modifiers::NONE);
         }
+    }
+
+    #[test]
+    fn a_loop_drawn_with_the_pen_selects_the_text_inside_it() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("first line\nsecond line\nthird line");
+        h.key(Key::P, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(h.app.pen);
+
+        // A loop around the second line (chars 11..22), drawn in screen points.
+        let ctx = h.ctx.clone();
+        let layout = h.app.page_layout(&ctx, 0, 1.0);
+        let (l, r) = (layout.caret_rect(11, true), layout.caret_rect(22, true));
+        let (x0, x1, y0, y1) = (l.left() - 4.0, r.right() + 4.0, l.top() + 1.0, l.bottom() - 1.0);
+        let rect = h.app.last_page_rect;
+        let sc = h.app.scale_of(rect);
+        let at = |x: f32, y: f32| rect.min + h.app.doc.setup.margin_origin() * sc + egui::vec2(x, y) * sc;
+        let corners = [at(x0, y0), at(x1, y0), at(x1, y1), at(x0, y1), at(x0, y0)];
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        h.frames(1, vec![egui::Event::PointerMoved(corners[0])], Modifiers::NONE);
+        h.frames(1, vec![button(corners[0], true)], Modifiers::NONE);
+        for w in corners.windows(2) {
+            for k in 1..=8 {
+                h.frames(1, vec![egui::Event::PointerMoved(w[0] + (w[1] - w[0]) * k as f32 / 8.0)], Modifiers::NONE);
+            }
+        }
+        h.frames(1, vec![button(corners[4], false)], Modifiers::NONE);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(h.app.selection(), (11, 22), "exactly 'second line'");
+        assert!(h.app.lasso.as_ref().is_some_and(|l| l.caught.is_some()), "the command menu is open");
+
+        // A corrected version replaces the passage in one undo step.
+        h.app.lasso = None;
+        h.app.fake_answer(11, 22, claude::Command::Grammar, "second line, fixed");
+        h.frames(2, vec![], Modifiers::NONE);
+        assert!(h.app.apply_answer(&ctx));
+        assert_eq!(h.app.doc.visible_text(), "first line\nsecond line, fixed\nthird line");
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert_eq!(h.app.doc.visible_text(), "first line\nsecond line\nthird line");
+
+        // Once the passage has been edited, the answer no longer replaces it.
+        h.app.fake_answer(11, 22, claude::Command::Grammar, "other");
+        h.frames(2, vec![], Modifiers::NONE);
+        h.app.toggle_pen();
+        h.click_in_page(egui::vec2(l.left() + 0.5, l.center().y));
+        h.type_text("my ");
+        assert!(!h.app.apply_answer(&ctx));
     }
 
     #[test]

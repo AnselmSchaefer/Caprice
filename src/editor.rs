@@ -407,6 +407,7 @@ impl App {
                 Key::Y => return self.step_history(ctx, true),
                 Key::Enter => return self.insert_page_break(ctx),
                 Key::N if m.alt => return self.add_note(ctx),
+                Key::P if shift => return self.toggle_pen(),
                 Key::L if shift => {
                     let on = self.doc.para_attrs_at(self.caret).list == ListKind::Bullet;
                     return self.set_para(ctx, |p| p.list = if on { ListKind::None } else { ListKind::Bullet });
@@ -427,6 +428,7 @@ impl App {
             }
         }
         match key {
+            Key::Escape if self.pen && self.lasso.is_none() => self.toggle_pen(),
             Key::PageDown | Key::PageUp => {
                 // Jump to the start of the next / previous page.
                 let page = self.doc.page_of(self.caret);

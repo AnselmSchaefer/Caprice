@@ -461,6 +461,24 @@ impl PageLayout {
         in_piece.last().map(|r| **r)
     }
 
+    /// The middle of every char on the page (a picture counts as one char), relative to the
+    /// writing area, with its page-local position.
+    pub fn char_centers(&self) -> Vec<(usize, egui::Pos2)> {
+        let mut out = Vec::new();
+        for r in self.rows() {
+            let p = &self.paras[r.para];
+            if let Some(img) = p.image {
+                out.push((p.start, img.rect.translate(vec2(0.0, p.y)).center()));
+                continue;
+            }
+            let x = |c: usize, next: bool| p.galley.pos_from_cursor(CCursor { index: (c - p.start).into(), prefer_next_row: next }).left();
+            for c in r.start..r.end {
+                out.push((c, pos2(p.x + (x(c, true) + x(c + 1, false)) / 2.0, r.top + r.height / 2.0)));
+            }
+        }
+        out
+    }
+
     /// Rectangles (relative to the writing area) covering page-local `a..b`, one per row piece.
     pub fn selection_rects(&self, a: usize, b: usize) -> Vec<Rect> {
         let mut out = Vec::new();
