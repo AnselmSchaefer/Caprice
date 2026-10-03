@@ -261,10 +261,16 @@ impl App {
             self.draw_footer(ui, page_rect, i);
             self.editor_surface(ui, page_rect, i, true);
             self.draw_notes(ui, page_rect, i);
+            if i > 0 {
+                self.paint_turned_notes(&ctx, ui.painter(), page_rect, i - 1);
+            }
         } else {
             // Mid-flip: page `base` turns over, revealing `base + 1`.
             self.stack(ui.painter(), page_rect, base, n - 1 - base - 1);
             self.static_page(ui, page_rect, base + 1);
+            if base > 0 {
+                self.paint_turned_notes(&ctx, ui.painter(), page_rect, base - 1);
+            }
             let eased = t * t * (3.0 - 2.0 * t);
             let fade = 1.0 - ((t - 0.78) / 0.22).clamp(0.0, 1.0);
             self.flipping_page(ui, page_rect, base, eased * std::f32::consts::PI, fade);

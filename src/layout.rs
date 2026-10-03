@@ -151,7 +151,10 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
     let indent = if spec.attrs.list == ListKind::None { 0.0 } else { LIST_INDENT * spec.scale };
     let wrap = (spec.content_width - indent).max(10.0);
     let job = paragraph_job(ctx, spec.text, spec.styles, spec.term, spec.attrs, spec.scale, wrap, spec.marks);
-    let galley = ctx.fonts_mut(|f| f.layout_job(job));
+    let mut galley = ctx.fonts_mut(|f| f.layout_job(job));
+    if !spec.marks.is_empty() {
+        galley = tight_highlights(galley, ctx.pixels_per_point());
+    }
     if let Some((id, size, rotation)) = spec.image {
         let size = size * spec.scale;
         let x = match spec.attrs.align {
@@ -202,6 +205,29 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
         starts_paragraph: false,
         image: None,
     }
+}
+
+/// egui paints a highlight over the whole line height, so with line spacing above 1 it reaches far
+/// below the letters. Cut each highlight down to the height of the font it lies behind.
+fn tight_highlights(mut galley: Arc<egui::Galley>, ppp: f32) -> Arc<egui::Galley> {
+    // How far egui grows a highlight past the letters (`TextFormat::expand_bg`, left at its default).
+    const EXPAND: f32 = 1.0;
+    let g = Arc::make_mut(&mut galley);
+    for placed in &mut g.rows {
+        let row = Arc::make_mut(&mut placed.row);
+        let bg = row.visuals.glyph_vertex_range.start;
+        for quad in row.visuals.mesh.vertices[..bg].as_chunks_mut::<4>().0 {
+            let top = quad.iter().map(|v| v.pos.y).fold(f32::INFINITY, f32::min);
+            let x = quad.iter().map(|v| v.pos.x).sum::<f32>() / 4.0;
+            let Some(glyph) = row.glyphs.iter().find(|g| g.max_x() > x).or(row.glyphs.last()) else { continue };
+            let bottom = ((top + glyph.font_height + 2.0 * EXPAND) * ppp).round() / ppp;
+            for v in quad.iter_mut().filter(|v| v.pos.y > top) {
+                v.pos.y = bottom;
+            }
+        }
+        row.visuals.mesh_bounds = row.visuals.mesh.calc_bounds();
+    }
+    galley
 }
 
 /// egui rounds every line's height to whole pixels, so zoomed text comes out a little shorter or

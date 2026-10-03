@@ -92,6 +92,11 @@ pub fn note_rect(page: Rect, sc: f32, y: f32) -> Rect {
     Rect::from_min_size(pos2(page.right() - (NOTE_SIZE - NOTE_OUT) * sc, page.top() + y * sc), vec2(NOTE_SIZE, NOTE_SIZE) * sc)
 }
 
+/// A post-it at `r` on a page at `page`, moved to stick out of the page's left edge instead.
+pub fn mirror_note(page: Rect, r: Rect) -> Rect {
+    r.translate(vec2(page.left() + page.right() - r.left() - r.right(), 0.0))
+}
+
 /// The text area of a post-it at `r`, and its footer line below it.
 fn note_areas(r: Rect, sc: f32) -> (Rect, Rect) {
     let inner = r.shrink(NOTE_PAD * sc);
@@ -138,14 +143,15 @@ pub struct NoteLook<'a> {
     pub map: &'a dyn Fn(Pos2) -> Pos2,
     pub shade: f32,
     pub alpha: f32,
-    /// Seen from behind (on the back of a turning page): blank, and darker.
-    pub back: bool,
+    /// Seen from behind (on the back of a turning page, where `map` mirrors): the post-it is
+    /// turned back round about its own middle, so its writing still reads.
+    pub mirrored: bool,
     /// Leave the top sheet's text out (a text field draws it instead).
     pub no_text: bool,
 }
 
 impl NoteLook<'_> {
-    pub const FLAT: NoteLook<'static> = NoteLook { map: &|p| p, shade: 1.0, alpha: 1.0, back: false, no_text: false };
+    pub const FLAT: NoteLook<'static> = NoteLook { map: &|p| p, shade: 1.0, alpha: 1.0, mirrored: false, no_text: false };
 }
 
 impl App {
@@ -223,7 +229,7 @@ impl App {
         by_page
     }
 
-    fn pad(&self, id: u64) -> Pad {
+    pub fn pad(&self, id: u64) -> Pad {
         self.pads.get(&id).copied().unwrap_or_default()
     }
 
@@ -247,11 +253,9 @@ impl App {
     /// The shapes of one note's post-it at `r`, with its pad showing sheet position `pos`
     /// (2.4: sheet 2 is lifting away, 40% of the way, uncovering sheet 3).
     pub fn note_shapes(&self, ctx: &egui::Context, note: &Note, r: Rect, sc: f32, pos: f32, look: &NoteLook) -> Vec<Shape> {
-        let map = look.map;
+        let unmirror = |p: Pos2| (look.map)(pos2(r.left() + r.right() - p.x, p.y));
+        let map: &dyn Fn(Pos2) -> Pos2 = if look.mirrored { &unmirror } else { look.map };
         let color = note_color(note.color);
-        if look.back {
-            return vec![Shape::mesh(quad_mesh(r, shaded(color, look.shade * 0.8, look.alpha), map))];
-        }
         let s = sheets(ctx, &note.text, sc);
         let n = s.count();
         let pos = pos.clamp(0.0, (n - 1) as f32);
@@ -335,6 +339,8 @@ impl App {
                 .id(Id::new(("note_text", id)))
                 .frame(egui::Frame::NONE)
                 .margin(egui::Margin::ZERO)
+                // The caret is at least a row of this font tall, so it must be the post-it's own.
+                .font(FontId::proportional(NOTE_FONT * sc))
                 .desired_width(area.width())
                 .min_size(field_rect.size())
                 .text_color(INK)
