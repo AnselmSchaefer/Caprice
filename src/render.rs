@@ -140,6 +140,7 @@ impl App {
 
     pub fn static_page(&self, ui: &egui::Ui, rect: Rect, i: usize) {
         Self::paper(ui.painter(), rect);
+        ui.painter().extend(self.backdrop_shapes(ui.ctx(), rect, &|p| p, 1.0, 1.0));
         let sc = self.scale_of(rect);
         let layout = self.page_layout(ui.ctx(), i, sc);
         self.paint_layout(ui.painter(), &layout, rect.min + self.doc.setup.margin_origin() * sc);
@@ -213,6 +214,7 @@ impl App {
         painter.add(Shape::mesh(mesh));
 
         if front {
+            painter.extend(self.backdrop_shapes(ui.ctx(), rect, &on_page, shade, fade));
             // Text: tessellate the galleys, then squash/lift the vertices with the paper.
             let ctx = ui.ctx();
             let page = self.page_layout(ctx, i, sc);

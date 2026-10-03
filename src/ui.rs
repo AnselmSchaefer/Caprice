@@ -336,6 +336,8 @@ impl App {
         let find = ui.button("Find").on_hover_text("Search (Ctrl+F)").clicked();
         let pen_tip = "Draw a loop around text to ask Claude about it (Ctrl+Shift+P, Esc to stop)";
         let pen = ui.add(egui::Button::new("Claude").selected(self.pen)).on_hover_text(pen_tip).clicked();
+        let scenes_tip = "Scenes: Claude sketches what your last sentences describe, faintly behind the page";
+        let scenes = ui.add(egui::Button::new("Scenes").selected(self.backdrop.on)).on_hover_text(scenes_tip).clicked();
 
         if let Some(f) = font_pick {
             self.fonts.ensure(&ctx, &f, false);
@@ -372,6 +374,9 @@ impl App {
         }
         if pen {
             self.toggle_pen();
+        }
+        if scenes {
+            self.toggle_backdrop();
         }
         match image_action {
             Some(ImageAction::Insert) => {

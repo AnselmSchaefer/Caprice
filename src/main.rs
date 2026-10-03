@@ -1,3 +1,4 @@
+mod backdrop;
 mod claude;
 mod edit;
 mod editor;
@@ -118,6 +119,8 @@ pub struct App {
     pub lasso: Option<claude::Lasso>,
     /// Claude's answer being shown, if any.
     pub answer: Option<claude::Answer>,
+    /// Scenes Claude sketches behind the page from the last sentences written.
+    pub backdrop: backdrop::Backdrop,
 }
 
 impl App {
@@ -167,6 +170,7 @@ impl App {
             pen: false,
             lasso: None,
             answer: None,
+            backdrop: backdrop::Backdrop::default(),
         }
     }
 
@@ -254,6 +258,7 @@ impl App {
         self.target = self.target.min(self.last());
         self.animate(ui);
         self.animate_pads(ui);
+        self.update_backdrop(&ctx);
         self.pos = self.pos.clamp(0.0, self.last() as f32);
 
         let page_rect = self.page_rect(&ctx, area);
@@ -274,6 +279,7 @@ impl App {
                 }
             }
             Self::paper(ui.painter(), page_rect);
+            ui.painter().extend(self.backdrop_shapes(&ctx, page_rect, &|p| p, 1.0, 1.0));
             self.draw_footer(ui, page_rect, i);
             self.editor_surface(ui, page_rect, i, !self.pen);
             self.draw_notes(ui, page_rect, i);
@@ -677,6 +683,21 @@ mod tests {
         h.click_in_page(egui::vec2(l.left() + 0.5, l.center().y));
         h.type_text("my ");
         assert!(!h.app.apply_answer(&ctx));
+    }
+
+    #[test]
+    fn a_finished_sentence_queues_a_scene_but_moving_the_caret_does_not() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.app.toggle_backdrop();
+        h.type_text("The valley lies between the mountains and the sea");
+        assert_eq!(h.app.backdrop.pending(), None, "a sentence still being written is not drawn");
+        h.type_text(". Above it");
+        assert_eq!(h.app.backdrop.pending(), Some("The valley lies between the mountains and the sea."));
+        // Moving the caret to the start is no edit, so the queued scene stays as it was.
+        h.key(Key::Home, Modifiers::COMMAND);
+        assert_eq!(h.app.backdrop.pending(), Some("The valley lies between the mountains and the sea."));
+        h.app.toggle_backdrop();
     }
 
     #[test]

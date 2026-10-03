@@ -124,37 +124,28 @@ fn inside(poly: &[Pos2], p: Pos2) -> bool {
     odd
 }
 
-/// What the stream says after one of its events.
-enum Flow {
-    Go,
-    Stop,
-}
-
-/// Pass on one event of the answer's stream.
-fn on_event(event: &Value, tx: &Sender<Msg>, ctx: &egui::Context) -> Result<Flow, String> {
-    match event["type"].as_str() {
-        Some("content_block_delta") if event["delta"]["type"] == "text_delta" => {
-            let _ = tx.send(Msg::Text(event["delta"]["text"].as_str().unwrap_or_default().to_owned()));
-            ctx.request_repaint();
-        }
-        Some("message_delta") if event["delta"]["stop_reason"] == "refusal" => {
-            let _ = tx.send(Msg::Refused);
-            return Ok(Flow::Stop);
-        }
-        Some("error") => return Err(event["error"]["message"].as_str().unwrap_or("Unknown error").to_owned()),
-        Some("message_stop") => return Ok(Flow::Stop),
-        _ => {}
-    }
-    Ok(Flow::Go)
+/// How a run of `claude -p` ended.
+pub enum Outcome {
+    Finished,
+    Refused,
+    Cancelled,
 }
 
 /// Stream Claude's answer to `passage` and `command` into `tx`, until done or `cancel` is set.
 fn ask(passage: &str, command: &Command, tx: &Sender<Msg>, ctx: &egui::Context, cancel: &AtomicBool) -> Result<(), String> {
     let prompt = format!("<passage>\n{passage}\n</passage>\n\n{}", command.instruction());
-    let cli = find_cli().ok_or(NO_CLI)?;
-    ask_cli(&cli, &prompt, tx, ctx, cancel)?;
-    if !cancel.load(Ordering::Relaxed) {
-        let _ = tx.send(Msg::Done);
+    let mut on_text = |t: &str| {
+        let _ = tx.send(Msg::Text(t.to_owned()));
+        ctx.request_repaint();
+    };
+    match run_claude(SYSTEM, &prompt, "medium", cancel, &mut on_text)? {
+        Outcome::Finished => {
+            let _ = tx.send(Msg::Done);
+        }
+        Outcome::Refused => {
+            let _ = tx.send(Msg::Refused);
+        }
+        Outcome::Cancelled => {}
     }
     Ok(())
 }
@@ -168,14 +159,16 @@ fn find_cli() -> Option<std::path::PathBuf> {
     on_path.chain(usual).find(|p| p.is_file())
 }
 
-/// Ask through `claude -p`: no tools, no settings or project files, nothing saved, answer streamed.
-fn ask_cli(cli: &std::path::Path, prompt: &str, tx: &Sender<Msg>, ctx: &egui::Context, cancel: &AtomicBool) -> Result<(), String> {
+/// Ask Claude through `claude -p` (no tools, no settings or project files, nothing saved) and pass
+/// the answer to `on_text` as it is written, until it ends or `cancel` is set.
+pub fn run_claude(system: &str, prompt: &str, effort: &str, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Outcome, String> {
     use std::io::Write;
     use std::process::{Command as Process, Stdio};
-    let mut child = Process::new(cli)
+    let cli = find_cli().ok_or(NO_CLI)?;
+    let mut child = Process::new(&cli)
         .args(["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
         .args(["--tools", "", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"])
-        .args(["--model", MODEL, "--effort", "medium", "--system-prompt", SYSTEM])
+        .args(["--model", MODEL, "--effort", effort, "--system-prompt", system])
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -186,18 +179,26 @@ fn ask_cli(cli: &std::path::Path, prompt: &str, tx: &Sender<Msg>, ctx: &egui::Co
         stdin.write_all(prompt.as_bytes()).map_err(|e| format!("Could not talk to Claude Code: {e}"))?;
     }
     let stdout = child.stdout.take().ok_or("Claude Code gave no output")?;
-    let mut failure = None;
+    let (mut failure, mut refused) = (None, false);
     for line in BufReader::new(stdout).lines() {
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
-            return Ok(());
+            let _ = child.wait();
+            return Ok(Outcome::Cancelled);
         }
         let Ok(line) = line else { break };
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
         match msg["type"].as_str() {
-            // After the message ends the CLI still sends its closing summary, so keep reading.
+            // Events of the Messages API stream. After the message ends the CLI still sends its
+            // closing summary, so keep reading.
             Some("stream_event") => {
-                on_event(&msg["event"], tx, ctx)?;
+                let event = &msg["event"];
+                match event["type"].as_str() {
+                    Some("content_block_delta") if event["delta"]["type"] == "text_delta" => on_text(event["delta"]["text"].as_str().unwrap_or_default()),
+                    Some("message_delta") if event["delta"]["stop_reason"] == "refusal" => refused = true,
+                    Some("error") => failure = Some(event["error"]["message"].as_str().unwrap_or("Unknown error").to_owned()),
+                    _ => {}
+                }
             }
             Some("result") if msg["is_error"] == true => {
                 failure = Some(msg["result"].as_str().unwrap_or("Claude Code reported an error").to_owned());
@@ -206,6 +207,9 @@ fn ask_cli(cli: &std::path::Path, prompt: &str, tx: &Sender<Msg>, ctx: &egui::Co
         }
     }
     let status = child.wait().map_err(|e| e.to_string())?;
+    if refused {
+        return Ok(Outcome::Refused);
+    }
     if let Some(f) = failure {
         return Err(format!("Claude Code: {f}"));
     }
@@ -217,7 +221,7 @@ fn ask_cli(cli: &std::path::Path, prompt: &str, tx: &Sender<Msg>, ctx: &egui::Co
         let err = err.trim();
         return Err(if err.is_empty() { format!("Claude Code stopped ({status})") } else { format!("Claude Code: {err}") });
     }
-    Ok(())
+    Ok(Outcome::Finished)
 }
 
 /// Splits text into runs of word characters and runs of everything else, for comparing.
