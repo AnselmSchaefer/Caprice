@@ -4,7 +4,7 @@
 
 Caprice is a word processor for writing stories, not reports. It gives you real pages that flip like a book, post-it notes for your ideas, and Claude as a helper: it can paint the scene you are writing behind the page, or read along when you circle a passage.
 
-![Caprice icon](assets/icon-256.png)
+![Caprice: a story page with a lake at dusk painted behind the text, children walking towards a little house, and post-it notes at the edge](assets/Example.png)
 
 ## Why Caprice
 
