@@ -33,8 +33,6 @@ cargo run --release -- story.caprice   # open a story directly
 ./install.sh                     # install it with an icon and a launcher entry
 ```
 
-`install.sh` uses `rsvg-convert` (from librsvg) to make the icons.
-
 ### Claude features
 
 The scene painting and the pen use [Claude Code](https://claude.com/claude-code) on your machine. Install it and sign in by running `claude` once in a terminal. Caprice stores no keys of its own; it runs your local `claude` command with tools, project settings and session history turned off. Everything else in Caprice works without Claude.

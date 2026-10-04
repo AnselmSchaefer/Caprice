@@ -13,10 +13,15 @@ mkdir -p "$bin" "$apps" "$icons/scalable/apps"
 install -m755 target/release/caprice "$bin/caprice"
 
 install -m644 assets/icon.svg "$icons/scalable/apps/caprice.svg"
-for size in 16 24 32 48 64 128 256 512; do
-  mkdir -p "$icons/${size}x${size}/apps"
-  rsvg-convert -w "$size" -h "$size" assets/icon.svg -o "$icons/${size}x${size}/apps/caprice.png"
-done
+# Fixed-size PNGs, for the few panels that cannot show the SVG; skipped without librsvg.
+if command -v rsvg-convert >/dev/null; then
+  for size in 16 24 32 48 64 128 256 512; do
+    mkdir -p "$icons/${size}x${size}/apps"
+    rsvg-convert -w "$size" -h "$size" assets/icon.svg -o "$icons/${size}x${size}/apps/caprice.png"
+  done
+else
+  echo "rsvg-convert not found: installing the SVG icon only"
+fi
 
 cat > "$apps/caprice.desktop" <<DESKTOP
 [Desktop Entry]
