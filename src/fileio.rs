@@ -4,6 +4,8 @@
 //! inside it. Version 1 files stored a list of pages, which are loaded as hard-separated pages.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -75,6 +77,9 @@ pub struct DocFile {
     /// Version 1 only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pages: Vec<Vec<Run>>,
+    /// The picture behind the pages and its description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<crate::backdrop::SceneFile>,
 }
 
 fn to_runs(text: &str, styles: &[Style]) -> Vec<Run> {
@@ -120,6 +125,7 @@ impl DocFile {
             notes,
             images,
             pages: Vec::new(),
+            scene: None,
         }
     }
 
@@ -156,23 +162,68 @@ impl DocFile {
     }
 }
 
+/// What an open file dialog is choosing a path for.
+pub enum DialogFor {
+    Open,
+    Save,
+    ExportDocx,
+    Picture,
+    ScenePicture,
+}
+
+/// Something that would throw away unsaved changes, waiting for the user to say what to do.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Leaving {
+    /// Opening another document.
+    Open,
+    /// Closing the window.
+    Close,
+}
+
+/// A file dialog showing on its own thread.
+pub struct PendingDialog {
+    purpose: DialogFor,
+    rx: Receiver<Option<PathBuf>>,
+}
+
 impl App {
-    pub fn save(&mut self, save_as: bool) {
-        let path = match (&self.path, save_as) {
-            (Some(p), false) => p.clone(),
-            _ => {
-                let dialog = rfd::FileDialog::new()
+    /// The document as saved, with the scene behind its pages.
+    pub fn doc_file(&self) -> DocFile {
+        DocFile { scene: self.backdrop.to_file(), ..DocFile::from_doc(&self.doc) }
+    }
+
+    /// A fingerprint of what saving would write, to tell whether anything changed since.
+    pub fn content_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        serde_json::to_string(&self.doc_file()).unwrap_or_default().hash(&mut h);
+        h.finish()
+    }
+
+    /// Does the document hold anything not yet saved?
+    pub fn unsaved(&self) -> bool {
+        self.content_hash() != self.saved_hash
+    }
+
+    pub fn save(&mut self, ctx: &egui::Context, save_as: bool) {
+        match (&self.path, save_as) {
+            (Some(p), false) => self.save_to(p.clone()),
+            _ => self.ask_path(ctx, DialogFor::Save, || {
+                rfd::FileDialog::new()
                     .add_filter("Caprice document", &["caprice"])
-                    .set_file_name("Untitled.caprice");
-                let Some(p) = dialog.save_file() else { return };
-                p
-            }
-        };
-        let json = serde_json::to_string_pretty(&DocFile::from_doc(&self.doc));
+                    .set_file_name("Untitled.caprice")
+                    .save_file()
+            }),
+        }
+    }
+
+    pub fn save_to(&mut self, path: PathBuf) {
+        let json = serde_json::to_string_pretty(&self.doc_file());
         let written = json.map_err(|e| e.to_string()).and_then(|j| std::fs::write(&path, j).map_err(|e| e.to_string()));
         self.status = match written {
             Ok(()) => {
                 self.path = Some(path);
+                self.saved_hash = self.content_hash();
                 "- saved".into()
             }
             Err(e) => format!("- save failed: {e}"),
@@ -180,16 +231,21 @@ impl App {
     }
 
     /// Write the document as a Word file (`.docx`) next to wherever the user chooses.
-    pub fn export_docx(&mut self) {
+    pub fn export_docx(&mut self, ctx: &egui::Context) {
         let stem = self
             .path
             .as_ref()
             .and_then(|p| p.file_stem())
             .map_or("Untitled".to_owned(), |s| s.to_string_lossy().into_owned());
-        let dialog = rfd::FileDialog::new()
-            .add_filter("Word document", &["docx"])
-            .set_file_name(format!("{stem}.docx"));
-        let Some(path) = dialog.save_file() else { return };
+        self.ask_path(ctx, DialogFor::ExportDocx, move || {
+            rfd::FileDialog::new()
+                .add_filter("Word document", &["docx"])
+                .set_file_name(format!("{stem}.docx"))
+                .save_file()
+        });
+    }
+
+    fn export_docx_to(&mut self, path: PathBuf) {
         let written = crate::export::to_docx(&self.doc).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string()));
         self.status = match written {
             Ok(()) => format!("- exported {}", path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned())),
@@ -197,11 +253,131 @@ impl App {
         };
     }
 
+    /// Choose another document to open, first asking about unsaved changes.
     pub fn open(&mut self, ctx: &egui::Context) {
-        let Some(path) = rfd::FileDialog::new().add_filter("Caprice document", &["caprice"]).pick_file() else {
+        if self.unsaved() {
+            self.leaving = Some(Leaving::Open);
+        } else {
+            self.choose_file_to_open(ctx);
+        }
+    }
+
+    fn choose_file_to_open(&mut self, ctx: &egui::Context) {
+        self.ask_path(ctx, DialogFor::Open, || {
+            rfd::FileDialog::new().add_filter("Caprice document", &["caprice"]).pick_file()
+        });
+    }
+
+    /// Show a file dialog without holding up the frames: the window keeps drawing (and answering
+    /// the compositor) while it is open, and the chosen path is acted on in `poll_dialog`.
+    pub fn ask_path(&mut self, ctx: &egui::Context, purpose: DialogFor, show: impl FnOnce() -> Option<PathBuf> + Send + 'static) {
+        if self.dialog.is_some() {
+            return;
+        }
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(show());
+            ctx.request_repaint();
+        });
+        self.dialog = Some(PendingDialog { purpose, rx });
+    }
+
+    /// Act on the path from a file dialog once the user has chosen it.
+    pub fn poll_dialog(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &self.dialog else { return };
+        let path = match pending.rx.try_recv() {
+            Ok(path) => path,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => None,
+        };
+        let Some(PendingDialog { purpose, .. }) = self.dialog.take() else { return };
+        let Some(path) = path else {
+            self.after_save = None;
             return;
         };
-        self.open_path(ctx, path);
+        match purpose {
+            DialogFor::Open => self.open_path(ctx, path),
+            DialogFor::Save => {
+                self.save_to(path);
+                if let Some(next) = self.after_save.take()
+                    && !self.unsaved()
+                {
+                    self.leave(ctx, next);
+                }
+            }
+            DialogFor::ExportDocx => self.export_docx_to(path),
+            DialogFor::Picture => {
+                self.status = match self.insert_image(ctx, &path) {
+                    Ok(()) => "- picture added".into(),
+                    Err(e) => format!("- picture failed: {e}"),
+                };
+            }
+            DialogFor::ScenePicture => self.save_scene_picture_to(path),
+        }
+    }
+
+    /// Go on with what was waiting on the unsaved-changes question.
+    fn leave(&mut self, ctx: &egui::Context, leaving: Leaving) {
+        match leaving {
+            Leaving::Open => self.choose_file_to_open(ctx),
+            Leaving::Close => {
+                self.may_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
+    /// Hold the window open while it has unsaved changes, and ask instead.
+    pub fn guard_close(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.may_close && self.unsaved() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.leaving = Some(Leaving::Close);
+        }
+    }
+
+    /// The "Save changes?" question, while something waits on it.
+    pub fn unsaved_prompt(&mut self, ctx: &egui::Context) {
+        let Some(leaving) = self.leaving else { return };
+        let name = self.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned());
+        let (mut save, mut discard, mut cancel) = (false, false, false);
+        let modal = egui::Modal::new(egui::Id::new("unsaved_prompt")).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.heading(format!("Save changes to \u{201c}{name}\u{201d}?"));
+            ui.add_space(4.0);
+            let then = match leaving {
+                Leaving::Open => "before opening another document",
+                Leaving::Close => "before closing",
+            };
+            ui.label(egui::RichText::new(format!("Your changes will be lost if you don\u{2019}t save them {then}.")).color(crate::theme::TEXT_DIM));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                save = ui.button("Save").clicked() || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                discard = ui.button("Don\u{2019}t save").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        cancel |= modal.should_close();
+        if save {
+            self.leaving = None;
+            match self.path.clone() {
+                Some(path) => {
+                    self.save_to(path);
+                    if !self.unsaved() {
+                        self.leave(ctx, leaving);
+                    }
+                }
+                None => {
+                    self.after_save = Some(leaving);
+                    self.save(ctx, true);
+                }
+            }
+        } else if discard {
+            self.leaving = None;
+            self.leave(ctx, leaving);
+        } else if cancel {
+            self.leaving = None;
+        }
     }
 
     pub fn open_path(&mut self, ctx: &egui::Context, path: std::path::PathBuf) {
@@ -209,7 +385,8 @@ impl App {
             .map_err(|e| e.to_string())
             .and_then(|s| serde_json::from_str::<DocFile>(&s).map_err(|e| e.to_string()));
         match loaded {
-            Ok(file) => {
+            Ok(mut file) => {
+                let scene = file.scene.take();
                 let mut doc = file.into_doc();
                 doc.version = self.doc.version + 1;
                 self.pads.clear();
@@ -230,7 +407,11 @@ impl App {
                 self.set_caret(ctx, 0, false);
                 self.fit = true;
                 self.path = Some(path);
-                self.status = "- opened".into();
+                self.status = match self.open_scene(ctx, scene) {
+                    Ok(()) => "- opened".into(),
+                    Err(e) => format!("- opened, but its scene could not be shown: {e}"),
+                };
+                self.saved_hash = self.content_hash();
             }
             Err(e) => self.status = format!("- open failed: {e}"),
         }

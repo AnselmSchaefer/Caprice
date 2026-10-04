@@ -336,8 +336,7 @@ impl App {
         let find = ui.button("Find").on_hover_text("Search (Ctrl+F)").clicked();
         let pen_tip = "Draw a loop around text to ask Claude about it (Ctrl+Shift+P, Esc to stop)";
         let pen = ui.add(egui::Button::new("Claude").selected(self.pen)).on_hover_text(pen_tip).clicked();
-        let scenes_tip = "Scenes: Claude sketches what your last sentences describe, faintly behind the page";
-        let scenes = ui.add(egui::Button::new("Scenes").selected(self.backdrop.on)).on_hover_text(scenes_tip).clicked();
+        self.scene_menu(ui);
 
         if let Some(f) = font_pick {
             self.fonts.ensure(&ctx, &f, false);
@@ -375,27 +374,20 @@ impl App {
         if pen {
             self.toggle_pen();
         }
-        if scenes {
-            self.toggle_backdrop();
-        }
         match image_action {
             Some(ImageAction::Insert) => {
-                let dialog = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg"]);
-                if let Some(path) = dialog.pick_file() {
-                    self.status = match self.insert_image(&ctx, &path) {
-                        Ok(()) => "- picture added".into(),
-                        Err(e) => format!("- picture failed: {e}"),
-                    };
-                }
+                self.ask_path(&ctx, crate::fileio::DialogFor::Picture, || {
+                    rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg"]).pick_file()
+                });
             }
             Some(ImageAction::Width(f)) => self.set_image_width_fraction(&ctx, f),
             None => {}
         }
         match file_action {
             Some(FileAction::Open) => self.open(&ctx),
-            Some(FileAction::Save) => self.save(false),
-            Some(FileAction::SaveAs) => self.save(true),
-            Some(FileAction::ExportDocx) => self.export_docx(),
+            Some(FileAction::Save) => self.save(&ctx, false),
+            Some(FileAction::SaveAs) => self.save(&ctx, true),
+            Some(FileAction::ExportDocx) => self.export_docx(&ctx),
             None => {}
         }
     }

@@ -17,6 +17,7 @@ use crate::App;
 use crate::model::{IMAGE_CHAR, PAGE_BREAK};
 use crate::theme::{ACCENT, TEXT_DIM};
 
+/// The model that answers about a passage.
 const MODEL: &str = "claude-opus-5-5";
 const NO_CLI: &str = "Caprice could not find Claude Code. Install it and sign in by running `claude` once \
     in a terminal, then try again.";
@@ -138,7 +139,7 @@ fn ask(passage: &str, command: &Command, tx: &Sender<Msg>, ctx: &egui::Context, 
         let _ = tx.send(Msg::Text(t.to_owned()));
         ctx.request_repaint();
     };
-    match run_claude(SYSTEM, &prompt, "medium", cancel, &mut on_text)? {
+    match run_claude(MODEL, SYSTEM, &prompt, "medium", cancel, &mut on_text)? {
         Outcome::Finished => {
             let _ = tx.send(Msg::Done);
         }
@@ -159,16 +160,16 @@ fn find_cli() -> Option<std::path::PathBuf> {
     on_path.chain(usual).find(|p| p.is_file())
 }
 
-/// Ask Claude through `claude -p` (no tools, no settings or project files, nothing saved) and pass
+/// Ask Claude (`model`) through `claude -p` (no tools, no settings or project files, nothing saved) and pass
 /// the answer to `on_text` as it is written, until it ends or `cancel` is set.
-pub fn run_claude(system: &str, prompt: &str, effort: &str, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Outcome, String> {
+pub fn run_claude(model: &str, system: &str, prompt: &str, effort: &str, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Outcome, String> {
     use std::io::Write;
     use std::process::{Command as Process, Stdio};
     let cli = find_cli().ok_or(NO_CLI)?;
     let mut child = Process::new(&cli)
         .args(["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
         .args(["--tools", "", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"])
-        .args(["--model", MODEL, "--effort", effort, "--system-prompt", system])
+        .args(["--model", model, "--effort", effort, "--system-prompt", system])
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

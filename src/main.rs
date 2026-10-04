@@ -119,8 +119,17 @@ pub struct App {
     pub lasso: Option<claude::Lasso>,
     /// Claude's answer being shown, if any.
     pub answer: Option<claude::Answer>,
-    /// Scenes Claude sketches behind the page from the last sentences written.
+    /// The scene Claude paints behind the pages, and the panel to describe it.
     pub backdrop: backdrop::Backdrop,
+    /// A file dialog waiting for the user to choose.
+    pub dialog: Option<fileio::PendingDialog>,
+    /// What saving last wrote (or opening read), to notice unsaved changes.
+    pub saved_hash: u64,
+    /// Opening or closing that waits on the "Save changes?" question, and what to do once saved.
+    pub leaving: Option<fileio::Leaving>,
+    pub after_save: Option<fileio::Leaving>,
+    /// The user has said the window may close (changes saved or given up).
+    pub may_close: bool,
 }
 
 impl App {
@@ -131,7 +140,7 @@ impl App {
         let typing = Style::new(&default);
         let mut doc = Doc::new();
         doc.flow.styles = vec![typing.clone()];
-        Self {
+        let mut app = Self {
             doc,
             caret: 0,
             anchor: 0,
@@ -171,7 +180,14 @@ impl App {
             lasso: None,
             answer: None,
             backdrop: backdrop::Backdrop::default(),
-        }
+            dialog: None,
+            saved_hash: 0,
+            leaving: None,
+            after_save: None,
+            may_close: false,
+        };
+        app.saved_hash = app.content_hash();
+        app
     }
 
     /// The document name goes in the window title; messages ("saved", errors) show briefly above the page bar.
@@ -240,19 +256,25 @@ impl App {
         if let Some(path) = self.startup_file.take() {
             self.open_path(&ctx, path);
         }
+        self.poll_dialog(&ctx);
+        self.guard_close(&ctx);
         self.ensure_textures(&ctx);
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
-            self.save(false);
-        }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)) {
-            self.open(&ctx);
+        if self.leaving.is_none() {
+            if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
+                self.save(&ctx, false);
+            }
+            if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)) {
+                self.open(&ctx);
+            }
         }
 
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
             self.open_search();
         }
 
-        self.process_input(&ctx);
+        if self.leaving.is_none() {
+            self.process_input(&ctx);
+        }
 
         // Pages can disappear (backspacing away a break), so keep the position valid.
         self.target = self.target.min(self.last());
@@ -300,6 +322,8 @@ impl App {
         self.search_bar(ui, area);
         self.picture_menu(&ctx);
         self.answer_panel(&ctx);
+        self.scene_panel(&ctx);
+        self.unsaved_prompt(&ctx);
     }
 }
 
@@ -686,18 +710,90 @@ mod tests {
     }
 
     #[test]
-    fn a_finished_sentence_queues_a_scene_but_moving_the_caret_does_not() {
+    fn writing_never_starts_a_scene_by_itself() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
-        h.app.toggle_backdrop();
+        h.app.backdrop.panel = true;
+        h.app.backdrop.description = "A storm at sea".into();
+        h.type_text("The ship sailed on. The storm grew. ");
+        h.frames(120, vec![], Modifiers::NONE);
+        assert!(!h.app.backdrop.drawing(), "only the Draw button starts a picture");
+    }
+
+    #[test]
+    fn following_the_writing_queues_finished_sentences_only() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.app.set_scene_mode(backdrop::Mode::Writing);
         h.type_text("The valley lies between the mountains and the sea");
         assert_eq!(h.app.backdrop.pending(), None, "a sentence still being written is not drawn");
         h.type_text(". Above it");
         assert_eq!(h.app.backdrop.pending(), Some("The valley lies between the mountains and the sea."));
-        // Moving the caret to the start is no edit, so the queued scene stays as it was.
+        // Moving the caret is no edit, so the queued scene stays as it was.
         h.key(Key::Home, Modifiers::COMMAND);
         assert_eq!(h.app.backdrop.pending(), Some("The valley lies between the mountains and the sea."));
-        h.app.toggle_backdrop();
+        // Back to describing: nothing is queued or drawn any more.
+        h.app.set_scene_mode(backdrop::Mode::Described);
+        assert_eq!(h.app.backdrop.pending(), None);
+        assert!(!h.app.backdrop.drawing());
+    }
+
+    #[test]
+    fn the_scene_is_saved_with_the_document_and_comes_back() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("A storm at sea.");
+        let ctx = h.ctx.clone();
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 60 85\"><circle cx=\"30\" cy=\"40\" r=\"20\" fill=\"#36c\"/></svg>";
+        let scene = backdrop::SceneFile { svg: Some(svg.into()), description: "A ship in a storm".into(), hidden: false };
+        h.app.open_scene(&ctx, Some(scene.clone())).unwrap();
+
+        let dir = std::env::temp_dir().join(format!("caprice-scene-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("story.caprice");
+        std::fs::write(&path, serde_json::to_string(&h.app.doc_file()).unwrap()).unwrap();
+
+        let mut other = Harness::new();
+        other.frames(3, vec![], Modifiers::NONE);
+        let octx = other.ctx.clone();
+        other.app.open_path(&octx, path.clone());
+        assert_eq!(other.app.doc.visible_text(), "A storm at sea.");
+        assert_eq!(other.app.backdrop.to_file(), Some(scene), "picture and description are back");
+
+        // A document without a scene clears the one shown before.
+        std::fs::write(&path, serde_json::to_string(&fileio::DocFile::from_doc(&other.app.doc)).unwrap()).unwrap();
+        other.app.open_path(&octx, path);
+        assert_eq!(other.app.backdrop.to_file(), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn opening_with_unsaved_changes_asks_first() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        assert!(!h.app.unsaved(), "a fresh document has nothing to save");
+        h.type_text("Draft");
+        assert!(h.app.unsaved());
+
+        h.key(Key::O, Modifiers::COMMAND);
+        assert_eq!(h.app.leaving, Some(fileio::Leaving::Open), "asks instead of opening");
+        assert!(h.app.dialog.is_none(), "no file dialog yet");
+        h.type_text("x");
+        assert_eq!(h.text(), "Draft", "the page takes no typing while asking");
+        h.key(Key::Escape, Modifiers::NONE);
+        assert_eq!(h.app.leaving, None, "Escape cancels");
+
+        let dir = std::env::temp_dir().join(format!("caprice-unsaved-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        h.app.save_to(dir.join("draft.caprice"));
+        assert!(!h.app.unsaved(), "saved");
+        h.frames(90, vec![], Modifiers::NONE); // a pause, so the next edit undoes on its own
+        h.type_text("!");
+        assert!(h.app.unsaved(), "changed again");
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert_eq!(h.text(), "Draft");
+        assert!(!h.app.unsaved(), "undone back to what is saved");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
