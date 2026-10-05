@@ -26,9 +26,6 @@ use model::{Doc, Style};
 use search::Search;
 use theme::{DESK, apply_theme};
 
-/// Share of a page's flip spent turning it over; the rest slides it onto the pile.
-const TURN: f32 = 0.75;
-
 /// The app icon, for window managers that take it from the window (the launcher uses the installed files).
 fn window_icon() -> egui::IconData {
     let bytes = include_bytes!("../assets/icon-256.png");
@@ -94,29 +91,32 @@ pub struct App {
     pub toolbar_target: f32,
     pub path: Option<PathBuf>,
     pub status: String,
-    /// Animated position in page units. 2.4 means page 2 is 40% flipped over.
+    /// Animated position in page units. 2.4 means page 2 has slid 40% of the way into the pile behind.
     pub pos: f32,
-    /// Page we are flipping towards.
+    /// Page we are moving towards.
     pub target: usize,
     /// The first of the pages just added and turned to: they slide in from the right instead of
-    /// being flipped to (several, when pages are added faster than they slide in).
+    /// slid out of the pile (several, when pages are added faster than they slide in).
     pub slide_in: Option<usize>,
     /// How far a page just taken away (backspaced) has slid out to the right, 0 to 1.
     pub slide_out: Option<f32>,
     /// Page count and target as of the last frame, to notice a page being added.
     pub seen_pages: usize,
     pub seen_target: usize,
-    /// While the scrollbar is dragged: the page it would go to (the pages stay put meanwhile).
-    pub scrub_to: Option<usize>,
-    /// How far the top corners of the page are curled (left, right) while the scrollbar points
-    /// back or ahead, and how far down the right one is about to reach (post-its make way).
-    pub curl: [f32; 2],
-    pub curl_reach: f32,
-    /// Pages turned over in one go when the scrollbar is let go: from, to, and how far along (0 to 1).
-    pub bundle: Option<(usize, usize, f32)>,
-    /// Sideways two-finger swipe not yet turned into page flips, and when it last moved.
+    /// While the scrollbar is dragged: where it points, in pages (fractional: between pages).
+    pub scrub_to: Option<f32>,
+    /// While the scrollbar points ahead, the pages ahead slide out half a page to the left one
+    /// after the other, following it: how many pages' worth (2.5: two are out, the third halfway).
+    /// Pointing back (negative), the pages behind slide half out of the pile instead.
+    pub held: f32,
+    /// Pages let go of by the scrollbar, moving into or out of the pile together: from, to, how
+    /// far along (0 to 1), and how far they were held out (see `held`).
+    pub batch: Option<(usize, usize, f32, f32)>,
+    /// Sideways two-finger swipe not yet turned into page moves, and when it last moved.
     pub swipe: f32,
     pub swipe_at: f64,
+    /// The pages are moving because of a swipe: they go at half the pace.
+    pub swiped: bool,
     pub search: Search,
     /// The note to put the keyboard on (a new one), and which sheet each note's pad shows.
     pub note_focus: Option<u64>,
@@ -190,11 +190,11 @@ impl App {
             seen_pages: 0,
             seen_target: 0,
             scrub_to: None,
-            curl: [0.0; 2],
-            curl_reach: 0.0,
-            bundle: None,
+            held: 0.0,
+            batch: None,
             swipe: 0.0,
             swipe_at: 0.0,
+            swiped: false,
             search: Search::default(),
             note_focus: None,
             pads: HashMap::new(),
@@ -254,41 +254,72 @@ impl App {
         }
     }
 
-    /// Turn from the page we are on straight to page `to`: one quick flip of the whole bundle of
-    /// pages in between (just a flip, for the next or previous page).
-    pub fn flip_bundle_to(&mut self, ctx: &egui::Context, to: usize) {
+    /// Go to page `to`: the pages in between slide into, or out of, the pile behind one by one.
+    pub fn go_to_page(&mut self, ctx: &egui::Context, to: usize) {
+        let to = to.min(self.last());
+        if to != self.target {
+            self.set_caret(ctx, self.doc.spans[to].start, false);
+        }
+    }
+
+    /// The page letting go of the scrollbar goes to: any page it has begun to slide out.
+    pub fn scrub_page(&self) -> Option<usize> {
+        let here = self.target as f32;
+        let to = self.scrub_to.map(|at| {
+            let pages = ((at - here).abs() - 0.15).ceil().max(0.0);
+            if at > here { here + pages } else { here - pages }
+        });
+        to.map(|p| (p.max(0.0) as usize).min(self.last()))
+    }
+
+    /// Let go of the scrollbar pointing at page `to`: the pages held out move there together.
+    pub fn let_go_to(&mut self, ctx: &egui::Context, to: usize) {
+        if to != self.target {
+            self.batch_to(ctx, self.doc.spans[to].start);
+        }
+    }
+
+    /// Put the caret at `c`, the pages between here and its page moving there together, on from
+    /// where the scrollbar holds them, if it does.
+    pub fn batch_to(&mut self, ctx: &egui::Context, c: usize) {
         let from = self.target;
+        self.set_caret(ctx, c, false);
+        let to = self.target;
         if to == from {
             return;
         }
-        self.set_caret(ctx, self.doc.spans[to].start, false);
-        if from.abs_diff(to) > 1 {
-            self.bundle = Some((from, to, 0.0));
-            self.pos = to as f32;
-        }
+        let held = std::mem::take(&mut self.held);
+        let held = if (to > from) == (held > 0.0) { held } else { 0.0 };
+        self.batch = Some((from, to, 0.0, held));
+        self.pos = to as f32;
     }
 
-    /// Move a bundle flip along: quick, whatever the number of pages.
-    fn animate_bundle(&mut self, ui: &egui::Ui) {
-        let Some((from, to, s)) = self.bundle else { return };
+    /// Move the pages let go of along.
+    fn animate_batch(&mut self, ui: &egui::Ui) {
+        let Some((from, to, s, held)) = self.batch else { return };
         let dt = ui.input(|i| i.stable_dt).min(0.05);
-        let s = s + dt / 0.7;
+        let s = s + dt / 0.6;
         // Done, or another way of moving took over.
-        self.bundle = (s < 1.0 && self.target == to).then_some((from, to, s));
+        self.batch = (s < 1.0 && self.target == to).then_some((from, to, s, held));
         ui.ctx().request_repaint();
     }
 
-    /// Curl the top corner on the side the dragged scrollbar points to, further the further it points.
-    fn animate_curl(&mut self, ctx: &egui::Context, page_rect: Rect) {
-        let here = self.pos.round();
-        let d = self.scrub_to.map_or(0.0, |p| p as f32 - here);
-        let size = |d: f32| if d < 0.5 { 0.0 } else { page_rect.width() * (0.08 + 0.27 * (1.0 - (-(d - 1.0) / 6.0).exp())) };
-        let (left, right) = (size(-d), size(d));
-        self.curl_reach = right * render::CURL_TALL;
-        self.curl = [
-            ctx.animate_value_with_time(egui::Id::new("curl-left"), left, 0.15),
-            ctx.animate_value_with_time(egui::Id::new("curl-right"), right, 0.15),
-        ];
+    /// Slide the pages out one after the other while the dragged scrollbar points away from the
+    /// page, following it; they go back when it points here again.
+    fn animate_held(&mut self, ui: &egui::Ui) {
+        let here = self.target as f32;
+        let settled = self.batch.is_none() && self.pos == here;
+        let goal = match self.scrub_to {
+            Some(at) if settled => (at - here).clamp(-here, self.last() as f32 - here),
+            _ => 0.0,
+        };
+        let dt = ui.input(|i| i.stable_dt).min(0.05);
+        self.held += (goal - self.held) * (1.0 - (-dt / 0.06).exp());
+        if (goal - self.held).abs() < 0.003 {
+            self.held = goal;
+        } else {
+            ui.ctx().request_repaint();
+        }
     }
 
     /// Move a page that was taken away further out to the right, at the pace of a flip.
@@ -300,28 +331,27 @@ impl App {
         ui.ctx().request_repaint();
     }
 
-    /// Whether page `base + 1` slides in over `base` (it was just added) rather than being flipped to.
+    /// Whether page `base + 1` slides in over `base` (it was just added) rather than slid out of the pile.
     fn slides_in(&self, base: usize) -> bool {
         self.slide_in.is_some_and(|s| base + 1 >= s)
     }
 
     fn animate(&mut self, ui: &egui::Ui) {
-        let target = self.target as f32;
-        let diff = target - self.pos;
+        let goal = self.target as f32;
+        let diff = goal - self.pos;
         if diff.abs() < 0.002 {
-            self.pos = target;
+            self.pos = goal;
+            self.swiped = false;
             return;
         }
         let dt = ui.input(|i| i.stable_dt).min(0.05);
-        // Pages per second, by whole pages left: each flip eases by itself, and runs as fast
-        // forwards as backwards (the slow slide into the pile comes at its other end).
-        let mut speed = (diff.abs().ceil() * 2.75).clamp(2.2, 14.0);
-        let base = self.pos.floor();
-        if self.pos - base >= TURN && !self.slides_in(base as usize) {
-            speed /= 2.0; // a turned page slides onto the pile at half the pace
+        // Pages per second, by whole pages left: one page eases by itself, many go by quickly.
+        let mut speed = (diff.abs().ceil() * 2.75).max(2.2);
+        if self.swiped {
+            speed /= 2.0;
         }
         let step = speed * dt;
-        self.pos = if diff.abs() <= step { target } else { self.pos + step * diff.signum() };
+        self.pos = if diff.abs() <= step { goal } else { self.pos + step * diff.signum() };
         ui.ctx().request_repaint();
     }
 }
@@ -381,7 +411,7 @@ impl App {
             self.slide_in = None;
         }
         self.animate_slide_out(ui);
-        self.animate_bundle(ui);
+        self.animate_batch(ui);
         self.animate_pads(ui);
         self.update_backdrop(&ctx);
         self.pos = self.pos.clamp(0.0, self.last() as f32);
@@ -392,61 +422,60 @@ impl App {
         let t = self.pos - base as f32;
         let n = self.doc.pages();
 
-        self.animate_curl(&ctx, page_rect);
+        self.animate_held(ui);
 
-        if let Some((from, to, s)) = self.bundle {
-            // A bundle of pages turning over in one go, drawn as if forwards from the lower page.
-            let (lo, hi) = (from.min(to), from.max(to));
-            let t = if to > from { s } else { 1.0 - s };
-            self.bundle_flip(ui, page_rect, lo, hi, t);
+        if let Some((from, to, s, held)) = self.batch {
+            // Pages let go of by the scrollbar, moving together.
+            self.batch_pages(ui, page_rect, from, to, s, held);
+        } else if self.held != 0.0 && self.pos == self.target as f32 {
+            // Held out by the scrollbar.
+            self.held_pages(ui, page_rect, self.held);
         } else if t < 1e-3 || base >= self.last() {
-            // Settled: this page is editable.
             let i = (self.pos.round() as usize).min(self.last());
-            let ease = |s: f32| s * s * (3.0 - 2.0 * s);
-            if let Some(s) = self.slide_out {
-                // While a page slides out, the one before comes up from the back of the pile.
-                self.sheet_to_pile(ui, page_rect, i, egui::Vec2::ZERO, 1.0 - ease(s));
-            }
-            self.stack(ui.painter(), page_rect, i, self.last() - i);
-            // A post-it of a covered page takes clicks where it shows, under the page's own widgets.
-            for (id, _, r) in self.pile_note_hits(&ctx, page_rect, i, self.last() - i) {
-                let resp = ui.interact(r, egui::Id::new(("pile_note", id)), egui::Sense::click());
-                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Go to this note").clicked() {
-                    self.go_to_note(&ctx, id);
-                }
-            }
-            Self::paper(ui.painter(), page_rect);
-            ui.painter().extend(self.backdrop_shapes(&ctx, page_rect, &|p| p, 1.0, 1.0));
-            self.draw_footer(ui, page_rect, i);
-            self.editor_surface(ui, page_rect, i, !self.pen);
-            self.draw_notes(ui, page_rect, i);
-            self.pen_surface(ui, page_rect, i);
-            for (right, size) in [(false, self.curl[0]), (true, self.curl[1])] {
-                if size > 0.5 {
-                    self.corner_curl(ui.painter(), page_rect, size, right);
-                }
-            }
-            if let Some(s) = self.slide_out {
-                let to_right = area.right() + 40.0 - page_rect.left();
-                let r = page_rect.translate(egui::vec2(to_right * ease(s), 0.0));
-                Self::paper(ui.painter(), r);
-                ui.painter().extend(self.backdrop_shapes(&ctx, r, &|p| p, 1.0, 1.0));
-            }
-        } else {
-            // Mid-flip: page `base` turns over, revealing `base + 1`, then slides into the back of the pile.
-            let ease = |s: f32| s * s * (3.0 - 2.0 * s);
-            let ahead = n - 1 - base - 1;
-            if self.slides_in(base) {
-                // A new page comes in from beyond the right edge of the window, over the old one,
-                // while the pile behind grows by a sheet from the back.
-                self.sheet_to_pile(ui, page_rect, base, egui::Vec2::ZERO, ease(t));
-                self.stack(ui.painter(), page_rect, base, ahead);
-                self.static_page(ui, page_rect, base);
-                let from_right = area.right() + 40.0 - page_rect.left();
-                self.static_page(ui, page_rect.translate(egui::vec2(from_right * (1.0 - ease(t)), 0.0)), base + 1);
+            if i != self.target {
+                // Passing by: just the page.
+                self.stack(ui.painter(), page_rect, i, self.last() - i);
+                self.static_page(ui, page_rect, i);
             } else {
-                self.bundle_flip(ui, page_rect, base, base + 1, t);
+                // Settled: this page is editable.
+                let ease = |s: f32| s * s * (3.0 - 2.0 * s);
+                if let Some(s) = self.slide_out {
+                    // While a page slides out, the one before comes up from the back of the pile.
+                    self.sheet_to_pile(ui, page_rect, i, egui::Vec2::ZERO, 1.0 - ease(s));
+                }
+                self.stack(ui.painter(), page_rect, i, self.last() - i);
+                // A post-it of a covered page takes clicks where it shows, under the page's own widgets.
+                for (id, _, r) in self.pile_note_hits(&ctx, page_rect, i, self.last() - i) {
+                    let resp = ui.interact(r, egui::Id::new(("pile_note", id)), egui::Sense::click());
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Go to this note").clicked() {
+                        self.go_to_note(&ctx, id);
+                    }
+                }
+                Self::paper(ui.painter(), page_rect);
+                ui.painter().extend(self.backdrop_shapes(&ctx, page_rect, &|p| p, 1.0, 1.0));
+                self.draw_footer(ui, page_rect, i);
+                self.editor_surface(ui, page_rect, i, !self.pen);
+                self.draw_notes(ui, page_rect, i);
+                self.pen_surface(ui, page_rect, i);
+                if let Some(s) = self.slide_out {
+                    let to_right = area.right() + 40.0 - page_rect.left();
+                    let r = page_rect.translate(egui::vec2(to_right * ease(s), 0.0));
+                    Self::paper(ui.painter(), r);
+                    ui.painter().extend(self.backdrop_shapes(&ctx, r, &|p| p, 1.0, 1.0));
+                }
             }
+        } else if self.slides_in(base) {
+            // A new page comes in from beyond the right edge of the window, over the old one,
+            // while the pile behind grows by a sheet from the back.
+            let ease = |s: f32| s * s * (3.0 - 2.0 * s);
+            self.sheet_to_pile(ui, page_rect, base, egui::Vec2::ZERO, ease(t));
+            self.stack(ui.painter(), page_rect, base, n - 1 - base - 1);
+            self.static_page(ui, page_rect, base);
+            let from_right = area.right() + 40.0 - page_rect.left();
+            self.static_page(ui, page_rect.translate(egui::vec2(from_right * (1.0 - ease(t)), 0.0)), base + 1);
+        } else {
+            // Between pages: page `base` slides off `base + 1` into the back of the pile behind, or out of it.
+            self.slide_page(ui, page_rect, base, t);
         }
 
         self.pan_with_ctrl(ui, area);
@@ -514,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_page_slides_in_but_going_back_to_it_flips() {
+    fn a_new_page_slides_in_but_going_back_to_it_slides_out_of_the_pile() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.type_text("hello");
@@ -526,11 +555,11 @@ mod tests {
         h.key(Key::PageUp, Modifiers::NONE);
         h.frames(90, vec![], Modifiers::NONE);
         h.key(Key::PageDown, Modifiers::NONE);
-        assert_eq!(h.app.slide_in, None, "a page that was already there is flipped to");
+        assert_eq!(h.app.slide_in, None, "a page that was already there comes out of the pile");
     }
 
     #[test]
-    fn the_scrollbar_curls_a_corner_then_turns_the_bundle_at_once() {
+    fn the_scrollbar_holds_the_pages_half_out_then_moves_them_together() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         for _ in 0..6 {
@@ -539,39 +568,56 @@ mod tests {
         }
         h.frames(120, vec![], Modifiers::NONE);
         let ctx = h.ctx.clone();
-        h.app.flip_bundle_to(&ctx, 1);
+        h.app.go_to_page(&ctx, 1);
         h.frames(60, vec![], Modifiers::NONE);
-        assert_eq!((h.app.target, h.app.bundle), (1, None));
+        assert_eq!((h.app.target, h.app.pos), (1, 1.0));
 
-        // Hold the scrollbar's thumb and drag it: pointing ahead curls the right corner, more the
-        // further it points, while the pages stay put.
+        // Dragging the thumb right slides the pages half out one by one, following it. The page
+        // and the caret stay put meanwhile.
         let (y, x0, x1) = h.app.last_track;
-        let at = |page: usize| egui::pos2(x0 + (x1 - x0) * page as f32 / 6.0, y);
+        let at = |page: f32| egui::pos2(x0 + (x1 - x0) * page / 6.0, y);
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
-        h.frames(1, vec![egui::Event::PointerMoved(at(1)), button(at(1), true)], Modifiers::NONE);
-        h.frames(1, vec![egui::Event::PointerMoved(at(3))], Modifiers::NONE);
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        h.frames(1, vec![egui::Event::PointerMoved(at(1.0)), button(at(1.0), true)], Modifiers::NONE);
+        h.frames(1, vec![egui::Event::PointerMoved(at(3.5))], Modifiers::NONE);
         h.frames(30, vec![], Modifiers::NONE);
-        assert_eq!(h.app.scrub_to, Some(3));
-        let near = h.app.curl[1];
-        assert!(near > 0.0 && h.app.curl[0] == 0.0, "{:?}", h.app.curl);
-        h.frames(1, vec![egui::Event::PointerMoved(at(6))], Modifiers::NONE);
+        assert!(near(h.app.held, 2.5), "{}", h.app.held);
+        assert_eq!((h.app.target, h.app.pos, h.app.scrub_page()), (1, 1.0, Some(4)));
+        let (rect, ctx) = (h.app.last_page_rect, h.ctx.clone());
+        let half = (-rect.width() / 2.0).round();
+        assert_eq!(h.app.held_offset(&ctx, rect, 2, 1, 2.0).x.round(), half, "half out");
+        assert!(h.app.held_offset(&ctx, rect, 1, 1, 2.0).x < h.app.held_offset(&ctx, rect, 2, 1, 2.0).x, "a sheet apart");
+        // Pointing here again lays them back; pointing back slides the page behind half out of the pile.
+        h.frames(1, vec![egui::Event::PointerMoved(at(1.0))], Modifiers::NONE);
         h.frames(30, vec![], Modifiers::NONE);
-        assert!(h.app.curl[1] > near, "{} vs {near}", h.app.curl[1]);
-        assert_eq!(h.app.pos, 1.0);
-        // Pointing back curls the left one instead.
-        h.frames(1, vec![egui::Event::PointerMoved(at(0))], Modifiers::NONE);
+        assert_eq!(h.app.held, 0.0);
+        h.frames(1, vec![egui::Event::PointerMoved(at(0.0))], Modifiers::NONE);
         h.frames(30, vec![], Modifiers::NONE);
-        assert!(h.app.curl[0] > 0.0 && h.app.curl[1] == 0.0, "{:?}", h.app.curl);
+        assert!(near(h.app.held, -1.0), "{}", h.app.held);
+        assert_eq!(h.app.held_offset(&ctx, rect, 0, 1, -1.0).x.round(), half);
 
-        // Letting go turns the whole bundle in one quick flip.
-        h.frames(1, vec![egui::Event::PointerMoved(at(6))], Modifiers::NONE);
-        h.frames(1, vec![button(at(6), false)], Modifiers::NONE);
+        // Letting go moves them all together, on from where they were held.
+        h.frames(1, vec![egui::Event::PointerMoved(at(6.0))], Modifiers::NONE);
+        h.frames(30, vec![], Modifiers::NONE);
+        h.frames(1, vec![button(at(6.0), false)], Modifiers::NONE);
         h.frames(1, vec![], Modifiers::NONE);
-        assert_eq!(h.app.bundle.map(|b| (b.0, b.1)), Some((1, 6)));
+        let (from, to, _, held) = h.app.batch.unwrap();
+        assert!((from, to) == (1, 6) && near(held, 5.0), "{:?}", h.app.batch);
         assert_eq!(h.app.doc.page_of(h.app.caret), 6);
         h.frames(60, vec![], Modifiers::NONE);
-        assert_eq!(h.app.bundle, None);
-        assert_eq!(h.app.pos, 6.0);
+        assert_eq!((h.app.batch, h.app.held, h.app.pos), (None, 0.0, 6.0));
+
+        // Back the same way: half out of the pile while held, then all onto the page together.
+        h.frames(1, vec![egui::Event::PointerMoved(at(6.0)), button(at(6.0), true)], Modifiers::NONE);
+        h.frames(1, vec![egui::Event::PointerMoved(at(4.5))], Modifiers::NONE);
+        h.frames(30, vec![], Modifiers::NONE);
+        assert!(near(h.app.held, -1.5), "{}", h.app.held);
+        h.frames(1, vec![button(at(4.5), false)], Modifiers::NONE);
+        h.frames(1, vec![], Modifiers::NONE);
+        let (from, to, _, held) = h.app.batch.unwrap();
+        assert!((from, to) == (6, 4) && near(held, -1.5), "{:?}", h.app.batch);
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!((h.app.batch, h.app.held, h.app.pos), (None, 0.0, 4.0));
     }
 
     #[test]
@@ -584,7 +630,7 @@ mod tests {
         h.key(Key::Backspace, Modifiers::NONE);
         assert_eq!(h.app.doc.pages(), 1);
         assert!(h.app.slide_out.is_some(), "the page slides out");
-        assert_eq!(h.app.pos, 0.0, "without flipping back to the page before");
+        assert_eq!(h.app.pos, 0.0, "without going back through the page before");
         h.frames(60, vec![], Modifiers::NONE);
         assert_eq!(h.app.slide_out, None);
     }
@@ -604,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn swiping_sideways_with_two_fingers_flips_pages() {
+    fn swiping_sideways_with_two_fingers_moves_through_pages() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.type_text("one");
@@ -740,7 +786,7 @@ mod tests {
         h.app.search.query = "needle".into();
         h.frames(120, vec![], Modifiers::NONE);
         assert_eq!(h.app.search.matches.len(), 1);
-        assert_eq!(h.app.target, h.app.doc.pages() - 1, "flipped to the page with the match");
+        assert_eq!(h.app.target, h.app.doc.pages() - 1, "moved to the page with the match");
         assert_eq!(h.app.pos.round() as usize, h.app.doc.pages() - 1);
     }
 
@@ -763,6 +809,25 @@ mod tests {
         h.type_text("!"); // typed right after the note's end: not part of it
         assert_eq!(h.app.doc.visible_text(), "first line\nsecond line!");
         assert_eq!((h.app.doc.notes[0].start, h.app.doc.notes[0].end), (11, 22));
+    }
+
+    #[test]
+    fn going_to_a_post_it_moves_the_pages_in_between_together() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        for _ in 0..4 {
+            h.type_text("page");
+            h.key(Key::Enter, Modifiers::COMMAND);
+        }
+        h.frames(120, vec![], Modifiers::NONE);
+        let start = h.app.doc.spans[1].start;
+        h.app.doc.notes.push(model::Note { id: 7, start, end: start + 2, text: String::new(), color: 0 });
+        let ctx = h.ctx.clone();
+        h.app.go_to_note(&ctx, 7);
+        assert_eq!(h.app.batch.map(|b| (b.0, b.1)), Some((4, 1)));
+        assert_eq!((h.app.target, h.app.caret), (1, start));
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!((h.app.batch, h.app.pos), (None, 1.0));
     }
 
     #[test]

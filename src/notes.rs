@@ -143,14 +143,12 @@ pub struct NoteLook<'a> {
     pub map: &'a dyn Fn(Pos2) -> Pos2,
     pub shade: f32,
     pub alpha: f32,
-    /// Seen from behind (on the back of a turning page): blank, and darker.
-    pub back: bool,
     /// Leave the top sheet's text out (a text field draws it instead).
     pub no_text: bool,
 }
 
 impl NoteLook<'_> {
-    pub const FLAT: NoteLook<'static> = NoteLook { map: &|p| p, shade: 1.0, alpha: 1.0, back: false, no_text: false };
+    pub const FLAT: NoteLook<'static> = NoteLook { map: &|p| p, shade: 1.0, alpha: 1.0, no_text: false };
 }
 
 impl App {
@@ -198,10 +196,11 @@ impl App {
         ctx.request_repaint();
     }
 
-    /// Turn to a note's page, with the caret at its text, and start writing on it there.
+    /// Go to a note's page, the pages in between moving together, with the caret at its text, and
+    /// start writing on it there.
     pub fn go_to_note(&mut self, ctx: &egui::Context, id: u64) {
         if let Some(start) = self.doc.notes.iter().find(|n| n.id == id).map(|n| n.start) {
-            self.set_caret(ctx, start, false);
+            self.batch_to(ctx, start);
             self.note_focus = Some(id);
         }
     }
@@ -262,9 +261,6 @@ impl App {
     pub fn note_shapes(&self, ctx: &egui::Context, note: &Note, r: Rect, sc: f32, pos: f32, look: &NoteLook) -> Vec<Shape> {
         let map = look.map;
         let color = note_color(note.color);
-        if look.back {
-            return vec![Shape::mesh(quad_mesh(r, shaded(color, look.shade * 0.8, look.alpha), map))];
-        }
         let s = sheets(ctx, &note.text, sc);
         let n = s.count();
         let pos = pos.clamp(0.0, (n - 1) as f32);
@@ -329,10 +325,6 @@ impl App {
         for (k, y) in places {
             let id = self.doc.notes[k].id;
             let r = note_rect(rect, sc, y);
-            // Where the top right corner curls back, the post-it moves out of its way for the while.
-            let in_way = r.top() < rect.top() + self.curl_reach + 6.0 * sc;
-            let away = if self.curl_reach > 0.0 && in_way { rect.right() + 6.0 * sc - r.left() } else { 0.0 };
-            let r = r.translate(vec2(ctx.animate_value_with_time(Id::new(("note-away", id)), away, 0.2), 0.0));
             let mut pad = self.pad(id);
             let s = sheets(&ctx, &self.doc.notes[k].text, sc);
             pad.sheet = pad.sheet.min(s.count() - 1);

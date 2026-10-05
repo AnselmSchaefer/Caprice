@@ -448,7 +448,7 @@ impl App {
         ui.painter().text(
             pos2(r.left(), cy),
             egui::Align2::LEFT_CENTER,
-            format!("Page {} of {}", self.scrub_to.unwrap_or(self.pos.round() as usize) + 1, n),
+            format!("Page {} of {}", self.scrub_page().unwrap_or(self.pos.round() as usize) + 1, n),
             FontId::proportional(13.0),
             TEXT_DIM,
         );
@@ -492,19 +492,20 @@ impl App {
             }
         }
 
-        // Dragging (or pressing) only picks the page: the pages stay put, their corner curls, and
-        // letting go turns there in one go.
+        // Dragging (or pressing) slides the pages half out one by one, following the thumb: right,
+        // off the page; left, out of the pile behind. Letting go moves them all there together.
         let resp = ui.interact(track.expand2(vec2(6.0, 12.0)), Id::new("scroll"), Sense::click_and_drag());
         self.last_track = (cy, track.left() + thumb_w / 2.0, track.right() - thumb_w / 2.0);
         let mut f = if last > 0.0 { (self.pos + going) / last } else { 0.0 };
         if n > 1 && (resp.dragged() || resp.drag_started() || resp.is_pointer_button_down_on()) {
             if let Some(p) = resp.interact_pointer_pos() {
                 f = ((p.x - track.left() - thumb_w / 2.0) / travel).clamp(0.0, 1.0);
-                self.scrub_to = Some((f * (n - 1) as f32).round() as usize);
+                self.scrub_to = Some(f * (n - 1) as f32);
             }
-        } else if let Some(to) = self.scrub_to.take() {
+        } else if let Some(to) = self.scrub_page() {
+            self.scrub_to = None;
             let ctx = ui.ctx().clone();
-            self.flip_bundle_to(&ctx, to.min(self.last()));
+            self.let_go_to(&ctx, to);
         }
 
         let thumb = Rect::from_min_size(pos2(track.left() + travel * f, cy - 8.0), vec2(thumb_w, 16.0));
