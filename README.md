@@ -2,21 +2,22 @@
 
 **A word processing app for creative, fun story telling.**
 
-Caprice is a word processor for writing stories, not reports. It gives you real pages that flip like a book, post-it notes for your ideas, and Claude as a helper: it can paint the scene you are writing behind the page, or read along when you circle a passage.
+Caprice is a word processor for writing stories, not reports. It gives you real pages that turn like a book’s or slide onto a stack, post-it notes for your ideas, and Claude as a helper: it can paint the scene you are writing behind the page, or read along when you circle a passage.
 
 ![Caprice: a story page with a lake at dusk painted behind the text, children walking towards a little house, and post-it notes at the edge](assets/Example.png)
 
 ## Why Caprice
 
 - **Easy to use.** One small toolbar, real pages and no clutter. Start typing, and the story fills page after page.
-- **Joy in writing.** Pages turn with a flip, and the pages you have already written pile up beside the one you are on, so you can watch the story grow.
-- **Room for ideas.** Stick post-its to any line for plot twists, names and "what if…" thoughts. They stay readable in the page pile, and clicking one takes you back to its page.
+- **Joy in writing.** Pages turn over like a book’s, or slide onto a stack (pick the look under Page → View: *Book* or *Paperstack*). The pages you have already written pile up beside the one you are on, so you can watch the story grow.
+- **Room for ideas.** Stick post-its to any line for plot twists, names and "what if…" thoughts. They peek out of the page piles, and clicking one takes you back to its page.
 
 ## Features
 
 - **Scenes behind the page.** Describe a place ("a village between the mountains and the sea, at dusk") and Claude paints it faintly behind your writing. Or let it follow along, sketching the last sentences you wrote as you go. You can save the picture as a PNG or SVG.
 - **Circle to ask Claude.** Turn on the pen (Ctrl+Shift+P) and draw a loop around a passage. Claude can review it, fix awkward wording, check grammar, summarize it, or answer your own question about it. A rewrite can replace the passage, and one undo brings the original back.
 - **Post-it notes** on any selection or line (Ctrl+Alt+N), in several colours.
+- **Leafing through pages** with the scrollbar at the bottom, a two-finger swipe or Page Up / Page Down. In *Paperstack*, dragging the scrollbar slides each page it passes halfway out, and letting go moves them all together.
 - **Pictures** in your text that you can move, resize and rotate.
 - **Formatting** that stays out of the way: fonts, sizes, bold, underline, alignment, lists and page setup.
 - **Search** (Ctrl+F), **undo** and **zoom** (Ctrl + / − / 0).

@@ -28,7 +28,7 @@ cat > "$apps/caprice.desktop" <<DESKTOP
 Type=Application
 Name=Caprice
 GenericName=Word Processor
-Comment=A minimal word processor with page flipping
+Comment=A word processor for creative story telling
 Exec=$bin/caprice %f
 Icon=caprice
 Terminal=false
