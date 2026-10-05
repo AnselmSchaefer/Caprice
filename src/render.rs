@@ -12,6 +12,8 @@ use crate::theme::{INK, PAPER};
 /// Which way, per sheet, the piles of pages ahead and behind spread out from under the page.
 const AHEAD: egui::Vec2 = egui::vec2(1.0, 0.64);
 const BEHIND: egui::Vec2 = egui::vec2(-1.0, 0.5);
+/// Colour of the turned-over sheets in the pile behind the page.
+const BEHIND_FILL: Color32 = Color32::from_rgb(226, 224, 218);
 
 impl App {
     /// Screen points per page point for a page drawn into `rect`.
@@ -66,7 +68,7 @@ impl App {
         for k in (1..=behind).rev() {
             let above = rect.translate(BEHIND * (k - 1) as f32 * gap).left();
             let r = rect.translate(BEHIND * k as f32 * gap);
-            add(behind - k, &|pr| {
+            add(k - 1, &|pr| {
                 let pr = mirror_note(r, pr);
                 Rect::from_min_max(pr.min, pos2(pr.right().min(above), pr.bottom()))
             }, r);
@@ -74,7 +76,8 @@ impl App {
         hits
     }
 
-    /// Stack hints: every sheet piled to the right (pages ahead) and left (pages behind).
+    /// Stack hints: every sheet piled to the right (pages ahead) and left (pages behind). A turned
+    /// page slides into the back of the left pile, so page `k - 1` lies `k` sheets out.
     pub fn stack(&self, painter: &egui::Painter, rect: Rect, behind: usize, ahead: usize) {
         let ctx = painter.ctx();
         let gap = self.stack_gap(ctx, rect);
@@ -115,7 +118,7 @@ impl App {
             }
         };
         side(ahead, AHEAD, Color32::from_rgb(232, 230, 224), 60.0, &|k| n - ahead + k - 1, false);
-        side(behind, BEHIND, Color32::from_rgb(226, 224, 218), 50.0, &|k| behind - k, true);
+        side(behind, BEHIND, BEHIND_FILL, 50.0, &|k| k - 1, true);
     }
 
     /// The page number, and where it goes relative to the page's top-left (None if turned off).
@@ -148,8 +151,23 @@ impl App {
         self.paint_notes(ui.ctx(), ui.painter(), rect, i, &NoteLook::FLAT);
     }
 
+    /// Draw page `i` turned over, sliding by `s` from `from` (an offset from `rect`) into its place
+    /// at the back of the pile behind it. Drawn before the pile and the page at `rect`, so it passes
+    /// under them.
+    pub fn sheet_to_pile(&self, ui: &egui::Ui, rect: Rect, i: usize, from: egui::Vec2, s: f32) {
+        let ctx = ui.ctx();
+        let gap = self.stack_gap(ctx, rect);
+        let sheet = rect.translate(from + (BEHIND * gap * (i + 1) as f32 - from) * s);
+        // `flipping_page` lays a page turned all the way over to the left of its hinge.
+        self.flipping_page(ui, sheet.translate(vec2(sheet.width(), 0.0)), i, std::f32::consts::PI);
+        // The pile's edge line, coming in as the sheet arrives.
+        let line = (gap * ctx.pixels_per_point() / 3.0).clamp(0.25, 1.0);
+        let edge = Color32::from_black_alpha((50.0 * line * s) as u8);
+        ui.painter().rect_stroke(sheet, 1.0, Stroke::new(0.6, edge), egui::StrokeKind::Inside);
+    }
+
     /// Draw page `i` hinged on its left edge, turned by `theta` (0 = flat, PI = fully flipped).
-    pub fn flipping_page(&self, ui: &egui::Ui, rect: Rect, i: usize, theta: f32, fade: f32) {
+    pub fn flipping_page(&self, ui: &egui::Ui, rect: Rect, i: usize, theta: f32) {
         let painter = ui.painter();
         let (sin, cos) = theta.sin_cos();
         let pw = rect.width();
@@ -162,7 +180,6 @@ impl App {
             pos2(spine + u * cos, cy + (y - cy) * s)
         };
         let front = cos >= 0.0;
-        let alpha = |c: Color32| c.gamma_multiply(fade);
 
         // Paper, as vertical strips so shading can vary across the curl.
         const STRIPS: usize = 28;
@@ -175,11 +192,15 @@ impl App {
             if !front {
                 shade -= 0.06;
             }
-            let c = alpha(Color32::from_rgb(
+            let mut c = Color32::from_rgb(
                 (f32::from(PAPER.r()) * shade) as u8,
                 (f32::from(PAPER.g()) * shade) as u8,
                 (f32::from(PAPER.b()) * shade) as u8,
-            ));
+            );
+            if !front {
+                // Lying down, the back takes on the colour of the pile it joins.
+                c = c.lerp_to_gamma(BEHIND_FILL, -cos);
+            }
             mesh.colored_vertex(map(u, rect.top()), c);
             mesh.colored_vertex(map(u, rect.bottom()), c);
             if k > 0 {
@@ -195,7 +216,7 @@ impl App {
             let edge = spine + pw * cos;
             let reach = 70.0 * sc * sin;
             let mut sh = Mesh::default();
-            let a = (90.0 * sin * fade) as u8;
+            let a = (90.0 * sin) as u8;
             for (x, al) in [(edge, a), (edge + reach, 0)] {
                 sh.colored_vertex(pos2(x, rect.top()), Color32::from_black_alpha(al));
                 sh.colored_vertex(pos2(x, rect.bottom()), Color32::from_black_alpha(al));
@@ -208,13 +229,13 @@ impl App {
         let on_page = |p: Pos2| map(p.x - spine, p.y);
         let shade = 1.0 - 0.28 * sin * 0.5 - 0.10 * sin;
         if !front {
-            let look = NoteLook { map: &on_page, shade, alpha: fade, back: true, no_text: false };
+            let look = NoteLook { map: &on_page, shade, back: true, ..NoteLook::FLAT };
             self.paint_notes(ui.ctx(), painter, rect, i, &look);
         }
         painter.add(Shape::mesh(mesh));
 
         if front {
-            painter.extend(self.backdrop_shapes(ui.ctx(), rect, &on_page, shade, fade));
+            painter.extend(self.backdrop_shapes(ui.ctx(), rect, &on_page, shade, 1.0));
             // Text: tessellate the galleys, then squash/lift the vertices with the paper.
             let ctx = ui.ctx();
             let page = self.page_layout(ctx, i, sc);
@@ -236,12 +257,12 @@ impl App {
             for v in &mut text_mesh.vertices {
                 v.pos = map(v.pos.x, rect.top() + v.pos.y);
                 let c = v.color;
-                v.color = alpha(Color32::from_rgba_premultiplied(
+                v.color = Color32::from_rgba_premultiplied(
                     (f32::from(c.r()) * shade) as u8,
                     (f32::from(c.g()) * shade) as u8,
                     (f32::from(c.b()) * shade) as u8,
                     c.a(),
-                ));
+                );
             }
             painter.add(Shape::mesh(text_mesh));
 
@@ -249,11 +270,11 @@ impl App {
             for p in &page.paras {
                 let (Some(img), Some(tex)) = (p.image, p.image.and_then(|i| self.textures.get(&i.id))) else { continue };
                 let r = img.rect.translate(vec2(origin.x, origin.y + p.y));
-                let tint = alpha(Color32::from_rgb(
+                let tint = Color32::from_rgb(
                     (255.0 * shade) as u8,
                     (255.0 * shade) as u8,
                     (255.0 * shade) as u8,
-                ));
+                );
                 let mut quad = Mesh::with_texture(tex.id());
                 const N: usize = 8; // a few strips so it bends with the page
                 for k in 0..=N {
@@ -273,7 +294,7 @@ impl App {
                 painter.add(Shape::mesh(quad));
             }
 
-            let look = NoteLook { map: &on_page, shade, alpha: fade, back: false, no_text: false };
+            let look = NoteLook { map: &on_page, shade, ..NoteLook::FLAT };
             self.paint_notes(ctx, painter, rect, i, &look);
         }
     }

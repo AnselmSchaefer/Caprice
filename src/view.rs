@@ -1,4 +1,4 @@
-//! The camera: fit-to-window, pinch/keyboard zoom, scroll and Ctrl+drag panning.
+//! The camera: fit-to-window, pinch/keyboard zoom, scroll and Ctrl+drag panning, and swiping through pages.
 
 use eframe::egui::{self, Id, Key, Modifiers, Rect, Sense, pos2, vec2};
 
@@ -7,6 +7,8 @@ use crate::ui::RESERVED;
 
 pub const MIN_ZOOM: f32 = 0.3;
 pub const MAX_ZOOM: f32 = 4.0;
+/// How far two fingers swipe sideways to flip one page, in points.
+const SWIPE_PAGE: f32 = 50.0;
 
 impl App {
     /// The area between the two docks.
@@ -62,7 +64,33 @@ impl App {
         }
     }
 
-    /// Pinch / Ctrl+scroll to zoom around the pointer, two-finger scroll to pan. Returns the page rectangle.
+    /// Two-finger swipe sideways over the page flips through the pages, one per `SWIPE_PAGE` points.
+    pub fn swipe_pages(&mut self, ctx: &egui::Context, area: Rect) {
+        let (d, hover, now) = ctx.input(|i| (i.smooth_scroll_delta, i.pointer.hover_pos(), i.time));
+        let over = hover.is_some_and(|p| {
+            Self::view_area(area).contains(p) && ctx.layer_id_at(p).is_none_or(|l| l.order == egui::Order::Background)
+        });
+        if !over || d.x.abs() <= d.y.abs() {
+            return;
+        }
+        // A pause starts a new swipe, so leftovers of the last one don't add up to a flip.
+        if now - self.swipe_at > 0.3 {
+            self.swipe = 0.0;
+        }
+        self.swipe_at = now;
+        // Fingers moving left (content moving left) go forward, like turning a page.
+        self.swipe -= d.x;
+        let pages = (self.swipe / SWIPE_PAGE).trunc();
+        if pages != 0.0 {
+            self.swipe -= pages * SWIPE_PAGE;
+            let to = (self.target as i64 + pages as i64).clamp(0, self.last() as i64) as usize;
+            if to != self.target {
+                self.set_caret(ctx, self.doc.spans[to].start, false);
+            }
+        }
+    }
+
+    /// Pinch / Ctrl+scroll to zoom around the pointer, two-finger scroll up and down to pan. Returns the page rectangle.
     pub fn page_rect(&mut self, ctx: &egui::Context, area: Rect) -> Rect {
         let view = Self::view_area(area);
         let size = self.doc.setup.size();
@@ -117,8 +145,9 @@ impl App {
             self.fit = new == fit && (self.origin - centered).length() < 1.0;
             self.fit_settling = false;
         }
-        if !self.fit {
-            self.origin += scroll;
+        // Sideways swipes flip pages instead (see `swipe_pages`); Ctrl+drag still pans sideways.
+        if !self.fit && scroll.y.abs() >= scroll.x.abs() {
+            self.origin.y += scroll.y;
         }
 
         // The page can be moved anywhere as long as a good part of it stays in view.

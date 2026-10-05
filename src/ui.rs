@@ -478,11 +478,16 @@ impl App {
             return;
         }
         ui.painter().rect_filled(track, 4.0, Color32::from_rgb(30, 32, 38));
-        let thumb_w = (track.width() / n as f32).clamp(40.0, track.width());
+        // Pages sliding in count only as they arrive, and a page sliding out until it is gone, so
+        // the thumb glides instead of jumping when pages come and go.
+        let arriving = if self.slide_in.is_some() { (self.target as f32 - self.pos).max(0.0) } else { 0.0 };
+        let going = self.slide_out.map_or(0.0, |s| 1.0 - s);
+        let last = (n - 1) as f32 - arriving + going;
+        let thumb_w = (track.width() / (last + 1.0)).clamp(40.0, track.width());
         let travel = track.width() - thumb_w;
-        if n > 1 && n <= 80 {
-            for k in 0..n {
-                let x = track.left() + thumb_w / 2.0 + travel * k as f32 / (n - 1) as f32;
+        if last > 0.0 && n <= 80 {
+            for k in 0..=last.floor() as usize {
+                let x = track.left() + thumb_w / 2.0 + travel * k as f32 / last;
                 ui.painter().circle_filled(pos2(x, cy), 1.3, Color32::from_white_alpha(45));
             }
         }
@@ -502,7 +507,7 @@ impl App {
             self.scrubbing = false;
         }
 
-        let f = if n > 1 { self.pos / (n - 1) as f32 } else { 0.0 };
+        let f = if last > 0.0 { (self.pos + going) / last } else { 0.0 };
         let thumb = Rect::from_min_size(pos2(track.left() + travel * f, cy - 8.0), vec2(thumb_w, 16.0));
         let hot = resp.hovered() || self.scrubbing;
         ui.painter().rect_filled(thumb, 8.0, if hot { ACCENT } else { Color32::from_rgb(112, 124, 196) });
