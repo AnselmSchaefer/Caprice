@@ -160,7 +160,7 @@ fn find_cli() -> Option<std::path::PathBuf> {
     on_path.chain(usual).find(|p| p.is_file())
 }
 
-/// Ask Claude (`model`) through `claude -p` (no tools, no settings or project files, nothing saved) and pass
+/// Ask Claude (`model`) through `claude -p` (no tools, no project files, nothing saved) and pass
 /// the answer to `on_text` as it is written, until it ends or `cancel` is set.
 pub fn run_claude(model: &str, system: &str, prompt: &str, effort: &str, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Outcome, String> {
     use std::io::Write;
@@ -168,7 +168,9 @@ pub fn run_claude(model: &str, system: &str, prompt: &str, effort: &str, cancel:
     let cli = find_cli().ok_or(NO_CLI)?;
     let mut child = Process::new(&cli)
         .args(["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
-        .args(["--tools", "", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"])
+        // Keep user settings (API keys, custom providers like Bedrock/Vertex live there) but
+        // drop project and local settings, which belong to whatever repo the writer has open.
+        .args(["--tools", "", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence"])
         .args(["--model", model, "--effort", effort, "--system-prompt", system])
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
