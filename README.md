@@ -26,13 +26,17 @@ Caprice is a word processor for writing stories, not reports. It gives you real 
 
 ## Getting started
 
-Caprice is written in Rust and runs on Linux.
+Caprice is written in Rust and runs on Linux and macOS.
 
 ```sh
 cargo run --release              # try it
 cargo run --release -- story.caprice   # open a story directly
-./install.sh                     # install it with an icon and a launcher entry
+./install.sh                     # install it: a launcher entry on Linux, an app in ~/Applications on macOS
 ```
+
+On Linux, `install.sh` places the binary in `~/.local/bin` and adds a launcher entry and icon under `~/.local/share`.
+
+On macOS, it builds `~/Applications/Caprice.app` (no sudo needed), so Caprice shows up in Launchpad and Spotlight and opens `.caprice` files by double-click. Re-run `./install.sh` after pulling updates to refresh it.
 
 ### Claude features
 

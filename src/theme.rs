@@ -12,6 +12,9 @@ pub const ACCENT: Color32 = Color32::from_rgb(143, 162, 255);
 pub const PAPER: Color32 = Color32::from_rgb(253, 252, 249);
 
 pub fn apply_theme(ctx: &egui::Context) {
+    // Caprice only has a dark theme; don't let the OS's light/dark setting pick between
+    // this and an unstyled default (that mismatch is what made menus look so rough).
+    ctx.set_theme(egui::ThemePreference::Dark);
     let mut v = egui::Visuals::dark();
     v.panel_fill = DESK;
     v.window_fill = DOCK;
