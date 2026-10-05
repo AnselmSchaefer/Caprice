@@ -1,4 +1,5 @@
 mod backdrop;
+mod book;
 mod claude;
 mod edit;
 mod editor;
@@ -62,8 +63,18 @@ fn main() -> eframe::Result {
     )
 }
 
+/// How the pages look and move as you go through them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Appearance {
+    /// Pages turn over like a book's, hinged on their left edge.
+    Book,
+    /// Pages slide off to the left and tuck in under the pile behind.
+    Paperstack,
+}
+
 pub struct App {
     pub doc: Doc,
+    pub appearance: Appearance,
     /// Caret and the other end of the selection, as positions in the flow (chars).
     pub caret: usize,
     pub anchor: usize,
@@ -165,6 +176,7 @@ impl App {
         doc.flow.styles = vec![typing.clone()];
         let mut app = Self {
             doc,
+            appearance: Appearance::Paperstack,
             caret: 0,
             anchor: 0,
             want_x: None,
@@ -308,7 +320,7 @@ impl App {
     /// page, following it; they go back when it points here again.
     fn animate_held(&mut self, ui: &egui::Ui) {
         let here = self.target as f32;
-        let settled = self.batch.is_none() && self.pos == here;
+        let settled = self.batch.is_none() && self.pos == here && self.appearance == Appearance::Paperstack;
         let goal = match self.scrub_to {
             Some(at) if settled => (at - here).clamp(-here, self.last() as f32 - here),
             _ => 0.0,
@@ -337,6 +349,9 @@ impl App {
     }
 
     fn animate(&mut self, ui: &egui::Ui) {
+        if self.appearance == Appearance::Book {
+            return self.animate_book(ui);
+        }
         let goal = self.target as f32;
         let diff = goal - self.pos;
         if diff.abs() < 0.002 {
@@ -352,6 +367,30 @@ impl App {
         }
         let step = speed * dt;
         self.pos = if diff.abs() <= step { goal } else { self.pos + step * diff.signum() };
+        ui.ctx().request_repaint();
+    }
+
+    /// In a book, the dragged scrollbar moves the pages itself; otherwise each turn eases by
+    /// itself, as fast forwards as backwards (the slow slide into the pile comes at its other end).
+    fn animate_book(&mut self, ui: &egui::Ui) {
+        self.swiped = false;
+        if self.scrub_to.is_some() {
+            return;
+        }
+        let target = self.target as f32;
+        let diff = target - self.pos;
+        if diff.abs() < 0.002 {
+            self.pos = target;
+            return;
+        }
+        let dt = ui.input(|i| i.stable_dt).min(0.05);
+        let mut speed = (diff.abs().ceil() * 2.75).clamp(2.2, 14.0);
+        let base = self.pos.floor();
+        if self.pos - base >= book::TURN && !self.slides_in(base as usize) {
+            speed /= 2.0; // a turned page slides onto the pile at half the pace
+        }
+        let step = speed * dt;
+        self.pos = if diff.abs() <= step { target } else { self.pos + step * diff.signum() };
         ui.ctx().request_repaint();
     }
 }
@@ -473,6 +512,9 @@ impl App {
             self.static_page(ui, page_rect, base);
             let from_right = area.right() + 40.0 - page_rect.left();
             self.static_page(ui, page_rect.translate(egui::vec2(from_right * (1.0 - ease(t)), 0.0)), base + 1);
+        } else if self.appearance == Appearance::Book {
+            // Mid-turn: page `base` turns over, revealing `base + 1`, or back.
+            self.book_turn(ui, page_rect, base, t);
         } else {
             // Between pages: page `base` slides off `base + 1` into the back of the pile behind, or out of it.
             self.slide_page(ui, page_rect, base, t);
@@ -618,6 +660,46 @@ mod tests {
         assert!((from, to) == (6, 4) && near(held, -1.5), "{:?}", h.app.batch);
         h.frames(60, vec![], Modifiers::NONE);
         assert_eq!((h.app.batch, h.app.held, h.app.pos), (None, 0.0, 4.0));
+    }
+
+    #[test]
+    fn in_a_book_the_scrollbar_turns_the_pages_along_with_it() {
+        let mut h = Harness::new();
+        h.app.appearance = Appearance::Book;
+        h.frames(3, vec![], Modifiers::NONE);
+        for _ in 0..6 {
+            h.type_text("page");
+            h.key(Key::Enter, Modifiers::COMMAND);
+        }
+        h.frames(120, vec![], Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        h.app.go_to_page(&ctx, 1);
+        h.frames(150, vec![], Modifiers::NONE);
+        assert_eq!(h.app.pos, 1.0);
+
+        // The pages turn with the thumb, nothing is held out, and the caret goes along.
+        let (y, x0, x1) = h.app.last_track;
+        let at = |page: f32| egui::pos2(x0 + (x1 - x0) * page / 6.0, y);
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        h.frames(1, vec![egui::Event::PointerMoved(at(1.0)), button(at(1.0), true)], Modifiers::NONE);
+        h.frames(1, vec![egui::Event::PointerMoved(at(3.4))], Modifiers::NONE);
+        h.frames(10, vec![], Modifiers::NONE);
+        assert!((h.app.pos - 3.4).abs() < 0.01, "{}", h.app.pos);
+        assert_eq!((h.app.target, h.app.held), (3, 0.0));
+        // Let go, the page turning finishes by itself, without moving pages together.
+        h.frames(1, vec![button(at(3.4), false)], Modifiers::NONE);
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!((h.app.pos, h.app.target, h.app.batch), (3.0, 3, None));
+
+        // Going to a post-it turns page by page too.
+        let start = h.app.doc.spans[0].start;
+        h.app.doc.notes.push(model::Note { id: 7, start, end: start + 2, text: String::new(), color: 0 });
+        h.app.go_to_note(&ctx, 7);
+        h.frames(1, vec![], Modifiers::NONE);
+        assert_eq!((h.app.target, h.app.batch), (0, None));
+        assert!(h.app.pos > 0.0 && h.app.pos < 3.0, "{}", h.app.pos);
+        h.frames(90, vec![], Modifiers::NONE);
+        assert_eq!(h.app.pos, 0.0);
     }
 
     #[test]

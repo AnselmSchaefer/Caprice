@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Color32, FontId, Id, Rect, Sense, Stroke, UiBuilder, pos2, vec2};
 
-use crate::App;
+use crate::{App, Appearance};
 use crate::model::{Align, CM, ListKind, Orientation};
 use crate::theme::{ACCENT, BTN, BTN_HOVER, DOCK, DOCK_EDGE, TEXT, TEXT_DIM};
 
@@ -316,6 +316,21 @@ impl App {
         ui.add_space(2.0);
         let new_setup = self.page_menu(ui);
 
+        egui::containers::menu::MenuButton::new("Appearance").ui(ui, |ui| {
+            ui.set_min_width(170.0);
+            let looks = [
+                (Appearance::Book, "Book", "Pages turn over like a book's"),
+                (Appearance::Paperstack, "Paperstack", "Pages slide onto a stack"),
+            ];
+            for (a, label, tip) in looks {
+                if ui.selectable_label(self.appearance == a, label).on_hover_text(tip).clicked() {
+                    self.appearance = a;
+                    // Whatever was moving finishes the new way.
+                    (self.held, self.batch) = (0.0, None);
+                }
+            }
+        });
+
         let mut image_action = None;
         let selected_image = self.selected_image().is_some();
         egui::containers::menu::MenuButton::new("Image").ui(ui, |ui| {
@@ -448,7 +463,7 @@ impl App {
         ui.painter().text(
             pos2(r.left(), cy),
             egui::Align2::LEFT_CENTER,
-            format!("Page {} of {}", self.scrub_page().unwrap_or(self.pos.round() as usize) + 1, n),
+            format!("Page {} of {}", self.scrub_page().filter(|_| self.appearance == Appearance::Paperstack).unwrap_or(self.pos.round() as usize) + 1, n),
             FontId::proportional(13.0),
             TEXT_DIM,
         );
@@ -494,6 +509,7 @@ impl App {
 
         // Dragging (or pressing) slides the pages half out one by one, following the thumb: right,
         // off the page; left, out of the pile behind. Letting go moves them all there together.
+        // A book turns its pages along with the thumb instead.
         let resp = ui.interact(track.expand2(vec2(6.0, 12.0)), Id::new("scroll"), Sense::click_and_drag());
         self.last_track = (cy, track.left() + thumb_w / 2.0, track.right() - thumb_w / 2.0);
         let mut f = if last > 0.0 { (self.pos + going) / last } else { 0.0 };
@@ -501,11 +517,20 @@ impl App {
             if let Some(p) = resp.interact_pointer_pos() {
                 f = ((p.x - track.left() - thumb_w / 2.0) / travel).clamp(0.0, 1.0);
                 self.scrub_to = Some(f * (n - 1) as f32);
+                if self.appearance == Appearance::Book {
+                    // In a book the pages turn along with the thumb, and the caret goes along.
+                    self.pos = f * (n - 1) as f32;
+                    let ctx = ui.ctx().clone();
+                    let start = self.doc.spans[(self.pos.round() as usize).min(self.last())].start;
+                    self.set_caret(&ctx, start, false);
+                }
             }
         } else if let Some(to) = self.scrub_page() {
             self.scrub_to = None;
-            let ctx = ui.ctx().clone();
-            self.let_go_to(&ctx, to);
+            if self.appearance == Appearance::Paperstack {
+                let ctx = ui.ctx().clone();
+                self.let_go_to(&ctx, to);
+            }
         }
 
         let thumb = Rect::from_min_size(pos2(track.left() + travel * f, cy - 8.0), vec2(thumb_w, 16.0));

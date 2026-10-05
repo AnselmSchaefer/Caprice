@@ -4,17 +4,17 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Stroke, pos2, vec2};
 
-use crate::App;
-use crate::notes::{NOTE_OUT, NoteLook, mirror_note, note_rect};
+use crate::{App, Appearance};
+use crate::notes::{NOTE_OUT, NoteLook, mirror_note, note_color, note_rect};
 use crate::theme::{INK, PAPER};
 
 /// Which way, per sheet, the piles of pages ahead and behind spread out from under the page.
-const AHEAD: egui::Vec2 = egui::vec2(1.0, 0.64);
-const BEHIND: egui::Vec2 = egui::vec2(-1.0, 0.5);
+pub const AHEAD: egui::Vec2 = egui::vec2(1.0, 0.64);
+pub const BEHIND: egui::Vec2 = egui::vec2(-1.0, 0.5);
 /// Colour of the sheets in the pile ahead of the page.
 const AHEAD_FILL: Color32 = Color32::from_rgb(232, 230, 224);
 /// Colour of the sheets in the pile behind the page.
-const BEHIND_FILL: Color32 = Color32::from_rgb(226, 224, 218);
+pub const BEHIND_FILL: Color32 = Color32::from_rgb(226, 224, 218);
 
 impl App {
     /// Screen points per page point for a page drawn into `rect`.
@@ -40,7 +40,7 @@ impl App {
     }
 
     /// Screen points between neighbouring sheets of the piles beside a page at `rect`.
-    fn stack_gap(&self, ctx: &egui::Context, rect: Rect) -> f32 {
+    pub fn stack_gap(&self, ctx: &egui::Context, rect: Rect) -> f32 {
         let target = self.sheet_gap(self.doc.pages());
         // Ease the spacing when pages come and go, so the pile visibly thins or thickens.
         ctx.animate_value_with_time(egui::Id::new("page-stack-gap"), target, 0.3) * self.scale_of(rect)
@@ -95,7 +95,8 @@ impl App {
         let line = (gap_px / 3.0).clamp(0.25, 1.0);
 
         // Post-its of the pages in the pile peek out of it: to the right from pages ahead, and to
-        // the left from pages behind (they moved over as their page slid there).
+        // the left from pages behind (they moved over as their page slid there, or, in a book,
+        // the page was turned over).
         let sc = self.scale_of(rect);
         let places = if self.doc.notes.is_empty() { Default::default() } else { self.note_places(ctx) };
         let n = self.doc.pages();
@@ -107,9 +108,15 @@ impl App {
                     let n = &self.doc.notes[note];
                     let pr = note_rect(r, sc, y);
                     let pr = if left { mirror_note(r, pr) } else { pr };
-                    // It keeps its writing: the pages on top hide the rest.
-                    let look = NoteLook { shade: 0.96, ..NoteLook::FLAT };
-                    painter.extend(self.note_shapes(ctx, n, pr, sc, self.pad(n.id).sheet as f32, &look));
+                    if left && self.appearance == Appearance::Book {
+                        // Turned over, a post-it shows its blank back.
+                        painter.rect_filled(pr, 1.0, note_color(n.color).gamma_multiply(0.8).to_opaque());
+                        painter.rect_stroke(pr, 1.0, Stroke::new(0.6, Color32::from_black_alpha(40)), egui::StrokeKind::Inside);
+                    } else {
+                        // It keeps its writing: the pages on top hide the rest.
+                        let look = NoteLook { shade: 0.96, ..NoteLook::FLAT };
+                        painter.extend(self.note_shapes(ctx, n, pr, sc, self.pad(n.id).sheet as f32, &look));
+                    }
                 }
                 if k == count || k % step == 0 {
                     painter.rect_filled(r, 1.0, fill);
@@ -123,7 +130,7 @@ impl App {
     }
 
     /// The page number, and where it goes relative to the page's top-left (None if turned off).
-    fn footer(&self, ctx: &egui::Context, i: usize, sc: f32) -> Option<(Arc<egui::Galley>, Pos2)> {
+    pub fn footer(&self, ctx: &egui::Context, i: usize, sc: f32) -> Option<(Arc<egui::Galley>, Pos2)> {
         if !self.doc.setup.page_numbers {
             return None;
         }
@@ -184,6 +191,9 @@ impl App {
     /// of the pile behind it, its post-its moving over to its left edge. Drawn before the pile and
     /// the page at `rect`, so it passes under them.
     pub fn sheet_to_pile(&self, ui: &egui::Ui, rect: Rect, i: usize, from: egui::Vec2, s: f32) {
+        if self.appearance == Appearance::Book {
+            return self.turned_to_pile(ui, rect, i, from, s);
+        }
         let pile = BEHIND * self.stack_gap(ui.ctx(), rect) * (i + 1) as f32;
         // The pile's edge line comes in as the sheet arrives.
         self.sheet_at(ui, rect, i, from + (pile - from) * s, s, s, true);
