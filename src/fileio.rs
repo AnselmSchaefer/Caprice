@@ -352,9 +352,13 @@ impl App {
             ui.label(egui::RichText::new(format!("Your changes will be lost if you don\u{2019}t save them {then}.")).color(crate::theme::TEXT_DIM));
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                save = ui.button("Save").clicked() || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-                discard = ui.button("Don\u{2019}t save").clicked();
-                cancel = ui.button("Cancel").clicked();
+                save = ui.button("Save").clicked();
+                let discard_btn = ui.button("Don\u{2019}t save");
+                let cancel_btn = ui.button("Cancel");
+                (discard, cancel) = (discard_btn.clicked(), cancel_btn.clicked());
+                // Enter saves, unless the keyboard is on one of the other buttons: then it is theirs.
+                let other = discard_btn.has_focus() || cancel_btn.has_focus();
+                save |= !other && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
             });
         });
         cancel |= modal.should_close();

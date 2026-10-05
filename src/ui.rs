@@ -316,21 +316,6 @@ impl App {
         ui.add_space(2.0);
         let new_setup = self.page_menu(ui);
 
-        egui::containers::menu::MenuButton::new("View").ui(ui, |ui| {
-            ui.set_min_width(170.0);
-            let looks = [
-                (Appearance::Book, "Book", "Pages turn over like a book's"),
-                (Appearance::Paperstack, "Paperstack", "Pages slide onto a stack"),
-            ];
-            for (a, label, tip) in looks {
-                if ui.selectable_label(self.appearance == a, label).on_hover_text(tip).clicked() {
-                    self.appearance = a;
-                    // Whatever was moving finishes the new way.
-                    (self.held, self.batch) = (0.0, None);
-                }
-            }
-        });
-
         let mut image_action = None;
         let selected_image = self.selected_image().is_some();
         egui::containers::menu::MenuButton::new("Image").ui(ui, |ui| {
@@ -410,6 +395,7 @@ impl App {
     /// Orientation, paper, margins and page numbers. Returns the new setup if something changed.
     fn page_menu(&mut self, ui: &mut egui::Ui) -> Option<crate::model::PageSetup> {
         let mut setup = self.doc.setup.clone();
+        let mut look = self.appearance;
         egui::containers::menu::MenuButton::new("Page")
             .config(
                 egui::containers::menu::MenuConfig::new()
@@ -417,6 +403,12 @@ impl App {
             )
             .ui(ui, |ui| {
                 ui.set_min_width(250.0);
+                ui.horizontal(|ui| {
+                    ui.label("View");
+                    ui.selectable_value(&mut look, Appearance::Book, "Book").on_hover_text("Pages turn over like a book's");
+                    ui.selectable_value(&mut look, Appearance::Paperstack, "Paperstack").on_hover_text("Pages slide onto a stack");
+                });
+                ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("Orientation");
                     ui.selectable_value(&mut setup.orientation, Orientation::Portrait, "Portrait");
@@ -452,6 +444,11 @@ impl App {
                 ui.separator();
                 ui.checkbox(&mut setup.page_numbers, "Page numbers");
             });
+        if look != self.appearance {
+            self.appearance = look;
+            // Whatever was moving finishes the new way.
+            (self.held, self.batch) = (0.0, None);
+        }
         (setup != self.doc.setup).then_some(setup)
     }
 

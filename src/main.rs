@@ -176,7 +176,7 @@ impl App {
         doc.flow.styles = vec![typing.clone()];
         let mut app = Self {
             doc,
-            appearance: Appearance::Paperstack,
+            appearance: Appearance::Book,
             caret: 0,
             anchor: 0,
             want_x: None,
@@ -603,6 +603,7 @@ mod tests {
     #[test]
     fn the_scrollbar_holds_the_pages_half_out_then_moves_them_together() {
         let mut h = Harness::new();
+        h.app.appearance = Appearance::Paperstack;
         h.frames(3, vec![], Modifiers::NONE);
         for _ in 0..6 {
             h.type_text("page");
@@ -665,7 +666,7 @@ mod tests {
     #[test]
     fn in_a_book_the_scrollbar_turns_the_pages_along_with_it() {
         let mut h = Harness::new();
-        h.app.appearance = Appearance::Book;
+        assert_eq!(h.app.appearance, Appearance::Book, "a book is the default");
         h.frames(3, vec![], Modifiers::NONE);
         for _ in 0..6 {
             h.type_text("page");
@@ -896,6 +897,7 @@ mod tests {
     #[test]
     fn going_to_a_post_it_moves_the_pages_in_between_together() {
         let mut h = Harness::new();
+        h.app.appearance = Appearance::Paperstack;
         h.frames(3, vec![], Modifiers::NONE);
         for _ in 0..4 {
             h.type_text("page");
@@ -1191,6 +1193,16 @@ mod tests {
         assert_eq!(h.text(), "Draft", "the page takes no typing while asking");
         h.key(Key::Escape, Modifiers::NONE);
         assert_eq!(h.app.leaving, None, "Escape cancels");
+
+        // With the keyboard on "Don't save", Enter doesn't save: it closes without saving.
+        h.app.leaving = Some(fileio::Leaving::Close);
+        h.frames(2, vec![], Modifiers::NONE);
+        h.key(Key::Tab, Modifiers::NONE);
+        h.key(Key::Tab, Modifiers::NONE);
+        h.key(Key::Enter, Modifiers::NONE);
+        assert_eq!(h.app.leaving, None);
+        assert!(h.app.may_close && h.app.path.is_none() && h.app.dialog.is_none(), "closed without saving");
+        h.app.may_close = false;
 
         let dir = std::env::temp_dir().join(format!("caprice-unsaved-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
