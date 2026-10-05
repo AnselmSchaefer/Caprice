@@ -163,8 +163,10 @@ impl App {
     /// (lying on it) to 1 (at the back of the pile); going back, the other way round. It slides out
     /// to the left over everything until clear of the pile, its post-its staying put, then tucks
     /// in under the pile, its post-its moving over to its left edge as it goes in (nothing overlaps
-    /// it out there, so it can go from over the pile to under it unseen).
-    pub fn slide_page(&self, ui: &egui::Ui, rect: Rect, base: usize, t: f32) {
+    /// it out there, so it can go from over the pile to under it unseen). Coming `back` out of the
+    /// pile, its post-its stay on its left edge until it slides over to the right onto the page,
+    /// and move over to its right edge then.
+    pub fn slide_page(&self, ui: &egui::Ui, rect: Rect, base: usize, t: f32, back: bool) {
         let ease = |s: f32| s * s * (3.0 - 2.0 * s);
         let ctx = ui.ctx();
         let (gap, sc) = (self.stack_gap(ctx, rect), self.scale_of(rect));
@@ -178,10 +180,10 @@ impl App {
             let s = ease(t / OUT);
             self.stack(ui.painter(), rect, base, ahead);
             self.static_page(ui, rect, base + 1);
-            self.sheet_at(ui, rect, base, clear * s, 0.0, 0.0, true);
+            self.sheet_at(ui, rect, base, clear * s, 0.0, if back { s } else { 0.0 }, true);
         } else {
             let s = ease((t - OUT) / (1.0 - OUT));
-            self.sheet_at(ui, rect, base, clear + (pile - clear) * s, s, s, true);
+            self.sheet_at(ui, rect, base, clear + (pile - clear) * s, s, if back { 1.0 } else { s }, true);
             self.stack(ui.painter(), rect, base, ahead);
             self.static_page(ui, rect, base + 1);
         }
@@ -244,7 +246,8 @@ impl App {
     /// from 0 to 1, from where `held` held them (see `held_offset`). Ahead, they slide out to the
     /// left over everything until clear of the pile, then tuck in under it, their post-its moving
     /// over to their left edges as they go in. Back, they come out from under the pile until clear
-    /// of it, their post-its moving back to the right, then over it onto the page.
+    /// of it, their post-its staying on the left, then over it onto the page, their post-its
+    /// moving back to the right as they go.
     pub fn batch_pages(&self, ui: &egui::Ui, rect: Rect, from: usize, to: usize, s: f32, held: f32) {
         let ease = |s: f32| s * s * (3.0 - 2.0 * s);
         let ctx = ui.ctx();
@@ -283,9 +286,9 @@ impl App {
                 let start = self.held_offset(ctx, rect, i, from, held);
                 let clear = vec2(clear_x - gap * (from - 1 - i) as f32, start.y);
                 if first {
-                    (i, start + (clear - start) * u, 1.0 - u)
+                    (i, start + (clear - start) * u, 1.0)
                 } else {
-                    (i, clear + (AHEAD * gap * (i - to) as f32 - clear) * u, 0.0)
+                    (i, clear + (AHEAD * gap * (i - to) as f32 - clear) * u, 1.0 - u)
                 }
             };
             let sheets: Vec<_> = (to..from).rev().map(at).collect();

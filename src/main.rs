@@ -517,7 +517,8 @@ impl App {
             self.book_turn(ui, page_rect, base, t);
         } else {
             // Between pages: page `base` slides off `base + 1` into the back of the pile behind, or out of it.
-            self.slide_page(ui, page_rect, base, t);
+            let back = (self.target as f32) < self.pos;
+            self.slide_page(ui, page_rect, base, t, back);
         }
 
         self.pan_with_ctrl(ui, area);
