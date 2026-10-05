@@ -106,7 +106,14 @@ pub struct App {
     /// Page count and target as of the last frame, to notice a page being added.
     pub seen_pages: usize,
     pub seen_target: usize,
-    pub scrubbing: bool,
+    /// While the scrollbar is dragged: the page it would go to (the pages stay put meanwhile).
+    pub scrub_to: Option<usize>,
+    /// How far the top corners of the page are curled (left, right) while the scrollbar points
+    /// back or ahead, and how far down the right one is about to reach (post-its make way).
+    pub curl: [f32; 2],
+    pub curl_reach: f32,
+    /// Pages turned over in one go when the scrollbar is let go: from, to, and how far along (0 to 1).
+    pub bundle: Option<(usize, usize, f32)>,
     /// Sideways two-finger swipe not yet turned into page flips, and when it last moved.
     pub swipe: f32,
     pub swipe_at: f64,
@@ -115,6 +122,8 @@ pub struct App {
     pub note_focus: Option<u64>,
     pub pads: HashMap<u64, notes::Pad>,
     pub last_page_rect: Rect,
+    /// Where the scrollbar's track was drawn last, and the stretch its thumb's centre travels.
+    pub last_track: (f32, f32, f32),
     /// Textures of the document's pictures, by picture id.
     pub textures: HashMap<u32, egui::TextureHandle>,
     pub startup_file: Option<PathBuf>,
@@ -180,13 +189,17 @@ impl App {
             slide_out: None,
             seen_pages: 0,
             seen_target: 0,
-            scrubbing: false,
+            scrub_to: None,
+            curl: [0.0; 2],
+            curl_reach: 0.0,
+            bundle: None,
             swipe: 0.0,
             swipe_at: 0.0,
             search: Search::default(),
             note_focus: None,
             pads: HashMap::new(),
             last_page_rect: Rect::NOTHING,
+            last_track: (0.0, 0.0, 0.0),
             textures: HashMap::new(),
             startup_file: None,
             shown_status: String::new(),
@@ -241,6 +254,43 @@ impl App {
         }
     }
 
+    /// Turn from the page we are on straight to page `to`: one quick flip of the whole bundle of
+    /// pages in between (just a flip, for the next or previous page).
+    pub fn flip_bundle_to(&mut self, ctx: &egui::Context, to: usize) {
+        let from = self.target;
+        if to == from {
+            return;
+        }
+        self.set_caret(ctx, self.doc.spans[to].start, false);
+        if from.abs_diff(to) > 1 {
+            self.bundle = Some((from, to, 0.0));
+            self.pos = to as f32;
+        }
+    }
+
+    /// Move a bundle flip along: quick, whatever the number of pages.
+    fn animate_bundle(&mut self, ui: &egui::Ui) {
+        let Some((from, to, s)) = self.bundle else { return };
+        let dt = ui.input(|i| i.stable_dt).min(0.05);
+        let s = s + dt / 0.7;
+        // Done, or another way of moving took over.
+        self.bundle = (s < 1.0 && self.target == to).then_some((from, to, s));
+        ui.ctx().request_repaint();
+    }
+
+    /// Curl the top corner on the side the dragged scrollbar points to, further the further it points.
+    fn animate_curl(&mut self, ctx: &egui::Context, page_rect: Rect) {
+        let here = self.pos.round();
+        let d = self.scrub_to.map_or(0.0, |p| p as f32 - here);
+        let size = |d: f32| if d < 0.5 { 0.0 } else { page_rect.width() * (0.08 + 0.27 * (1.0 - (-(d - 1.0) / 6.0).exp())) };
+        let (left, right) = (size(-d), size(d));
+        self.curl_reach = right * render::CURL_TALL;
+        self.curl = [
+            ctx.animate_value_with_time(egui::Id::new("curl-left"), left, 0.15),
+            ctx.animate_value_with_time(egui::Id::new("curl-right"), right, 0.15),
+        ];
+    }
+
     /// Move a page that was taken away further out to the right, at the pace of a flip.
     fn animate_slide_out(&mut self, ui: &egui::Ui) {
         let Some(s) = self.slide_out else { return };
@@ -256,9 +306,6 @@ impl App {
     }
 
     fn animate(&mut self, ui: &egui::Ui) {
-        if self.scrubbing {
-            return;
-        }
         let target = self.target as f32;
         let diff = target - self.pos;
         if diff.abs() < 0.002 {
@@ -334,6 +381,7 @@ impl App {
             self.slide_in = None;
         }
         self.animate_slide_out(ui);
+        self.animate_bundle(ui);
         self.animate_pads(ui);
         self.update_backdrop(&ctx);
         self.pos = self.pos.clamp(0.0, self.last() as f32);
@@ -344,7 +392,14 @@ impl App {
         let t = self.pos - base as f32;
         let n = self.doc.pages();
 
-        if t < 1e-3 || base >= self.last() {
+        self.animate_curl(&ctx, page_rect);
+
+        if let Some((from, to, s)) = self.bundle {
+            // A bundle of pages turning over in one go, drawn as if forwards from the lower page.
+            let (lo, hi) = (from.min(to), from.max(to));
+            let t = if to > from { s } else { 1.0 - s };
+            self.bundle_flip(ui, page_rect, lo, hi, t);
+        } else if t < 1e-3 || base >= self.last() {
             // Settled: this page is editable.
             let i = (self.pos.round() as usize).min(self.last());
             let ease = |s: f32| s * s * (3.0 - 2.0 * s);
@@ -366,6 +421,11 @@ impl App {
             self.editor_surface(ui, page_rect, i, !self.pen);
             self.draw_notes(ui, page_rect, i);
             self.pen_surface(ui, page_rect, i);
+            for (right, size) in [(false, self.curl[0]), (true, self.curl[1])] {
+                if size > 0.5 {
+                    self.corner_curl(ui.painter(), page_rect, size, right);
+                }
+            }
             if let Some(s) = self.slide_out {
                 let to_right = area.right() + 40.0 - page_rect.left();
                 let r = page_rect.translate(egui::vec2(to_right * ease(s), 0.0));
@@ -384,22 +444,8 @@ impl App {
                 self.static_page(ui, page_rect, base);
                 let from_right = area.right() + 40.0 - page_rect.left();
                 self.static_page(ui, page_rect.translate(egui::vec2(from_right * (1.0 - ease(t)), 0.0)), base + 1);
-            } else if t < TURN && ease(t / TURN) < 0.5 {
-                // Still over the right half: on top of everything.
-                self.stack(ui.painter(), page_rect, base, ahead);
-                self.static_page(ui, page_rect, base + 1);
-                self.flipping_page(ui, page_rect, base, ease(t / TURN) * std::f32::consts::PI);
             } else {
-                // Past upright (where it is edge-on, so the change of order doesn't show) it comes
-                // down on the left behind the pile, and slides into the back of it.
-                if t < TURN {
-                    self.flipping_page(ui, page_rect, base, ease(t / TURN) * std::f32::consts::PI);
-                } else {
-                    let from = egui::vec2(-page_rect.width(), 0.0);
-                    self.sheet_to_pile(ui, page_rect, base, from, ease((t - TURN) / (1.0 - TURN)));
-                }
-                self.stack(ui.painter(), page_rect, base, ahead);
-                self.static_page(ui, page_rect, base + 1);
+                self.bundle_flip(ui, page_rect, base, base + 1, t);
             }
         }
 
@@ -481,6 +527,51 @@ mod tests {
         h.frames(90, vec![], Modifiers::NONE);
         h.key(Key::PageDown, Modifiers::NONE);
         assert_eq!(h.app.slide_in, None, "a page that was already there is flipped to");
+    }
+
+    #[test]
+    fn the_scrollbar_curls_a_corner_then_turns_the_bundle_at_once() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        for _ in 0..6 {
+            h.type_text("page");
+            h.key(Key::Enter, Modifiers::COMMAND);
+        }
+        h.frames(120, vec![], Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        h.app.flip_bundle_to(&ctx, 1);
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!((h.app.target, h.app.bundle), (1, None));
+
+        // Hold the scrollbar's thumb and drag it: pointing ahead curls the right corner, more the
+        // further it points, while the pages stay put.
+        let (y, x0, x1) = h.app.last_track;
+        let at = |page: usize| egui::pos2(x0 + (x1 - x0) * page as f32 / 6.0, y);
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        h.frames(1, vec![egui::Event::PointerMoved(at(1)), button(at(1), true)], Modifiers::NONE);
+        h.frames(1, vec![egui::Event::PointerMoved(at(3))], Modifiers::NONE);
+        h.frames(30, vec![], Modifiers::NONE);
+        assert_eq!(h.app.scrub_to, Some(3));
+        let near = h.app.curl[1];
+        assert!(near > 0.0 && h.app.curl[0] == 0.0, "{:?}", h.app.curl);
+        h.frames(1, vec![egui::Event::PointerMoved(at(6))], Modifiers::NONE);
+        h.frames(30, vec![], Modifiers::NONE);
+        assert!(h.app.curl[1] > near, "{} vs {near}", h.app.curl[1]);
+        assert_eq!(h.app.pos, 1.0);
+        // Pointing back curls the left one instead.
+        h.frames(1, vec![egui::Event::PointerMoved(at(0))], Modifiers::NONE);
+        h.frames(30, vec![], Modifiers::NONE);
+        assert!(h.app.curl[0] > 0.0 && h.app.curl[1] == 0.0, "{:?}", h.app.curl);
+
+        // Letting go turns the whole bundle in one quick flip.
+        h.frames(1, vec![egui::Event::PointerMoved(at(6))], Modifiers::NONE);
+        h.frames(1, vec![button(at(6), false)], Modifiers::NONE);
+        h.frames(1, vec![], Modifiers::NONE);
+        assert_eq!(h.app.bundle.map(|b| (b.0, b.1)), Some((1, 6)));
+        assert_eq!(h.app.doc.page_of(h.app.caret), 6);
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!(h.app.bundle, None);
+        assert_eq!(h.app.pos, 6.0);
     }
 
     #[test]

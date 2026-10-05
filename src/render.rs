@@ -12,6 +12,8 @@ use crate::theme::{INK, PAPER};
 /// Which way, per sheet, the piles of pages ahead and behind spread out from under the page.
 const AHEAD: egui::Vec2 = egui::vec2(1.0, 0.64);
 const BEHIND: egui::Vec2 = egui::vec2(-1.0, 0.5);
+/// How much further a curled corner reaches down the side of the page than along its top.
+pub const CURL_TALL: f32 = 1.3;
 /// Colour of the turned-over sheets in the pile behind the page.
 const BEHIND_FILL: Color32 = Color32::from_rgb(226, 224, 218);
 
@@ -76,6 +78,12 @@ impl App {
         hits
     }
 
+    /// Every how many sheets the piles beside a page at `rect` draw one, so they don't smear together.
+    fn pile_step(&self, ctx: &egui::Context, rect: Rect) -> usize {
+        let gap_px = self.stack_gap(ctx, rect) * ctx.pixels_per_point();
+        (1.5 / gap_px).ceil().max(1.0) as usize
+    }
+
     /// Stack hints: every sheet piled to the right (pages ahead) and left (pages behind). A turned
     /// page slides into the back of the left pile, so page `k - 1` lies `k` sheets out.
     pub fn stack(&self, painter: &egui::Painter, rect: Rect, behind: usize, ahead: usize) {
@@ -84,7 +92,7 @@ impl App {
         let gap_px = gap * ctx.pixels_per_point();
         // Sheets closer than ~1.5 px would smear into one dark edge: draw every `step`th one only,
         // and fade the edge lines as they crowd, leaving a soft blur for long documents.
-        let step = (1.5 / gap_px).ceil().max(1.0) as usize;
+        let step = self.pile_step(ctx, rect);
         let line = (gap_px / 3.0).clamp(0.25, 1.0);
 
         // Post-its of the pages in the pile peek out of it: to the right from pages ahead, and
@@ -149,6 +157,95 @@ impl App {
         self.paint_layout(ui.painter(), &layout, rect.min + self.doc.setup.margin_origin() * sc);
         self.draw_footer(ui, rect, i);
         self.paint_notes(ui.ctx(), ui.painter(), rect, i, &NoteLook::FLAT);
+    }
+
+    /// The top corner of the page at `rect` curled back over the page by `size` (screen points
+    /// along the top edge), on the right or the left, uncovering the paper of the page underneath.
+    pub fn corner_curl(&self, painter: &egui::Painter, rect: Rect, size: f32, right: bool) {
+        let a = size.min(rect.width() * 0.9);
+        let b = (size * CURL_TALL).min(rect.height() * 0.9);
+        // Worked out from the corner inwards, so the same lines make either corner.
+        let x = |dx: f32| if right { rect.right() - dx } else { rect.left() + dx };
+        let corner = pos2(x(0.0), rect.top());
+        let (fa, fb) = (pos2(x(a), rect.top()), pos2(x(0.0), rect.top() + b));
+        // The corner folded over the line from `fa` to `fb`.
+        let along = (fb - fa).normalized();
+        let v = corner - fa;
+        let tip = fa + 2.0 * v.dot(along) * along - v;
+        let shade = |k: f32| Color32::from_rgb(
+            (f32::from(PAPER.r()) * k) as u8,
+            (f32::from(PAPER.g()) * k) as u8,
+            (f32::from(PAPER.b()) * k) as u8,
+        );
+        let triangle = |pts: [(Pos2, Color32); 3]| {
+            let mut m = Mesh::default();
+            for (p, c) in pts {
+                m.colored_vertex(p, c);
+            }
+            m.add_triangle(0, 1, 2);
+            Shape::mesh(m)
+        };
+        // The page underneath, in the flap's shadow along the fold.
+        painter.add(triangle([(fa, shade(0.8)), (corner, shade(0.97)), (fb, shade(0.8))]));
+        // The flap's own shadow on the page, a little beyond its tip.
+        let out = (tip - fa.lerp(fb, 0.5)) * 0.12;
+        let soft = Color32::from_black_alpha(0);
+        painter.add(triangle([(fa, Color32::from_black_alpha(45)), (tip + out, soft), (fb, Color32::from_black_alpha(45))]));
+        // The flap: the back of the page, catching the light where it bends.
+        painter.add(triangle([(fa, shade(0.99)), (tip, shade(0.86)), (fb, shade(0.99))]));
+        let edge = Stroke::new(0.6, Color32::from_black_alpha(35));
+        painter.line_segment([fa, tip], edge);
+        painter.line_segment([tip, fb], edge);
+    }
+
+    /// Pages `lo` up to `hi` turning over together to uncover `hi`, `t` going from 0 to 1: the
+    /// bundle turns, fanned a little to show its thickness, then slides into the back of the pile
+    /// behind. One page (`hi = lo + 1`) is an ordinary flip.
+    pub fn bundle_flip(&self, ui: &mut egui::Ui, rect: Rect, lo: usize, hi: usize, t: f32) {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        let ease = |s: f32| s * s * (3.0 - 2.0 * s);
+        let ahead = self.last() - hi;
+        if t < crate::TURN {
+            // Turning, it is above everything, covering the pile and its post-its as it comes down.
+            self.stack(ui.painter(), rect, lo, ahead);
+            self.static_page(ui, rect, hi);
+            const LAG: f32 = 0.06;
+            let (count, k) = (hi - lo, (hi - lo).min(5));
+            let s = t / crate::TURN;
+            let mut sheets: Vec<(f32, usize)> = (0..k)
+                .map(|j| {
+                    let sj = ((s - j as f32 * LAG) / (1.0 - (k - 1) as f32 * LAG)).clamp(0.0, 1.0);
+                    (ease(sj) * PI, lo + j * count / k)
+                })
+                .collect();
+            // Down on the left, the first sheet to land lies underneath; up on the right, the one
+            // turned furthest is on top.
+            sheets.sort_by(|x, y| {
+                let (xl, yl) = (x.0 > FRAC_PI_2, y.0 > FRAC_PI_2);
+                yl.cmp(&xl).then(if xl { y.0.total_cmp(&x.0) } else { x.0.total_cmp(&y.0) })
+            });
+            for (theta, page) in sheets {
+                self.flipping_page(ui, rect, page, theta);
+            }
+        } else {
+            // Then it slides into the back of the pile, under it and the page uncovered. Leaving the
+            // top of the pile, it lets the pile and its post-its show through bit by bit.
+            let slide = (t - crate::TURN) / (1.0 - crate::TURN);
+            let from = vec2(-rect.width(), 0.0);
+            let step = self.pile_step(ui.ctx(), rect);
+            for k in (lo + 1..=hi).rev().filter(|&k| k == hi || k % step == 0) {
+                self.sheet_to_pile(ui, rect, k - 1, from, ease(slide));
+            }
+            self.stack(ui.painter(), rect, lo, ahead);
+            let on_top = 1.0 - (slide / 0.5).min(1.0);
+            if on_top > 0.0 {
+                ui.scope(|ui| {
+                    ui.multiply_opacity(on_top);
+                    self.sheet_to_pile(ui, rect, hi - 1, from, ease(slide));
+                });
+            }
+            self.static_page(ui, rect, hi);
+        }
     }
 
     /// Draw page `i` turned over, sliding by `s` from `from` (an offset from `rect`) into its place

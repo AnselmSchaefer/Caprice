@@ -329,6 +329,10 @@ impl App {
         for (k, y) in places {
             let id = self.doc.notes[k].id;
             let r = note_rect(rect, sc, y);
+            // Where the top right corner curls back, the post-it moves out of its way for the while.
+            let in_way = r.top() < rect.top() + self.curl_reach + 6.0 * sc;
+            let away = if self.curl_reach > 0.0 && in_way { rect.right() + 6.0 * sc - r.left() } else { 0.0 };
+            let r = r.translate(vec2(ctx.animate_value_with_time(Id::new(("note-away", id)), away, 0.2), 0.0));
             let mut pad = self.pad(id);
             let s = sheets(&ctx, &self.doc.notes[k].text, sc);
             pad.sheet = pad.sheet.min(s.count() - 1);

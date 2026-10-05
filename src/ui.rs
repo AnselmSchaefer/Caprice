@@ -448,7 +448,7 @@ impl App {
         ui.painter().text(
             pos2(r.left(), cy),
             egui::Align2::LEFT_CENTER,
-            format!("Page {} of {}", self.pos.round() as usize + 1, n),
+            format!("Page {} of {}", self.scrub_to.unwrap_or(self.pos.round() as usize) + 1, n),
             FontId::proportional(13.0),
             TEXT_DIM,
         );
@@ -492,24 +492,23 @@ impl App {
             }
         }
 
+        // Dragging (or pressing) only picks the page: the pages stay put, their corner curls, and
+        // letting go turns there in one go.
         let resp = ui.interact(track.expand2(vec2(6.0, 12.0)), Id::new("scroll"), Sense::click_and_drag());
+        self.last_track = (cy, track.left() + thumb_w / 2.0, track.right() - thumb_w / 2.0);
+        let mut f = if last > 0.0 { (self.pos + going) / last } else { 0.0 };
         if n > 1 && (resp.dragged() || resp.drag_started() || resp.is_pointer_button_down_on()) {
             if let Some(p) = resp.interact_pointer_pos() {
-                let f = ((p.x - track.left() - thumb_w / 2.0) / travel).clamp(0.0, 1.0);
-                self.pos = f * (n - 1) as f32;
-                self.target = self.pos.round() as usize;
-                self.scrubbing = true;
-                let ctx = ui.ctx().clone();
-                let start = self.doc.spans[self.target.min(self.last())].start;
-                self.set_caret(&ctx, start, false);
+                f = ((p.x - track.left() - thumb_w / 2.0) / travel).clamp(0.0, 1.0);
+                self.scrub_to = Some((f * (n - 1) as f32).round() as usize);
             }
-        } else {
-            self.scrubbing = false;
+        } else if let Some(to) = self.scrub_to.take() {
+            let ctx = ui.ctx().clone();
+            self.flip_bundle_to(&ctx, to.min(self.last()));
         }
 
-        let f = if last > 0.0 { (self.pos + going) / last } else { 0.0 };
         let thumb = Rect::from_min_size(pos2(track.left() + travel * f, cy - 8.0), vec2(thumb_w, 16.0));
-        let hot = resp.hovered() || self.scrubbing;
+        let hot = resp.hovered() || self.scrub_to.is_some();
         ui.painter().rect_filled(thumb, 8.0, if hot { ACCENT } else { Color32::from_rgb(112, 124, 196) });
     }
 }
