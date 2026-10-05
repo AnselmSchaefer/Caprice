@@ -18,20 +18,16 @@ impl App {
     pub fn book_turn(&self, ui: &egui::Ui, rect: Rect, base: usize, t: f32) {
         let ease = |s: f32| s * s * (3.0 - 2.0 * s);
         let ahead = self.last() - base - 1;
-        if t < TURN && ease(t / TURN) < 0.5 {
-            // Still over the right half: on top of everything.
+        if t < TURN {
+            // Turning, it is on top of everything: coming down on the left, it covers the pile
+            // and the post-its sticking out of it until it lies there turned over completely.
             self.stack(ui.painter(), rect, base, ahead);
             self.static_page(ui, rect, base + 1);
             self.flipping_page(ui, rect, base, ease(t / TURN) * std::f32::consts::PI);
         } else {
-            // Past upright (where it is edge-on, so the change of order doesn't show) it comes
-            // down on the left behind the pile, and slides into the back of it.
-            if t < TURN {
-                self.flipping_page(ui, rect, base, ease(t / TURN) * std::f32::consts::PI);
-            } else {
-                let from = vec2(-rect.width(), 0.0);
-                self.turned_to_pile(ui, rect, base, from, ease((t - TURN) / (1.0 - TURN)));
-            }
+            // Then it slides into the back of the pile, under it.
+            let from = vec2(-rect.width(), 0.0);
+            self.turned_to_pile(ui, rect, base, from, ease((t - TURN) / (1.0 - TURN)));
             self.stack(ui.painter(), rect, base, ahead);
             self.static_page(ui, rect, base + 1);
         }

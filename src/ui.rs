@@ -316,7 +316,7 @@ impl App {
         ui.add_space(2.0);
         let new_setup = self.page_menu(ui);
 
-        egui::containers::menu::MenuButton::new("Appearance").ui(ui, |ui| {
+        egui::containers::menu::MenuButton::new("View").ui(ui, |ui| {
             ui.set_min_width(170.0);
             let looks = [
                 (Appearance::Book, "Book", "Pages turn over like a book's"),
