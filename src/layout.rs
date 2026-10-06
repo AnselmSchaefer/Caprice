@@ -277,8 +277,12 @@ fn tight_highlights(mut galley: Arc<egui::Galley>, ppp: f32) -> Arc<egui::Galley
 
 /// egui rounds every line's height to whole pixels, so zoomed text comes out a little shorter or
 /// taller than at page size, where the page breaks are worked out. Over a page that adds up to a
-/// line or more. Give the paragraph its page-size height times the zoom instead, spreading its
-/// lines to match (each placed on a whole pixel, so the text stays crisp).
+/// line or more. Give the lines their page-size height times the zoom instead, spreading them to
+/// match (each placed on a whole pixel, so the text stays crisp).
+///
+/// Zoomed, a word at the edge can wrap differently than at page size, so the line counts can
+/// differ: what is matched is the height per line, not the paragraph's, or the lines would
+/// squeeze together or spread apart until typing moves the word again.
 fn true_to_scale(ctx: &egui::Context, spec: &PieceSpec, galley: Arc<egui::Galley>, wrap: f32) -> Arc<egui::Galley> {
     let sc = spec.scale;
     if (sc - 1.0).abs() < 1e-4 || galley.size().y <= 0.0 {
@@ -286,8 +290,8 @@ fn true_to_scale(ctx: &egui::Context, spec: &PieceSpec, galley: Arc<egui::Galley
     }
     let job = paragraph_job(ctx, spec.text, spec.styles, spec.term, spec.attrs, 1.0, wrap / sc, &[]);
     let page = ctx.fonts_mut(|f| f.layout_job(job));
-    let height = page.size().y * sc;
-    let k = height / galley.size().y;
+    let k = (page.size().y / page.rows.len().max(1) as f32 * sc) / (galley.size().y / galley.rows.len().max(1) as f32);
+    let height = galley.size().y * k;
     if (k - 1.0).abs() < 1e-4 {
         return galley;
     }
@@ -688,6 +692,37 @@ mod tests {
             let bullet = height(1.0, ListKind::Bullet);
             assert!(bullet.1 > 20.0 && bullet.2, "bullet items are indented and have a marker: {bullet:?}");
             assert!(bullet.0 >= single.0, "narrower text wraps into at least as many rows");
+        });
+    }
+
+    #[test]
+    fn lines_keep_their_spacing_when_zoomed_text_wraps_differently() {
+        with_ctx(|ctx| {
+            let st = Style::new("x");
+            let text = "Edwin konnte die ganze Nacht nicht schlafen, er starrte and die Decke und stellte sich vor, dass sie sich ploetzlich oeffnet und der gestreifte Junge mit langen Hoernern und gefletschten Zaehnen auf ihn herabblicken wuerde. Warum hatten sie ihn im Dachstuhl versteckt?";
+            let mut seen = 0;
+            for n in (150..=text.len()).filter(|&n| text.is_char_boundary(n)) {
+                let mut d = doc_with(&text[..n], ParaAttrs::default());
+                d.full_paginate(ctx, &st);
+                let page_rows = d.layout_page(ctx, 0, 1.0, &[]).paras[0].galley.rows.len();
+                for sc in [0.7237f32, 0.85, 1.13, 1.37, 1.6] {
+                    let g = d.layout_page(ctx, 0, sc, &[]).paras[0].galley.clone();
+                    if g.rows.len() < 2 {
+                        continue;
+                    }
+                    if g.rows.len() != page_rows {
+                        seen += 1;
+                    }
+                    let pitch = g.rows[1].pos.y - g.rows[0].pos.y;
+                    for w in g.rows.windows(2) {
+                        let step = w[1].pos.y - w[0].pos.y;
+                        assert!((step - pitch).abs() <= 1.0, "{n} chars at zoom {sc}: rows {} pt apart, not {pitch}", step);
+                    }
+                    let normal = ctx.fonts_mut(|f| f.row_height(&egui::FontId::new(st.size * sc, family_for(&st.font, false))));
+                    assert!((pitch - normal).abs() <= 1.0, "{n} chars at zoom {sc} ({} rows, {page_rows} at page size): rows {pitch} apart, not {normal}", g.rows.len());
+                }
+            }
+            assert!(seen > 0, "some zoom wraps the text differently from page size");
         });
     }
 }
