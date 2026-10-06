@@ -164,6 +164,8 @@ pub struct App {
     pub after_save: Option<fileio::Leaving>,
     /// The user has said the window may close (changes saved or given up).
     pub may_close: bool,
+    /// What was last copied or cut, with its formatting.
+    pub clip: Option<editor::Clip>,
 }
 
 impl App {
@@ -211,6 +213,7 @@ impl App {
             note_focus: None,
             pads: HashMap::new(),
             last_page_rect: Rect::NOTHING,
+            clip: None,
             last_track: (0.0, 0.0, 0.0),
             textures: HashMap::new(),
             startup_file: None,
@@ -1321,6 +1324,54 @@ mod tests {
         h.frames(1, vec![egui::Event::Paste("one\r\ntwo\u{c}x".into())], Modifiers::NONE);
         h.frames(2, vec![], Modifiers::NONE);
         assert_eq!(h.text(), "one\ntwox", "carriage returns and page breaks do not get into the text");
+    }
+
+    #[test]
+    fn copy_and_paste_keeps_the_formatting() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("plain ");
+        h.key(Key::B, Modifiers::COMMAND);
+        h.type_text("bold");
+        h.key(Key::B, Modifiers::COMMAND);
+        h.key(Key::E, Modifiers::COMMAND);
+        h.key(Key::A, Modifiers::COMMAND);
+        h.frames(1, vec![egui::Event::Copy], Modifiers::NONE);
+        h.key(Key::End, Modifiers::COMMAND);
+        h.type_text("\n");
+        h.frames(1, vec![egui::Event::Paste("plain bold".into())], Modifiers::NONE);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(h.text(), "plain bold\nplain bold");
+        let bold: String = h.text().chars().zip(&h.app.doc.flow.styles).filter(|(_, s)| s.bold).map(|(c, _)| c).collect();
+        assert_eq!(bold, "boldbold", "the pasted copy is bold where the original was");
+        assert_eq!(h.app.doc.para_attrs_at(12).align, model::Align::Center);
+        // Text copied elsewhere is pasted plain, in the style typing would have.
+        h.frames(1, vec![egui::Event::Paste(" other".into())], Modifiers::NONE);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert!(h.app.doc.flow.styles[h.text().len() - 5..h.text().len()].iter().all(|s| s.bold), "continues the bold before the caret");
+    }
+
+    #[test]
+    fn a_copied_picture_is_pasted_as_a_picture_of_its_own() {
+        let mut h = Harness::new();
+        let ctx = h.ctx.clone();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("ab");
+        h.app.insert_image_bytes(&ctx, images::test_png(20, 10, [1, 2, 3])).unwrap();
+        h.frames(2, vec![], Modifiers::NONE);
+        let pic = h.text().chars().position(|c| c == model::IMAGE_CHAR).unwrap();
+        h.app.anchor = pic;
+        h.app.set_caret(&ctx, pic + 1, true);
+        h.frames(1, vec![egui::Event::Copy], Modifiers::NONE);
+        h.app.set_caret(&ctx, 1, false);
+        let pasted = h.app.clip.as_ref().unwrap().plain.clone();
+        h.frames(1, vec![egui::Event::Paste(pasted)], Modifiers::NONE);
+        h.frames(2, vec![], Modifiers::NONE);
+        let p = model::IMAGE_CHAR;
+        assert_eq!(h.text(), format!("a\n{p}\nb\n{p}\n"));
+        assert_eq!(h.app.doc.images.len(), 2);
+        let ids: Vec<u32> = h.app.doc.flow.styles.iter().map(|s| s.image).filter(|&i| i != 0).collect();
+        assert_eq!(ids, vec![2, 1], "the pasted picture is a copy with its own id");
     }
 
     #[test]

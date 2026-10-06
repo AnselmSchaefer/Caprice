@@ -8,7 +8,7 @@ use crate::App;
 use crate::edit::{Edit, Piece};
 use crate::images::{Handle, PicDrag, ResizeDrag};
 use crate::layout::PageLayout;
-use crate::model::{Align, ListKind, PAGE_BREAK, PageSetup, ParaAttrs, Style, is_terminator};
+use crate::model::{Align, IMAGE_CHAR, ImageData, ListKind, PAGE_BREAK, PageSetup, ParaAttrs, Style, is_terminator};
 use crate::theme::INK;
 
 /// Roughly how a word processor groups characters when jumping by word.
@@ -22,6 +22,14 @@ fn char_class(c: char) -> u8 {
     } else {
         2
     }
+}
+
+/// What was last copied, with its formatting. The system clipboard only holds plain text, so
+/// pasting that same text back in brings the formatting (and any pictures) along.
+pub struct Clip {
+    pub plain: String,
+    pub piece: Piece,
+    pub images: Vec<ImageData>,
 }
 
 impl App {
@@ -119,6 +127,81 @@ impl App {
     pub fn insert_text(&mut self, ctx: &egui::Context, text: &str) {
         let (a, b) = self.selection();
         self.replace_range(ctx, a, b, text);
+    }
+
+    /// Put the selection on the clipboard, and keep its formatting for pasting it back in.
+    fn copy_selection(&mut self, ctx: &egui::Context) {
+        let (a, b) = self.selection();
+        let plain = self.selected_text();
+        let styles = self.doc.flow.styles[a..b].to_vec();
+        let images = styles.iter().filter(|s| s.image != 0).filter_map(|s| self.doc.image(s.image).cloned()).collect();
+        ctx.copy_text(plain.clone());
+        self.clip = Some(Clip { piece: Piece { text: plain.clone(), styles }, plain, images });
+    }
+
+    /// Paste formatted if the clipboard still holds what was copied here, else as plain text.
+    fn paste(&mut self, ctx: &egui::Context, t: &str) {
+        let plain: String = t.chars().filter(|&c| c != '\r').collect();
+        match self.clip.take() {
+            Some(clip) if clip.plain == plain => {
+                self.paste_clip(ctx, &clip);
+                self.clip = Some(clip);
+            }
+            clip => {
+                self.clip = clip;
+                self.insert_text(ctx, t);
+            }
+        }
+    }
+
+    fn paste_clip(&mut self, ctx: &egui::Context, clip: &Clip) {
+        // Pasted pictures are copies with ids of their own, so each can be resized or turned alone.
+        let mut ids = std::collections::HashMap::new();
+        let mut next = self.doc.images.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+        for img in &clip.images {
+            if let std::collections::hash_map::Entry::Vacant(e) = ids.entry(img.id) {
+                e.insert(next);
+                self.doc.images.push(ImageData { id: next, ..img.clone() });
+                next += 1;
+            }
+        }
+        if !ids.is_empty() {
+            self.ensure_textures(ctx);
+        }
+
+        let max = self.max_caret();
+        let (a, b) = self.selection();
+        let (a, b) = (a.min(max), b.min(max));
+        let line = self.doc.para_attrs_at(a);
+        let mark = self.typing.with_para(ParaAttrs { list: ListKind::None, ..line });
+        let after = self.doc.char_at(b);
+        let mut prev = if a == 0 { None } else { self.doc.char_at(a - 1) };
+        let (mut text, mut styles) = (String::new(), Vec::new());
+        let chars: Vec<char> = clip.piece.text.chars().collect();
+        for (i, (&c, st)) in chars.iter().zip(&clip.piece.styles).enumerate() {
+            let mut st = st.clone();
+            let picture = c == IMAGE_CHAR && st.image != 0;
+            if picture {
+                // A picture needs a paragraph of its own.
+                if prev.is_some_and(|p| !is_terminator(p)) {
+                    text.push('\n');
+                    styles.push(self.typing.with_para(line));
+                }
+                st.image = ids.get(&st.image).copied().unwrap_or(0);
+            }
+            text.push(c);
+            styles.push(st);
+            prev = Some(c);
+            if picture && chars.get(i + 1).copied().or(after).is_some_and(|n| !is_terminator(n)) {
+                text.push('\n');
+                styles.push(mark.clone());
+                prev = Some('\n');
+            }
+        }
+
+        let (ba, bb) = (self.doc.char_to_byte(a), self.doc.char_to_byte(b));
+        let old = Piece { text: self.doc.flow.text[ba..bb].to_owned(), styles: self.doc.flow.styles[a..b].to_vec() };
+        self.apply_edit(ctx, Edit::Replace { at: a, old, new: Piece { text, styles } }, b);
     }
 
     pub fn press_enter(&mut self, ctx: &egui::Context) {
@@ -375,15 +458,15 @@ impl App {
             match e {
                 Event::Text(t) => self.insert_text(ctx, &t),
                 Event::Ime(egui::ImeEvent::Commit(t)) => self.insert_text(ctx, &t),
-                Event::Paste(t) => self.insert_text(ctx, &t),
+                Event::Paste(t) => self.paste(ctx, &t),
                 Event::Copy => {
                     if self.has_selection() {
-                        ctx.copy_text(self.selected_text());
+                        self.copy_selection(ctx);
                     }
                 }
                 Event::Cut => {
                     if self.has_selection() {
-                        ctx.copy_text(self.selected_text());
+                        self.copy_selection(ctx);
                         let (a, b) = self.selection();
                         self.replace_range(ctx, a, b, "");
                     }
