@@ -56,7 +56,14 @@ impl App {
         self.doc.flow.text[ba..bb].replace(PAGE_BREAK, "\n")
     }
 
-    /// Move the caret (and the selection end, if `extend`), and flip to the page it is on.
+    /// Do pages `a` and `b` hold the same text? Only the contents' pages do: they all hold its char.
+    pub fn same_text(&self, a: usize, b: usize) -> bool {
+        let (sa, sb) = (self.doc.spans.get(a), self.doc.spans.get(b));
+        sa.is_some_and(|sa| sb.is_some_and(|sb| (sa.start, sa.end) == (sb.start, sb.end)))
+    }
+
+    /// Move the caret (and the selection end, if `extend`), and flip to the page it is on (on the
+    /// contents, the page of them shown stays).
     pub fn set_caret(&mut self, ctx: &egui::Context, c: usize, extend: bool) {
         let c = c.min(self.max_caret());
         let moved = c != self.caret;
@@ -65,7 +72,10 @@ impl App {
             self.anchor = c;
         }
         self.prefer_next = true;
-        self.target = self.doc.page_of(c);
+        let page = self.doc.page_of(c);
+        if !self.same_text(self.target, page) {
+            self.target = page;
+        }
         self.blink_epoch = ctx.input(|i| i.time);
         if moved && !extend {
             self.typing_follows_caret();
@@ -578,10 +588,12 @@ impl App {
             Key::Escape if self.pen && self.lasso.is_none() => self.toggle_pen(),
             Key::PageDown | Key::PageUp => {
                 // Jump to the start of the next / previous page.
-                let page = self.doc.page_of(self.caret);
+                let here = self.doc.page_of(self.caret);
+                let page = if self.same_text(self.target, here) { self.target } else { here };
                 let to = if key == Key::PageDown { (page + 1).min(self.last()) } else { page.saturating_sub(1) };
                 let start = self.doc.spans[to].start;
                 self.set_caret(ctx, start, shift);
+                self.target = to;
             }
             Key::ArrowLeft => self.move_horizontal(ctx, false, word, shift),
             Key::ArrowRight => self.move_horizontal(ctx, true, word, shift),

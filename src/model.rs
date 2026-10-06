@@ -218,6 +218,8 @@ pub struct Span {
     pub bend: usize,
     /// Does a hard page break follow (rather than the page ending because it is full)?
     pub hard: bool,
+    /// Which of the contents' pages this is. They all hold the one contents char; 0 on other pages.
+    pub part: usize,
 }
 
 impl Span {
@@ -228,6 +230,7 @@ impl Span {
             bstart: self.bstart.wrapping_add_signed(dbytes),
             bend: self.bend.wrapping_add_signed(dbytes),
             hard: self.hard,
+            part: self.part,
         }
     }
 
@@ -275,7 +278,7 @@ impl Doc {
         Self {
             flow: Flow { text: "\n".into(), styles: vec![Style::new("Default")] },
             setup: PageSetup::default(),
-            spans: vec![Span { start: 0, end: 1, bstart: 0, bend: 1, hard: false }],
+            spans: vec![Span { start: 0, end: 1, bstart: 0, bend: 1, hard: false, part: 0 }],
             version: 0,
             notes: Vec::new(),
             next_note_id: 1,
@@ -439,8 +442,8 @@ mod tests {
         assert_eq!(d.para_attrs_at(0).align, Align::Left);
         assert_eq!(d.para_attrs_at(99).align, Align::Center);
         d.spans = vec![
-            Span { start: 0, end: 2, bstart: 0, bend: 2, hard: false },
-            Span { start: 2, end: 4, bstart: 2, bend: 4, hard: false },
+            Span { start: 0, end: 2, bstart: 0, bend: 2, hard: false, part: 0 },
+            Span { start: 2, end: 4, bstart: 2, bend: 4, hard: false, part: 0 },
         ];
         assert_eq!(d.spans[1].chars(), 2);
         assert_eq!(d.page_of(1), 0);

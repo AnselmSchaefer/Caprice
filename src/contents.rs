@@ -4,7 +4,9 @@
 //!
 //! Its height depends only on the titles, not on their page numbers, so pagination never goes in
 //! circles: the pages are worked out first, and the numbers filled in when the page is drawn.
+//! A long list goes on over more pages, which all hold the one char (see `Span::part`).
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2, pos2, vec2};
@@ -57,6 +59,19 @@ impl Doc {
         ec == c + 1 && self.flow.text[b..].starts_with(CONTENTS_CHAR)
     }
 
+    /// The char where the first contents block is, if the story has one.
+    pub fn contents_at(&self) -> Option<usize> {
+        let b = self.flow.text.find(CONTENTS_CHAR)?;
+        Some(self.flow.text[..b].chars().count())
+    }
+
+    /// How many pages the contents take up (1 if there are none).
+    pub fn contents_pages(&self, ctx: &egui::Context) -> usize {
+        let Some(c) = self.contents_at() else { return 1 };
+        let content = self.setup.content_size();
+        split(ctx, &self.chapters(false), &self.flow.styles[c], content.x, content.y).len()
+    }
+
     /// Does the story open with a contents page?
     pub fn has_contents_page(&self) -> bool {
         self.flow.text.starts_with(&contents_text())
@@ -71,29 +86,63 @@ fn text(ctx: &egui::Context, s: &str, st: &Style, scale: f32, wrap: f32) -> Arc<
     ctx.fonts_mut(|f| f.layout_job(job))
 }
 
-/// Lay the contents out in the style `st` (that of its placeholder char), `width` wide (page
-/// points) and at most `max_height` tall: entries that do not fit are left out. Heights and
-/// positions come from page size, so the block is equally tall, relative to the page, at every zoom.
-pub fn layout_contents(ctx: &egui::Context, entries: &[Entry], st: &Style, width: f32, max_height: f32, scale: f32) -> ContentsBlock {
+/// Heights in page points of the contents: their heading, the gap between lines, and the line
+/// for each entry.
+struct Metrics {
+    heading: Arc<egui::Galley>,
+    line: f32,
+    title_w: f32,
+}
+
+fn metrics(ctx: &egui::Context, st: &Style, width: f32) -> Metrics {
     let heading_st = Style { size: st.size * CHAPTER_TITLE_SCALE, bold: true, ..st.clone() };
     let number_w = text(ctx, "0000", st, 1.0, f32::INFINITY).size().x;
-    let title_w = (width - number_w - st.size).max(width * 0.5);
-    let line = text(ctx, " ", st, 1.0, f32::INFINITY).size().y;
+    Metrics {
+        heading: text(ctx, "Contents", &heading_st, 1.0, f32::INFINITY),
+        line: text(ctx, " ", st, 1.0, f32::INFINITY).size().y,
+        title_w: (width - number_w - st.size).max(width * 0.5),
+    }
+}
 
+/// Which entries go on each page of the contents, `max_height` tall: the heading and as many as
+/// fit on the first, then on as many more as it takes. Every page holds at least one entry.
+fn split(ctx: &egui::Context, entries: &[Entry], st: &Style, width: f32, max_height: f32) -> Vec<Range<usize>> {
+    let m = metrics(ctx, st, width);
+    let mut pages = Vec::new();
+    let (mut from, mut y) = (0, m.heading.size().y + m.line);
+    for (k, e) in entries.iter().enumerate() {
+        let h = text(ctx, &e.title, st, 1.0, m.title_w).size().y;
+        if y + h > max_height && k > from {
+            pages.push(from..k);
+            (from, y) = (k, 0.0);
+        }
+        y += h + m.line * 0.4;
+    }
+    pages.push(from..entries.len());
+    pages
+}
+
+/// Lay out page `part` of the contents in the style `st` (that of its placeholder char), `width`
+/// wide (page points) on pages `max_height` tall. Heights and positions come from page size, so the
+/// block is equally tall, relative to the page, at every zoom.
+pub fn layout_contents(ctx: &egui::Context, entries: &[Entry], st: &Style, width: f32, max_height: f32, scale: f32, part: usize) -> ContentsBlock {
+    let m = metrics(ctx, st, width);
+    let range = split(ctx, entries, st, width, max_height).get(part).cloned().unwrap_or_default();
     let mut texts = Vec::new();
     let mut links = Vec::new();
-    let heading = text(ctx, "Contents", &heading_st, scale, f32::INFINITY);
-    let mut bottom = text(ctx, "Contents", &heading_st, 1.0, f32::INFINITY).size().y;
-    texts.push((heading.clone(), pos2((width * scale - heading.size().x) / 2.0, 0.0)));
-    let mut y = bottom + line;
+    let (mut y, mut bottom) = (0.0, 0.0);
+    if part == 0 {
+        let heading_st = Style { size: st.size * CHAPTER_TITLE_SCALE, bold: true, ..st.clone() };
+        let heading = text(ctx, "Contents", &heading_st, scale, f32::INFINITY);
+        texts.push((heading.clone(), pos2((width * scale - heading.size().x) / 2.0, 0.0)));
+        bottom = m.heading.size().y;
+        y = bottom + m.line;
+    }
 
-    for e in entries {
-        let h = text(ctx, &e.title, st, 1.0, title_w).size().y;
-        if y + h > max_height {
-            break;
-        }
+    for e in &entries[range] {
+        let h = text(ctx, &e.title, st, 1.0, m.title_w).size().y;
         bottom = y + h;
-        let title = text(ctx, &e.title, st, scale, title_w * scale);
+        let title = text(ctx, &e.title, st, scale, m.title_w * scale);
         let top = y * scale;
         if let Some(page) = e.page {
             // The page number at the right, on the title's last line, with dots leading to it.
@@ -108,7 +157,7 @@ pub fn layout_contents(ctx: &egui::Context, entries: &[Entry], st: &Style, width
             links.push((Rect::from_min_size(pos2(0.0, top), vec2(width * scale, h * scale)), page));
         }
         texts.push((title, pos2(0.0, top)));
-        y += h + line * 0.4;
+        y += h + m.line * 0.4;
     }
     ContentsBlock { size: vec2(width, bottom) * scale, texts, links }
 }
@@ -178,7 +227,7 @@ mod tests {
             assert!(d.pages() >= 3);
             assert!(d.chapters(true).windows(2).any(|w| w[0].page != w[1].page), "chapters on different pages");
             let l = d.layout_page(ctx, 0, 1.0, &[]);
-            assert_eq!(d.spans[0], crate::model::Span { start: 0, end: 1, bstart: 0, bend: 3, hard: true }, "a page of its own");
+            assert_eq!(d.spans[0], crate::model::Span { start: 0, end: 1, bstart: 0, bend: 3, hard: true, part: 0 }, "a page of its own");
             let block = l.paras[0].contents.as_ref().expect("the first page is the contents");
             assert_eq!(block.links.len(), 4);
             let shown: Vec<String> = block.texts.iter().map(|(g, _)| g.text().to_owned()).collect();
@@ -208,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn the_contents_take_the_same_room_at_every_zoom_and_never_more_than_a_page() {
+    fn the_contents_take_the_same_room_at_every_zoom() {
         with_ctx(|ctx| {
             let paras = story(3, 1);
             let mut d = doc(&as_refs(&paras));
@@ -217,12 +266,57 @@ mod tests {
             for sc in [0.8f32, 1.37] {
                 assert!((d.layout_page(ctx, 0, sc, &[]).height / sc - h).abs() < 0.01);
             }
+        });
+    }
+
+    #[test]
+    fn long_contents_go_on_over_as_many_pages_as_they_take() {
+        with_ctx(|ctx| {
             let paras = story(120, 0);
             let mut d = doc(&as_refs(&paras));
             d.full_paginate(ctx, &Style::new("x"));
-            let l = d.layout_page(ctx, 0, 1.0, &[]);
-            assert!(l.height <= d.setup.content_size().y + 0.5, "{} of {}", l.height, d.setup.content_size().y);
-            assert!(l.paras[0].contents.as_ref().unwrap().links.len() < 120, "the chapters that fit");
+            let n = d.contents_pages(ctx);
+            assert!(n >= 3, "{n} pages");
+            for (k, sp) in d.spans[..n].iter().enumerate() {
+                assert_eq!((sp.start, sp.end, sp.part, sp.hard), (0, 1, k, k + 1 == n), "they all hold the one char");
+            }
+            assert_eq!((d.spans[n].start, d.spans[n].part), (2, 0), "the story goes on after them");
+
+            let mut shown = Vec::new();
+            for k in 0..n {
+                let l = d.layout_page(ctx, k, 1.0, &[]);
+                assert!(l.height <= d.setup.content_size().y + 0.5, "page {k}: {} of {}", l.height, d.setup.content_size().y);
+                let block = l.paras[0].contents.as_ref().unwrap();
+                let texts: Vec<&str> = block.texts.iter().map(|(g, _)| g.text()).collect();
+                assert_eq!(texts.contains(&"Contents"), k == 0, "the heading only on the first");
+                shown.extend(block.links.iter().map(|&(_, page)| page));
+            }
+            let pages: Vec<usize> = d.chapters(true).iter().map(|e| e.page.unwrap()).collect();
+            assert_eq!(shown, pages, "every chapter, once, in order");
+            assert_eq!(pages[0], n, "the first chapter is on the page after the contents");
+            // The caret is before them on their first page, after them on their last.
+            assert_eq!((d.page_of(0), d.page_of(1), d.page_of(2)), (0, n - 1, n));
+        });
+    }
+
+    #[test]
+    fn chapters_added_far_on_give_the_contents_more_pages_like_from_scratch() {
+        with_ctx(|ctx| {
+            let st = Style::new("x");
+            let mut d = doc(&as_refs(&story(30, 0)));
+            d.full_paginate(ctx, &st);
+            let before = d.contents_pages(ctx);
+            let mut title = ParaAttrs::default();
+            title.set_chapter_title(true);
+            while d.contents_pages(ctx) == before {
+                let at = d.total_chars() - 1;
+                let new = crate::edit::Piece { text: "More\n".into(), styles: [vec![st.clone(); 4], vec![st.with_para(title)]].concat() };
+                d.apply(crate::edit::Edit::Replace { at, old: crate::edit::Piece::default(), new }, 0.0);
+                d.paginate_after(ctx, &st, at, at, 5, 5);
+                let incremental = d.spans.clone();
+                d.full_paginate(ctx, &st);
+                assert_eq!(incremental, d.spans);
+            }
         });
     }
 

@@ -162,8 +162,9 @@ pub struct PieceSpec<'a> {
     pub marker: Option<String>,
     /// The picture this piece is: its id, its size in page points and its rotation.
     pub image: Option<(u32, Vec2, u8)>,
-    /// The contents, if this piece is them: the chapters, and the most height they may take up.
-    pub contents: Option<(&'a [Entry], f32)>,
+    /// The contents, if this piece is them: the chapters, the height of a page, and which of the
+    /// contents' pages this is.
+    pub contents: Option<(&'a [Entry], f32, usize)>,
 }
 
 pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, local_end: usize, y: f32) -> ParaLayout {
@@ -197,9 +198,9 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
             image: Some(ImageBox { id, rect: Rect::from_min_size(pos2(x, 0.0), size), rotation }),
         };
     }
-    if let Some((entries, max_height)) = spec.contents {
+    if let Some((entries, max_height, part)) = spec.contents {
         let st = spec.styles.first().unwrap_or(spec.term);
-        let block = layout_contents(ctx, entries, st, spec.content_width / spec.scale, max_height, spec.scale);
+        let block = layout_contents(ctx, entries, st, spec.content_width / spec.scale, max_height, spec.scale, part);
         return ParaLayout {
             start: local_start,
             end: local_end,
@@ -396,7 +397,7 @@ impl Doc {
                 image: self.picture_in(c, pe_c),
                 contents: self
                     .contents_in(c, b, pe_c)
-                    .then(|| (chapters.get_or_insert_with(|| self.chapters(true)).as_slice(), self.setup.content_size().y)),
+                    .then(|| (chapters.get_or_insert_with(|| self.chapters(true)).as_slice(), self.setup.content_size().y, sp.part)),
             };
             match self.drop_cap(ctx, c, b).filter(|_| at_para_start) {
                 Some(cap) => {

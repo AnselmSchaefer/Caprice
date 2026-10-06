@@ -276,6 +276,7 @@ impl App {
         let to = to.min(self.last());
         if to != self.target {
             self.set_caret(ctx, self.doc.spans[to].start, false);
+            self.target = to; // a page of the contents other than the caret's
         }
     }
 
@@ -1148,6 +1149,53 @@ mod tests {
         assert_eq!(h.app.doc.notes.len(), 1, "the clicked post-it is gone");
         assert_eq!(h.app.doc.notes[0].text, "keep me", "the other one stays");
         assert_eq!(h.app.doc.visible_text(), "first line\nsecond line");
+    }
+
+    #[test]
+    fn page_keys_and_clicks_go_through_every_page_of_long_contents() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let st = h.app.typing.clone();
+        let mut title = model::ParaAttrs::default();
+        title.set_chapter_title(true);
+        let mut flow = model::Flow { text: format!("{}{}", model::CONTENTS_CHAR, model::PAGE_BREAK), styles: vec![st.clone(); 2] };
+        for n in 1..=120 {
+            let line = format!("Chapter {n}");
+            flow.styles.extend(std::iter::repeat_n(st.clone(), line.chars().count()));
+            flow.styles.push(st.with_para(title));
+            flow.text.push_str(&line);
+            flow.text.push('\n');
+        }
+        h.app.doc.flow = flow;
+        let ctx = h.ctx.clone();
+        h.app.doc.full_paginate(&ctx, &st);
+        h.app.set_caret(&ctx, 0, false);
+        h.frames(3, vec![], Modifiers::NONE);
+        let n = h.app.doc.contents_pages(&ctx);
+        assert!(n >= 3, "{n}");
+
+        // Page Down shows each of them in turn, then the story; Page Up goes back the same way.
+        for k in 1..=n {
+            h.key(Key::PageDown, Modifiers::NONE);
+            assert_eq!(h.app.target, k);
+        }
+        assert_eq!(h.app.doc.page_of(h.app.caret), n, "the caret is in the story");
+        for k in (0..n).rev() {
+            h.key(Key::PageUp, Modifiers::NONE);
+            assert_eq!(h.app.target, k);
+        }
+
+        // Clicking beside the list on a middle page of it stays there; clicking a line goes to its chapter.
+        h.app.go_to_page(&ctx, 1);
+        h.frames(90, vec![], Modifiers::NONE);
+        let l = h.app.doc.layout_page(&ctx, 1, 1.0, &[]);
+        let block = l.paras[0].contents.as_ref().unwrap();
+        h.click_in_page(egui::vec2(1.0, block.size.y + 4.0));
+        assert_eq!(h.app.target, 1, "still the second page of the contents");
+        let (r, page) = block.links[0];
+        h.click_in_page(r.center().to_vec2());
+        assert_eq!(h.app.target, page);
+        assert!(page >= n, "a chapter, after the contents");
     }
 
     // ----------------------------------------------------------- the editor
