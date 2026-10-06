@@ -552,8 +552,7 @@ impl App {
                     // In a book the pages turn along with the thumb, and the caret goes along.
                     self.pos = f * (n - 1) as f32;
                     let ctx = ui.ctx().clone();
-                    let start = self.doc.spans[(self.pos.round() as usize).min(self.last())].start;
-                    self.set_caret(&ctx, start, false);
+                    self.turn_to(&ctx, (self.pos.round() as usize).min(self.last()), false);
                 }
             }
         } else if let Some(to) = self.scrub_page() {

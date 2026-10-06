@@ -56,14 +56,14 @@ impl App {
         self.doc.flow.text[ba..bb].replace(PAGE_BREAK, "\n")
     }
 
-    /// Do pages `a` and `b` hold the same text? Only the contents' pages do: they all hold its char.
-    pub fn same_text(&self, a: usize, b: usize) -> bool {
-        let (sa, sb) = (self.doc.spans.get(a), self.doc.spans.get(b));
-        sa.is_some_and(|sa| sb.is_some_and(|sb| (sa.start, sa.end) == (sb.start, sb.end)))
+    /// Flip to page `to`, the caret going to its start. On a page of the contents other than their
+    /// first, that start is on another page, so the page is set rather than worked out from it.
+    pub fn turn_to(&mut self, ctx: &egui::Context, to: usize, extend: bool) {
+        self.set_caret(ctx, self.doc.spans[to].start, extend);
+        self.target = to;
     }
 
-    /// Move the caret (and the selection end, if `extend`), and flip to the page it is on (on the
-    /// contents, the page of them shown stays).
+    /// Move the caret (and the selection end, if `extend`), and flip to the page it is on.
     pub fn set_caret(&mut self, ctx: &egui::Context, c: usize, extend: bool) {
         let c = c.min(self.max_caret());
         let moved = c != self.caret;
@@ -72,10 +72,7 @@ impl App {
             self.anchor = c;
         }
         self.prefer_next = true;
-        let page = self.doc.page_of(c);
-        if !self.same_text(self.target, page) {
-            self.target = page;
-        }
+        self.target = self.doc.page_of(c);
         self.blink_epoch = ctx.input(|i| i.time);
         if moved && !extend {
             self.typing_follows_caret();
@@ -588,12 +585,9 @@ impl App {
             Key::Escape if self.pen && self.lasso.is_none() => self.toggle_pen(),
             Key::PageDown | Key::PageUp => {
                 // Jump to the start of the next / previous page.
-                let here = self.doc.page_of(self.caret);
-                let page = if self.same_text(self.target, here) { self.target } else { here };
+                let page = self.target;
                 let to = if key == Key::PageDown { (page + 1).min(self.last()) } else { page.saturating_sub(1) };
-                let start = self.doc.spans[to].start;
-                self.set_caret(ctx, start, shift);
-                self.target = to;
+                self.turn_to(ctx, to, shift);
             }
             Key::ArrowLeft => self.move_horizontal(ctx, false, word, shift),
             Key::ArrowRight => self.move_horizontal(ctx, true, word, shift),
@@ -817,7 +811,9 @@ impl App {
         }
 
         let start = self.doc.spans[i].start;
-        let at = |p: egui::Pos2| start + layout.hit(p - content.min);
+        // Where a point puts the caret, if on this page: the contents' later pages have no text
+        // of their own, and their spots before and after the contents are on other pages.
+        let at = |doc: &crate::model::Doc, p: egui::Pos2| Some(start + layout.hit(p - content.min)).filter(|&c| doc.page_of(c) == i);
         let (pressed, secondary, released, shift, pos) = ctx.input(|inp| {
             (
                 inp.pointer.primary_pressed(),
@@ -853,8 +849,7 @@ impl App {
                     self.anchor = s;
                     self.set_caret(&ctx, e, true);
                     self.pic_drag = Some(PicDrag { from: s, press: p, drop: None });
-                } else {
-                    let c = at(p);
+                } else if let Some(c) = at(&self.doc, p) {
                     self.set_caret(&ctx, c, shift);
                 }
                 self.want_x = None;
@@ -866,8 +861,7 @@ impl App {
                         d.drop = layout.drop_boundary(p.y - content.min.y).map(|(local, y)| (start + local, y));
                         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grabbing);
                     }
-                } else {
-                    let c = at(p);
+                } else if let Some(c) = at(&self.doc, p) {
                     self.set_caret(&ctx, c, true);
                 }
             }
@@ -880,14 +874,13 @@ impl App {
             }
         }
         if resp.double_clicked() && self.pic_drag.is_none() && layout.image_at(pos.map_or(Vec2::ZERO.to_pos2(), |p| p) - content.min).is_none() {
-            if let Some(p) = resp.interact_pointer_pos() {
-                let (a, b) = self.word_range_at(at(p));
+            if let Some(c) = resp.interact_pointer_pos().and_then(|p| at(&self.doc, p)) {
+                let (a, b) = self.word_range_at(c);
                 self.anchor = a;
                 self.set_caret(&ctx, b, true);
             }
         } else if resp.triple_clicked() && layout.image_at(pos.unwrap_or_default() - content.min).is_none() {
-            if let Some(p) = resp.interact_pointer_pos() {
-                let c = at(p);
+            if let Some(c) = resp.interact_pointer_pos().and_then(|p| at(&self.doc, p)) {
                 let (ps, _) = self.doc.para_start(c);
                 let (end, _) = self.doc.term_from(c, self.doc.char_to_byte(c));
                 self.anchor = ps;

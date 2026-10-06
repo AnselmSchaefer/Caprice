@@ -85,7 +85,7 @@ impl App {
             self.swipe -= pages * SWIPE_PAGE;
             let to = (self.target as i64 + pages as i64).clamp(0, self.last() as i64) as usize;
             if to != self.target {
-                self.set_caret(ctx, self.doc.spans[to].start, false);
+                self.turn_to(ctx, to, false);
                 self.swiped = true;
             }
         }

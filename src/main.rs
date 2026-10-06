@@ -275,8 +275,7 @@ impl App {
     pub fn go_to_page(&mut self, ctx: &egui::Context, to: usize) {
         let to = to.min(self.last());
         if to != self.target {
-            self.set_caret(ctx, self.doc.spans[to].start, false);
-            self.target = to; // a page of the contents other than the caret's
+            self.turn_to(ctx, to, false);
         }
     }
 
@@ -293,15 +292,20 @@ impl App {
     /// Let go of the scrollbar pointing at page `to`: the pages held out move there together.
     pub fn let_go_to(&mut self, ctx: &egui::Context, to: usize) {
         if to != self.target {
-            self.batch_to(ctx, self.doc.spans[to].start);
+            self.batch_to(|app| app.turn_to(ctx, to, false));
         }
     }
 
     /// Put the caret at `c`, the pages between here and its page moving there together, on from
     /// where the scrollbar holds them, if it does.
-    pub fn batch_to(&mut self, ctx: &egui::Context, c: usize) {
+    pub fn batch_to_caret(&mut self, ctx: &egui::Context, c: usize) {
+        self.batch_to(|app| app.set_caret(ctx, c, false));
+    }
+
+    /// Flip pages by `go`, the pages between here and there moving together.
+    fn batch_to(&mut self, go: impl FnOnce(&mut Self)) {
         let from = self.target;
-        self.set_caret(ctx, c, false);
+        go(self);
         let to = self.target;
         if to == from {
             return;
@@ -1151,51 +1155,178 @@ mod tests {
         assert_eq!(h.app.doc.visible_text(), "first line\nsecond line");
     }
 
-    #[test]
-    fn page_keys_and_clicks_go_through_every_page_of_long_contents() {
-        let mut h = Harness::new();
-        h.frames(3, vec![], Modifiers::NONE);
-        let st = h.app.typing.clone();
-        let mut title = model::ParaAttrs::default();
-        title.set_chapter_title(true);
-        let mut flow = model::Flow { text: format!("{}{}", model::CONTENTS_CHAR, model::PAGE_BREAK), styles: vec![st.clone(); 2] };
-        for n in 1..=120 {
-            let line = format!("Chapter {n}");
-            flow.styles.extend(std::iter::repeat_n(st.clone(), line.chars().count()));
-            flow.styles.push(st.with_para(title));
-            flow.text.push_str(&line);
-            flow.text.push('\n');
+    impl Harness {
+        /// A story of `chapters` one-line chapters after a contents page, the caret at the start
+        /// and the first page shown. Returns how many pages the contents take up.
+        fn long_contents(&mut self, chapters: usize) -> usize {
+            self.frames(3, vec![], Modifiers::NONE);
+            let st = self.app.typing.clone();
+            let mut title = model::ParaAttrs::default();
+            title.set_chapter_title(true);
+            let mut flow = model::Flow { text: String::new(), styles: Vec::new() };
+            for n in 1..=chapters {
+                let line = format!("Chapter {n}");
+                flow.styles.extend(std::iter::repeat_n(st.clone(), line.chars().count()));
+                flow.styles.push(st.with_para(title));
+                flow.text.push_str(&line);
+                flow.text.push('\n');
+            }
+            self.app.doc.flow = flow;
+            let ctx = self.ctx.clone();
+            self.app.doc.full_paginate(&ctx, &st);
+            self.app.set_caret(&ctx, 0, false);
+            self.app.insert_contents(&ctx);
+            self.app.set_caret(&ctx, 0, false);
+            self.frames(90, vec![], Modifiers::NONE);
+            assert_eq!(self.app.target, 0);
+            self.app.doc.contents_pages(&ctx)
         }
-        h.app.doc.flow = flow;
-        let ctx = h.ctx.clone();
-        h.app.doc.full_paginate(&ctx, &st);
-        h.app.set_caret(&ctx, 0, false);
-        h.frames(3, vec![], Modifiers::NONE);
-        let n = h.app.doc.contents_pages(&ctx);
-        assert!(n >= 3, "{n}");
 
+        /// The page shown, once the pages have settled, and that the caret is on it.
+        fn shown(&mut self) -> usize {
+            self.frames(90, vec![], Modifiers::NONE);
+            assert_eq!(self.app.pos, self.app.target as f32, "the pages settled on the page shown");
+            assert_eq!(self.app.doc.page_of(self.app.caret), self.app.target, "the caret is on the page shown");
+            self.app.target
+        }
+
+        /// Drag the scrollbar's thumb to page `to` of `of` and let go.
+        fn scrub_to(&mut self, to: usize, of: usize) {
+            let (y, x0, x1) = self.app.last_track;
+            let at = |page: usize| egui::pos2(x0 + (x1 - x0) * page as f32 / (of - 1) as f32, y);
+            let from = at(self.app.target);
+            let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+            self.frames(1, vec![egui::Event::PointerMoved(from), button(from, true)], Modifiers::NONE);
+            self.frames(1, vec![egui::Event::PointerMoved(at(to))], Modifiers::NONE);
+            self.frames(30, vec![], Modifiers::NONE);
+            self.frames(1, vec![button(at(to), false)], Modifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn page_keys_go_through_every_page_of_long_contents() {
+        let mut h = Harness::new();
+        let n = h.long_contents(120);
+        assert!(n >= 3, "{n}");
         // Page Down shows each of them in turn, then the story; Page Up goes back the same way.
         for k in 1..=n {
             h.key(Key::PageDown, Modifiers::NONE);
             assert_eq!(h.app.target, k);
         }
-        assert_eq!(h.app.doc.page_of(h.app.caret), n, "the caret is in the story");
+        assert_eq!(h.shown(), n, "the story, with the caret in it");
         for k in (0..n).rev() {
             h.key(Key::PageUp, Modifiers::NONE);
             assert_eq!(h.app.target, k);
         }
+    }
 
-        // Clicking beside the list on a middle page of it stays there; clicking a line goes to its chapter.
+    #[test]
+    fn swiping_goes_through_every_page_of_long_contents() {
+        for look in [Appearance::Book, Appearance::Paperstack] {
+            let mut h = Harness::new();
+            h.app.appearance = look;
+            let n = h.long_contents(120);
+            let swipe = |dx| egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(dx, 0.0), modifiers: Modifiers::NONE, phase: egui::TouchPhase::Move };
+            h.frames(1, vec![egui::Event::PointerMoved(h.app.last_page_rect.center())], Modifiers::NONE);
+            for k in (1..=n).chain((0..n).rev()) {
+                h.frames(1, vec![swipe(if k > h.app.target { -60.0 } else { 60.0 })], Modifiers::NONE);
+                h.frames(20, vec![], Modifiers::NONE);
+                assert_eq!(h.app.target, k, "{look:?}: swiped to page {k}");
+                h.frames(30, vec![], Modifiers::NONE); // a pause: the next swipe is a new one
+            }
+        }
+    }
+
+    #[test]
+    fn the_scrollbar_reaches_every_page_of_long_contents() {
+        for look in [Appearance::Book, Appearance::Paperstack] {
+            let mut h = Harness::new();
+            h.app.appearance = look;
+            let n = h.long_contents(120);
+            let pages = h.app.doc.pages();
+            for k in [1, n - 1, n + 2, 1] {
+                h.scrub_to(k, pages);
+                assert_eq!(h.app.target, k, "{look:?}: let go at page {k}");
+                h.frames(60, vec![], Modifiers::NONE);
+                assert_eq!(h.app.pos, k as f32, "{look:?}: settled on page {k}");
+            }
+        }
+    }
+
+    #[test]
+    fn clicks_on_a_later_page_of_the_contents_stay_there_or_follow_a_line() {
+        let mut h = Harness::new();
+        let n = h.long_contents(120);
+        let ctx = h.ctx.clone();
         h.app.go_to_page(&ctx, 1);
         h.frames(90, vec![], Modifiers::NONE);
         let l = h.app.doc.layout_page(&ctx, 1, 1.0, &[]);
         let block = l.paras[0].contents.as_ref().unwrap();
-        h.click_in_page(egui::vec2(1.0, block.size.y + 4.0));
-        assert_eq!(h.app.target, 1, "still the second page of the contents");
+        // Below the list, at either side: nothing to put the caret at on this page.
+        for at in [egui::vec2(1.0, block.size.y + 4.0), egui::vec2(block.size.x - 1.0, block.size.y + 30.0)] {
+            h.click_in_page(at);
+            assert_eq!(h.app.target, 1, "still the second page of the contents");
+        }
         let (r, page) = block.links[0];
         h.click_in_page(r.center().to_vec2());
-        assert_eq!(h.app.target, page);
+        assert_eq!(h.shown(), page, "the line's chapter");
         assert!(page >= n, "a chapter, after the contents");
+    }
+
+    #[test]
+    fn the_caret_is_always_on_the_page_shown_around_long_contents() {
+        let mut h = Harness::new();
+        let n = h.long_contents(120);
+        assert_eq!(h.shown(), 0, "before the contents, on their first page");
+        // Past the contents, the caret is after them, then in the story.
+        h.key(Key::ArrowRight, Modifiers::NONE);
+        assert_eq!(h.shown(), n - 1, "after the contents, on their last page");
+        h.key(Key::ArrowRight, Modifiers::NONE);
+        assert_eq!(h.shown(), n, "the story");
+        h.key(Key::ArrowLeft, Modifiers::NONE);
+        h.key(Key::ArrowLeft, Modifiers::NONE);
+        assert_eq!(h.shown(), 0);
+        // Ctrl+End and Ctrl+Home, from a page of the contents in between.
+        let ctx = h.ctx.clone();
+        h.app.go_to_page(&ctx, 1);
+        h.key(Key::End, Modifiers::COMMAND);
+        assert_eq!(h.shown(), h.app.last());
+        h.key(Key::Home, Modifiers::COMMAND);
+        assert_eq!(h.shown(), 0);
+    }
+
+    #[test]
+    fn typing_on_a_later_page_of_the_contents_writes_at_the_start_of_the_story() {
+        let mut h = Harness::new();
+        let n = h.long_contents(120);
+        let ctx = h.ctx.clone();
+        h.app.go_to_page(&ctx, 1);
+        h.frames(90, vec![], Modifiers::NONE);
+        h.type_text("Prologue ");
+        let story = h.app.doc.flow.text.split_once(model::PAGE_BREAK).unwrap().1;
+        assert!(story.starts_with("Prologue Chapter 1\n"), "{:?}", &story[..30]);
+        assert_eq!(h.shown(), n, "the story's first page, where the typing went");
+    }
+
+    #[test]
+    fn the_contents_lose_pages_with_their_chapters_without_losing_the_page_shown() {
+        let mut h = Harness::new();
+        let n = h.long_contents(120);
+        let ctx = h.ctx.clone();
+        h.app.go_to_page(&ctx, n - 1);
+        h.frames(90, vec![], Modifiers::NONE);
+        // Most chapters go: the contents shrink to one page, and the page shown is still one there is.
+        let end = h.app.doc.total_chars() - 1;
+        let from = h.app.doc.flow.text.find("Chapter 6\n").unwrap();
+        let from = h.app.doc.flow.text[..from].chars().count();
+        h.app.replace_range(&ctx, from, end, "");
+        assert_eq!(h.app.doc.contents_pages(&ctx), 1);
+        let shown = h.shown();
+        assert!(shown < h.app.doc.pages());
+        // And taking out the contents keeps the story's first page in view.
+        h.app.remove_contents(&ctx);
+        assert!(!h.app.doc.has_contents_page());
+        assert_eq!(h.shown(), 0);
     }
 
     // ----------------------------------------------------------- the editor

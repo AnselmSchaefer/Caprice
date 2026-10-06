@@ -205,7 +205,7 @@ impl App {
             if self.appearance == crate::Appearance::Book {
                 self.set_caret(ctx, start, false);
             } else {
-                self.batch_to(ctx, start);
+                self.batch_to_caret(ctx, start);
             }
             self.note_focus = Some(id);
         }
