@@ -316,6 +316,13 @@ impl App {
         self.apply_edit(ctx, Edit::Replace { at: ps, old, new: Piece { text, styles } }, ps);
     }
 
+    /// Take the contents page out, if there is one.
+    pub fn remove_contents(&mut self, ctx: &egui::Context) {
+        if self.doc.has_contents_page() {
+            self.replace_range(ctx, 0, 1, "");
+        }
+    }
+
     /// Insert an empty page after page `i`.
     pub fn insert_page_after(&mut self, ctx: &egui::Context, i: usize) {
         let end = self.doc.spans[i].end;

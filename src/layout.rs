@@ -455,9 +455,11 @@ impl PageLayout {
         };
         let p = &self.paras[k];
         if let Some(block) = p.block() {
-            // Before a picture or the contents: its left edge; after it: its right edge.
+            // Before a picture or the contents: its left edge; after it: its right edge. The
+            // contents keep a normal, single-line caret rather than growing with the chapter list.
             let x = if local <= p.start { block.left() } else { block.right() };
-            return Rect::from_min_max(pos2(x, p.y), pos2(x + 1.0, p.y + p.height));
+            let height = if p.contents.is_some() { p.galley.size().y } else { p.height };
+            return Rect::from_min_max(pos2(x, p.y), pos2(x + 1.0, p.y + height));
         }
         let idx = local.clamp(p.start, p.end) - p.start;
         let r = p.galley.pos_from_cursor(CCursor { index: idx.into(), prefer_next_row }).translate(vec2(p.x, p.y));

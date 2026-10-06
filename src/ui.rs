@@ -320,7 +320,7 @@ impl App {
         ui.add_space(2.0);
         ui.separator();
         ui.add_space(2.0);
-        let (new_setup, insert_contents) = self.page_menu(ui);
+        let (new_setup, toggle_contents) = self.page_menu(ui);
 
         let mut image_action = None;
         let selected_image = self.selected_image().is_some();
@@ -369,8 +369,12 @@ impl App {
             Some(ParaChange::ChapterTitle(on)) => self.set_para(&ctx, |p| p.set_chapter_title(on)),
             None => {}
         }
-        if insert_contents {
-            self.insert_contents(&ctx);
+        if toggle_contents {
+            if self.doc.has_contents_page() {
+                self.remove_contents(&ctx);
+            } else {
+                self.insert_contents(&ctx);
+            }
         }
         if let Some(setup) = new_setup {
             self.set_setup(&ctx, setup);
@@ -402,8 +406,7 @@ impl App {
         }
     }
 
-    /// Orientation, paper, margins and page numbers. Returns the new setup if something changed.
-    /// The Page menu: new page settings if they were changed, and whether to insert the contents.
+    /// The Page menu: new page settings if they were changed, and whether to toggle the contents page.
     fn page_menu(&mut self, ui: &mut egui::Ui) -> (Option<crate::model::PageSetup>, bool) {
         let mut setup = self.doc.setup.clone();
         let mut contents = false;
@@ -463,11 +466,14 @@ impl App {
                     ui.selectable_value(&mut setup.drop_cap_lines, 3, "3 lines").on_hover_text(tip);
                 });
                 ui.separator();
-                let insert = ui
-                    .add_enabled(!self.doc.has_contents_page(), egui::Button::new("Insert contents page"))
-                    .on_hover_text("A first page listing the chapter titles and their pages. Mark titles with the Chapter button.")
-                    .on_disabled_hover_text("The story already opens with a contents page.");
-                if insert.clicked() {
+                let has_contents = self.doc.has_contents_page();
+                let label = if has_contents { "Remove contents page" } else { "Insert contents page" };
+                let tip = if has_contents {
+                    "Take out the first page listing the chapter titles and their pages."
+                } else {
+                    "A first page listing the chapter titles and their pages. Mark titles with the Chapter button."
+                };
+                if ui.add(egui::Button::new(label)).on_hover_text(tip).clicked() {
                     contents = true;
                     ui.close();
                 }
