@@ -16,7 +16,7 @@ use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
 
 use crate::contents::Entry;
-use crate::model::{Align, CHAPTER_TITLE_SCALE, CONTENTS_CHAR, Doc, IMAGE_CHAR, ListKind, Note, PAGE_BREAK, ParaAttrs, Style, is_terminator};
+use crate::model::{Align, CHAPTER_TITLE_SCALE, Doc, IMAGE_CHAR, ListKind, Note, PAGE_BREAK, ParaAttrs, Style, is_terminator};
 
 const NS_W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const NS_WP: &str = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
@@ -95,8 +95,6 @@ struct Body {
     used_pics: Vec<u32>,
     /// Is the open paragraph a chapter title (whose text is drawn larger and bold)?
     title: bool,
-    /// The contents were just written: the empty paragraph that held them makes no paragraph.
-    after_contents: bool,
 }
 
 impl Body {
@@ -113,7 +111,6 @@ impl Body {
             pics: Default::default(),
             used_pics: Vec::new(),
             title: false,
-            after_contents: false,
         }
     }
 
@@ -149,18 +146,15 @@ impl Body {
         self.has_content = false;
     }
 
-    /// The contents: a heading, then a `TOC` field over the chapter titles, filled in with
-    /// `entries` until Word updates it. `tab` is where the page numbers end, in twips.
+    /// The contents, before the story: a heading, then a `TOC` field over the chapter titles,
+    /// filled in with `entries` until Word updates it. `tab` is where the page numbers end, in
+    /// twips. The story starts on a new page after them.
     fn push_contents(&mut self, entries: &[Entry], st: &Style, tab: i32) {
-        self.flush_run();
         let heading = Style { size: st.size * CHAPTER_TITLE_SCALE, bold: true, ..st.clone() };
-        // They start a page of their own, too.
-        let page_break = if self.at_page_start { self.take_page_break() } else { "<w:pageBreakBefore/>" };
         let _ = write!(
             self.xml,
-            "<w:p><w:pPr>{page_break}<w:spacing w:after=\"{}\"/><w:jc w:val=\"center\"/></w:pPr>{}<w:r><w:rPr>{}</w:rPr><w:t>Contents</w:t></w:r></w:p>",
+            "<w:p><w:pPr><w:spacing w:after=\"{}\"/><w:jc w:val=\"center\"/></w:pPr><w:r><w:rPr>{}</w:rPr><w:t>Contents</w:t></w:r></w:p>",
             twips(st.size * 1.2),
-            std::mem::take(&mut self.para),
             run_props(&heading)
         );
         let props = run_props(st);
@@ -186,8 +180,7 @@ impl Body {
             }
             let _ = write!(self.xml, "<w:p><w:pPr>{ppr}</w:pPr>{runs}</w:p>");
         }
-        self.has_content = false;
-        self.after_contents = true;
+        self.page_break_before = true;
     }
 
     fn flush_run(&mut self) {
@@ -264,12 +257,10 @@ impl Body {
     fn end_paragraph(&mut self, term: char, st: &Style) {
         self.flush_run();
         let is_break = term == PAGE_BREAK;
-        let held_contents = std::mem::take(&mut self.after_contents) && !self.has_content;
-        if !held_contents && (!is_break || self.has_content || self.at_page_start) {
+        if !is_break || self.has_content || self.at_page_start {
             self.emit(st.para, st);
         }
-        // The contents are a page of their own, even without a page break after them.
-        if is_break || held_contents {
+        if is_break {
             self.page_break_before = true;
             self.at_page_start = true;
         }
@@ -326,8 +317,9 @@ fn document_xml(doc: &Doc, has_footer: bool, media: &std::collections::HashMap<u
     let notes: &[Note] = &doc.notes;
     let fallback = Style::new("Times New Roman");
     let mut chars = doc.flow.text.char_indices().zip(doc.flow.styles.iter().chain(std::iter::repeat(&fallback)));
-    let chapters = if doc.flow.text.contains(CONTENTS_CHAR) { doc.chapters(true) } else { Vec::new() };
-    let tab = twips(doc.setup.content_size().x);
+    if doc.setup.contents {
+        body.push_contents(&doc.chapters(true), &doc.contents_style(), twips(doc.setup.content_size().x));
+    }
     let mut para_start = true;
 
     let n = doc.total_chars();
@@ -352,8 +344,6 @@ fn document_xml(doc: &Doc, has_footer: bool, media: &std::collections::HashMap<u
             });
             if let Some(Some(spacing)) = cap {
                 body.push_drop_cap(c, st, doc.setup.drop_cap_lines, spacing);
-            } else if c == CONTENTS_CHAR {
-                body.push_contents(&chapters, st, tab);
             } else if is_terminator(c) {
                 body.end_paragraph(c, st);
             } else {
@@ -525,7 +515,7 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
         let _ = write!(rels, "<Relationship Id=\"rIdNumbering\" Type=\"{REL}/numbering\" Target=\"numbering.xml\"/>");
     }
     // Word fills in the contents' page numbers by its own layout when it opens the file.
-    let has_contents = doc.flow.text.contains(CONTENTS_CHAR);
+    let has_contents = doc.setup.contents;
     if has_contents {
         let _ = write!(content_types, "<Override PartName=\"/word/settings.xml\" ContentType=\"{CT}.settings+xml\"/>");
         let _ = write!(rels, "<Relationship Id=\"rIdSettings\" Type=\"{REL}/settings\" Target=\"settings.xml\"/>");
@@ -773,9 +763,10 @@ mod tests {
     /// A story with a contents page and a chapter, laid out (so pages are known).
     fn chapter_doc(lines: u8) -> Doc {
         let st = Style::new("Liberation Serif");
-        let mut d = doc_with(&format!("{CONTENTS_CHAR}{PAGE_BREAK}Chapter One\nIt was a dark night.\nMore.\n"), st);
-        d.flow.styles[13].para.set_chapter_title(true);
+        let mut d = doc_with("Chapter One\nIt was a dark night.\nMore.\n", st);
+        d.flow.styles[11].para.set_chapter_title(true);
         d.setup.drop_cap_lines = lines;
+        d.setup.contents = true;
         crate::layout::with_ctx(|ctx| d.full_paginate(ctx, &Style::new("x")));
         d
     }
@@ -813,25 +804,9 @@ mod tests {
     }
 
     #[test]
-    fn the_contents_are_a_page_of_their_own_even_without_page_breaks() {
-        let st = Style::new("Liberation Serif");
-        let mut d = doc_with(&format!("Foreword\n{CONTENTS_CHAR}\nChapter One\nText.\n"), st);
-        d.flow.styles[22].para.set_chapter_title(true);
-        crate::layout::with_ctx(|ctx| d.full_paginate(ctx, &Style::new("x")));
-        let xml = read_part(&to_docx(&d).unwrap(), "word/document.xml").unwrap();
-        let paras = paragraphs(&xml);
-        let texts: Vec<&str> = paras.iter().map(|(t, _)| t.as_str()).collect();
-        assert_eq!(texts, ["Foreword", "Contents", "Chapter One3", "Chapter One", "Text."]);
-        assert!(paras[1].1.contains("<w:pageBreakBefore/>"), "{}", paras[1].1);
-        assert!(paras[3].1.contains("<w:pageBreakBefore/>"), "{}", paras[3].1);
-    }
-
-    #[test]
     fn without_contents_or_drop_caps_word_gets_neither() {
         let mut d = chapter_doc(0);
-        let n = d.flow.text.chars().count();
-        d.flow.text = d.flow.text.replace([CONTENTS_CHAR, PAGE_BREAK], "");
-        d.flow.styles.drain(0..n - d.flow.text.chars().count());
+        d.setup.contents = false;
         let bytes = to_docx(&d).unwrap();
         let xml = read_part(&bytes, "word/document.xml").unwrap();
         let texts: Vec<String> = paragraphs(&xml).into_iter().map(|(t, _)| t).collect();
@@ -868,7 +843,6 @@ from the President of a far distant country.";
         d.flow.text.clear();
         d.flow.styles.clear();
         let parts: Vec<(&str, &Style, ParaAttrs)> = vec![
-            ("\u{e000}\u{c}", &plain, ParaAttrs::default()),
             ("A centered title", &bold, ParaAttrs::default()),
             ("\n", &bold, centered),
             ("Plain text, then ", &plain, ParaAttrs::default()),
@@ -908,7 +882,8 @@ from the President of a far distant country.";
         d.setup.page_numbers = true;
         d.setup.margin_left = 100.0;
         d.setup.drop_cap_lines = 3;
-        d.notes.push(Note { id: 1, start: 28, end: 44, text: "Remember to rephrase this.".into(), color: 1 });
+        d.setup.contents = true;
+        d.notes.push(Note { id: 1, start: 26, end: 42, text: "Remember to rephrase this.".into(), color: 1 });
         crate::layout::with_ctx(|ctx| d.full_paginate(ctx, &plain));
         std::fs::write(out, to_docx(&d).unwrap()).unwrap();
     }

@@ -56,11 +56,15 @@ impl App {
         self.doc.flow.text[ba..bb].replace(PAGE_BREAK, "\n")
     }
 
-    /// Flip to page `to`, the caret going to its start. On a page of the contents other than their
-    /// first, that start is on another page, so the page is set rather than worked out from it.
+    /// Flip to page `to`, the caret going to its start. The contents' pages hold no text, so on
+    /// them the caret stays where it is in the story.
     pub fn turn_to(&mut self, ctx: &egui::Context, to: usize, extend: bool) {
-        self.set_caret(ctx, self.doc.spans[to].start, extend);
-        self.target = to;
+        if self.doc.spans[to].contents.is_some() {
+            self.target = to;
+            ctx.request_repaint();
+        } else {
+            self.set_caret(ctx, self.doc.spans[to].start, extend);
+        }
     }
 
     /// Move the caret (and the selection end, if `extend`), and flip to the page it is on.
@@ -102,30 +106,9 @@ impl App {
 
     fn replace_raw(&mut self, ctx: &egui::Context, a: usize, b: usize, text: &str) {
         let max = self.max_caret();
-        let (mut a, mut b) = (a.min(max), b.min(max));
-        let mut text: String = text.chars().filter(|&c| c != CONTENTS_CHAR).collect();
-        // The contents page holds the contents and nothing else: what is typed on it goes to the
-        // start of the story, and its page break goes only with the contents themselves.
-        if self.doc.has_contents_page() && a < 2 {
-            if a == 0 && b >= 1 {
-                b = b.max(2);
-            } else if b > 2 {
-                a = 2;
-            } else if text.is_empty() {
-                return;
-            } else {
-                (a, b) = (2, 2);
-            }
-        }
-        // The contents keep a paragraph of their own: text typed next to them goes on a line of its own.
-        if !text.is_empty() {
-            if a > 0 && self.doc.char_at(a - 1) == Some(CONTENTS_CHAR) && !text.starts_with(is_terminator) {
-                text.insert(0, '\n');
-            }
-            if self.doc.char_at(b) == Some(CONTENTS_CHAR) && !text.ends_with(is_terminator) {
-                text.push('\n');
-            }
-        }
+        let (a, b) = (a.min(max), b.min(max));
+        // The contents are a page setting, not text (older files had a char for them).
+        let text: String = text.chars().filter(|&c| c != CONTENTS_CHAR).collect();
         if a == b && text.is_empty() {
             return;
         }
@@ -311,23 +294,10 @@ impl App {
         self.replace_raw(ctx, at, at, &text);
     }
 
-    /// Put a contents page first, unless there is one; the story goes on on the next page.
-    pub fn insert_contents(&mut self, ctx: &egui::Context) {
-        if self.doc.has_contents_page() {
-            return;
-        }
-        let ps = 0;
-        let text = crate::contents::contents_text();
-        let styles = text.chars().map(|_| self.typing.with_para(ParaAttrs::default())).collect();
-        let old = Piece::default();
-        self.apply_edit(ctx, Edit::Replace { at: ps, old, new: Piece { text, styles } }, ps);
-    }
-
-    /// Take the contents page out, if there is one.
-    pub fn remove_contents(&mut self, ctx: &egui::Context) {
-        if self.doc.has_contents_page() {
-            self.replace_range(ctx, 0, 1, "");
-        }
+    /// Put pages listing the chapters before the story, or take them out. Put in, they are shown.
+    pub fn set_contents(&mut self, ctx: &egui::Context, on: bool) {
+        let setup = PageSetup { contents: on, ..self.doc.setup.clone() };
+        self.set_setup(ctx, setup);
     }
 
     /// Insert an empty page after page `i`.
@@ -666,11 +636,15 @@ impl App {
     /// Swap in new page settings and reflow the whole document.
     pub fn set_setup(&mut self, ctx: &egui::Context, mut setup: PageSetup) {
         setup.clamp_margins();
+        let contents_added = setup.contents && !self.doc.setup.contents;
         self.doc.setup = setup;
         self.doc.version += 1;
         self.doc.full_paginate(ctx, &self.typing);
         let c = self.caret;
         self.set_caret(ctx, c, false);
+        if contents_added {
+            self.turn_to(ctx, 0, false);
+        }
     }
 
     // ------------------------------------------------------------------ the page surface
@@ -687,7 +661,8 @@ impl App {
 
         // Selection, then text, then caret.
         let (a, b) = self.selection();
-        if a != b && b > start && a < start + page_len + 1 {
+        let story = self.doc.spans[i].contents.is_none();
+        if story && a != b && b > start && a < start + page_len + 1 {
             let (la, lb) = (a.saturating_sub(start), (b - start).min(page_len + 1));
             for r in layout.selection_rects(la, lb) {
                 let color = crate::theme::ACCENT.gamma_multiply(0.45);

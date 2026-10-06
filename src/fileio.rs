@@ -146,6 +146,7 @@ impl DocFile {
         doc.ensure_final_mark();
         doc.setup = self.setup;
         doc.setup.clamp_margins();
+        let removed = doc.take_out_contents_chars();
         for img in self.images {
             let Ok(bytes) = BASE64.decode(img.data.as_bytes()) else { continue };
             let Ok((format, px)) = crate::images::describe(&bytes) else { continue };
@@ -153,7 +154,8 @@ impl DocFile {
         }
         let total = doc.total_chars();
         for n in self.notes {
-            let (start, end) = (n.start.min(total), n.end.min(total));
+            let shift = |c: usize| c - removed.iter().filter(|&&r| r < c).count();
+            let (start, end) = (shift(n.start).min(total), shift(n.end).min(total));
             let id = doc.next_note_id;
             doc.next_note_id += 1;
             doc.notes.push(Note { id, start: start.min(end), end, text: n.text, color: n.color });
@@ -463,6 +465,24 @@ mod tests {
         let old = json.replace(r#","kind":"ChapterTitle""#, "");
         let back = serde_json::from_str::<DocFile>(&old).unwrap().into_doc();
         assert!(!back.para_attrs_at(0).is_chapter_title());
+    }
+
+    #[test]
+    fn files_with_the_old_contents_char_open_with_the_setting_and_post_its_in_place() {
+        let st = Style::new("Foo");
+        let mut doc = Doc::new();
+        doc.flow.text = "\u{e000}\u{c}One\ntext\n".into();
+        doc.flow.styles = vec![st; 11];
+        doc.notes.push(Note { id: 1, start: 2, end: 5, text: "the title".into(), color: 0 });
+        let json = serde_json::to_string(&DocFile::from_doc(&doc)).unwrap();
+        let back = serde_json::from_str::<DocFile>(&json).unwrap().into_doc();
+        assert_eq!(back.flow.text, "One\ntext\n");
+        assert!(back.setup.contents);
+        assert_eq!((back.notes[0].start, back.notes[0].end), (0, 3), "still on \"One\"");
+        // Saved again, the setting stays, and the char does not come back.
+        let json = serde_json::to_string(&DocFile::from_doc(&back)).unwrap();
+        let again = serde_json::from_str::<DocFile>(&json).unwrap().into_doc();
+        assert_eq!((again.flow.text.as_str(), again.setup.contents), ("One\ntext\n", true));
     }
 
     #[test]

@@ -340,6 +340,27 @@ impl Doc {
         (self.char_at(c) == Some(IMAGE_CHAR)).then(|| (img.id, self.image_size(img), img.rotation))
     }
 
+    /// Page `part` of the contents: one block, with no text of the story's.
+    fn layout_contents_page(&self, ctx: &egui::Context, part: usize, scale: f32) -> PageLayout {
+        let st = self.contents_style();
+        let chapters = self.chapters(true);
+        let spec = PieceSpec {
+            text: "",
+            styles: &[],
+            term: &st,
+            attrs: ParaAttrs::default(),
+            scale,
+            content_width: self.setup.content_size().x * scale,
+            marks: &[],
+            invisible: false,
+            marker: None,
+            image: None,
+            contents: Some((&chapters, self.setup.content_size().y, part)),
+        };
+        let p = layout_piece(ctx, &spec, 0, 0, 0.0);
+        PageLayout { height: p.height, paras: vec![p], scale }
+    }
+
     pub fn hard_end(&self, page: usize) -> bool {
         self.spans[page].hard
     }
@@ -347,13 +368,15 @@ impl Doc {
     /// Lay out page `i`. `marks` are page-local highlights.
     pub fn layout_page(&self, ctx: &egui::Context, i: usize, scale: f32, marks: &[Mark]) -> PageLayout {
         let sp = self.spans[i];
+        if let Some(part) = sp.contents {
+            return self.layout_contents_page(ctx, part, scale);
+        }
         let hard_end = sp.hard;
         let content_width = self.setup.content_size().x * scale;
         let mut paras = Vec::new();
         let mut y = 0.0;
         let (mut c, mut b) = (sp.start, sp.bstart);
         let mut number: Option<usize> = None; // the number of the last numbered paragraph seen
-        let mut chapters = None; // made only if the page holds the contents
 
         while c < sp.end || (c == sp.end && hard_end) {
             let (tc, tb) = self.term_from(c, b);
@@ -399,9 +422,7 @@ impl Doc {
                 invisible: pe_c == c && self.flow.text[tb..].starts_with(PAGE_BREAK) && tc == pe_c,
                 marker,
                 image: self.picture_in(c, pe_c),
-                contents: self
-                    .contents_in(c, b, pe_c)
-                    .then(|| (chapters.get_or_insert_with(|| self.chapters(true)).as_slice(), self.setup.content_size().y, sp.part)),
+                contents: None,
             };
             match self.drop_cap(ctx, c, b).filter(|_| at_para_start) {
                 Some(cap) => {

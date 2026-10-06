@@ -652,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn a_contents_page_is_always_first_and_holds_nothing_else() {
+    fn the_contents_pages_go_before_the_story_and_hold_none_of_its_text() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.type_text("Chapter One");
@@ -661,39 +661,28 @@ mod tests {
         h.key(Key::Enter, Modifiers::NONE);
         h.type_text("It was dark.");
         h.app.set_caret(&ctx, 3, false);
-        h.app.insert_contents(&ctx);
-        let contents = model::CONTENTS_CHAR;
-        assert_eq!(h.app.doc.flow.text, format!("{contents}\u{c}Chapter One\nIt was dark.\n"));
-        assert_eq!((h.app.doc.pages(), h.app.doc.page_of(h.app.caret)), (2, 1), "the story goes on on the next page");
+        h.app.set_contents(&ctx, true);
+        assert_eq!(h.app.doc.flow.text, "Chapter One\nIt was dark.\n", "the text is unchanged");
+        assert_eq!((h.app.doc.pages(), h.app.target, h.app.caret), (2, 0, 3), "shown, the caret left where it was");
         let layout = h.app.doc.layout_page(&ctx, 0, 1.0, &[]);
         assert_eq!(layout.paras[0].contents.as_ref().unwrap().links[0].1, 1, "Chapter One is on page 2");
 
-        // Only one, and always first.
-        h.app.set_caret(&ctx, 10, false);
-        h.app.insert_contents(&ctx);
-        assert_eq!(h.app.doc.flow.text, format!("{contents}\u{c}Chapter One\nIt was dark.\n"));
-
-        // Typed on the contents page, text goes to the start of the story.
-        for at in [0, 1] {
-            h.app.set_caret(&ctx, at, false);
-            h.type_text("x");
-        }
-        assert_eq!(h.app.doc.flow.text, format!("{contents}\u{c}xxChapter One\nIt was dark.\n"));
-        // Backspace at the start of the story leaves the contents page alone.
-        h.app.set_caret(&ctx, 2, false);
-        h.key(Key::Backspace, Modifiers::NONE);
-        assert!(h.app.doc.has_contents_page());
-        // Deleting the contents takes their page with them.
+        // Typing while they are shown writes at the caret, and shows it.
+        h.type_text("x");
+        assert_eq!((h.app.doc.flow.text.as_str(), h.app.target), ("Chaxpter One\nIt was dark.\n", 1));
+        // Backspace at the start of the story, or deleting all of it, leaves the contents alone.
         h.app.set_caret(&ctx, 0, false);
+        h.key(Key::Backspace, Modifiers::NONE);
+        h.key(Key::A, Modifiers::COMMAND);
         h.key(Key::Delete, Modifiers::NONE);
-        assert_eq!(h.app.doc.flow.text, "xxChapter One\nIt was dark.\n");
-        // Undo brings the contents back, and in the end undoes them away.
-        h.key(Key::Z, Modifiers::COMMAND);
-        assert!(h.app.doc.has_contents_page());
-        while h.app.doc.has_contents_page() {
+        assert_eq!((h.app.doc.flow.text.as_str(), h.app.doc.pages()), ("\n", 2));
+        // Undo is for the text: it all comes back, the contents staying.
+        while h.app.doc.flow.text != "Chapter One\nIt was dark.\n" {
             h.key(Key::Z, Modifiers::COMMAND);
         }
-        assert_eq!(h.app.doc.flow.text, "Chapter One\nIt was dark.\n");
+        assert!(h.app.doc.setup.contents);
+        h.app.set_contents(&ctx, false);
+        assert_eq!((h.app.doc.pages(), h.app.target), (1, 0));
     }
 
     #[test]
@@ -1175,19 +1164,22 @@ mod tests {
             let ctx = self.ctx.clone();
             self.app.doc.full_paginate(&ctx, &st);
             self.app.set_caret(&ctx, 0, false);
-            self.app.insert_contents(&ctx);
-            self.app.set_caret(&ctx, 0, false);
+            self.app.set_contents(&ctx, true);
             self.frames(90, vec![], Modifiers::NONE);
             assert_eq!(self.app.target, 0);
             self.app.doc.contents_pages(&ctx)
         }
 
-        /// The page shown, once the pages have settled, and that the caret is on it.
+        /// The page shown, once the pages have settled, and that the caret is on it, unless it
+        /// is a page of the contents (which hold no text).
         fn shown(&mut self) -> usize {
             self.frames(90, vec![], Modifiers::NONE);
-            assert_eq!(self.app.pos, self.app.target as f32, "the pages settled on the page shown");
-            assert_eq!(self.app.doc.page_of(self.app.caret), self.app.target, "the caret is on the page shown");
-            self.app.target
+            let target = self.app.target;
+            assert_eq!(self.app.pos, target as f32, "the pages settled on the page shown");
+            if self.app.doc.spans[target].contents.is_none() {
+                assert_eq!(self.app.doc.page_of(self.app.caret), target, "the caret is on the page shown");
+            }
+            target
         }
 
         /// Drag the scrollbar's thumb to page `to` of `of` and let go.
@@ -1274,25 +1266,24 @@ mod tests {
     }
 
     #[test]
-    fn the_caret_is_always_on_the_page_shown_around_long_contents() {
+    fn the_caret_stays_in_the_story_around_long_contents() {
         let mut h = Harness::new();
         let n = h.long_contents(120);
-        assert_eq!(h.shown(), 0, "before the contents, on their first page");
-        // Past the contents, the caret is after them, then in the story.
+        assert_eq!((h.shown(), h.app.doc.page_of(h.app.caret)), (0, n), "the contents shown, the caret where the story starts");
+        // Moving the caret shows its page; it never goes onto the contents.
         h.key(Key::ArrowRight, Modifiers::NONE);
-        assert_eq!(h.shown(), n - 1, "after the contents, on their last page");
-        h.key(Key::ArrowRight, Modifiers::NONE);
-        assert_eq!(h.shown(), n, "the story");
+        assert_eq!(h.shown(), n);
         h.key(Key::ArrowLeft, Modifiers::NONE);
         h.key(Key::ArrowLeft, Modifiers::NONE);
-        assert_eq!(h.shown(), 0);
+        h.key(Key::ArrowUp, Modifiers::NONE);
+        assert_eq!((h.shown(), h.app.caret), (n, 0));
         // Ctrl+End and Ctrl+Home, from a page of the contents in between.
         let ctx = h.ctx.clone();
         h.app.go_to_page(&ctx, 1);
         h.key(Key::End, Modifiers::COMMAND);
         assert_eq!(h.shown(), h.app.last());
         h.key(Key::Home, Modifiers::COMMAND);
-        assert_eq!(h.shown(), 0);
+        assert_eq!(h.shown(), n);
     }
 
     #[test]
@@ -1303,8 +1294,7 @@ mod tests {
         h.app.go_to_page(&ctx, 1);
         h.frames(90, vec![], Modifiers::NONE);
         h.type_text("Prologue ");
-        let story = h.app.doc.flow.text.split_once(model::PAGE_BREAK).unwrap().1;
-        assert!(story.starts_with("Prologue Chapter 1\n"), "{:?}", &story[..30]);
+        assert!(h.app.doc.flow.text.starts_with("Prologue Chapter 1\n"), "{:?}", &h.app.doc.flow.text[..30]);
         assert_eq!(h.shown(), n, "the story's first page, where the typing went");
     }
 
@@ -1324,8 +1314,8 @@ mod tests {
         let shown = h.shown();
         assert!(shown < h.app.doc.pages());
         // And taking out the contents keeps the story's first page in view.
-        h.app.remove_contents(&ctx);
-        assert!(!h.app.doc.has_contents_page());
+        h.app.set_contents(&ctx, false);
+        assert!(!h.app.doc.setup.contents);
         assert_eq!(h.shown(), 0);
     }
 

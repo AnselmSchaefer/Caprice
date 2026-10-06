@@ -14,7 +14,7 @@ use eframe::egui::{self, Color32, FontId, Id, Key, Pos2, Rect, Sense, Shape, Str
 use serde_json::Value;
 
 use crate::App;
-use crate::model::{CONTENTS_CHAR, IMAGE_CHAR, PAGE_BREAK};
+use crate::model::{IMAGE_CHAR, PAGE_BREAK};
 use crate::theme::{ACCENT, TEXT_DIM};
 
 /// The model that answers about a passage.
@@ -305,7 +305,7 @@ impl App {
     /// The text of the flow chars `a..b`, as sent to Claude: pictures left out, page breaks as line breaks.
     fn passage(&self, a: usize, b: usize) -> String {
         let (ba, bb) = (self.doc.char_to_byte(a), self.doc.char_to_byte(b));
-        self.doc.flow.text[ba..bb].chars().filter(|&c| c != IMAGE_CHAR && c != CONTENTS_CHAR).map(|c| if c == PAGE_BREAK { '\n' } else { c }).collect()
+        self.doc.flow.text[ba..bb].chars().filter(|&c| c != IMAGE_CHAR).map(|c| if c == PAGE_BREAK { '\n' } else { c }).collect()
     }
 
     pub fn toggle_pen(&mut self) {
@@ -524,7 +524,7 @@ impl App {
         if !ans.command.rewrites() || ans.state != State::Done || ans.text.trim().is_empty() {
             return Err("Claude has not finished a new version of the passage yet");
         }
-        if ans.original.contains([IMAGE_CHAR, CONTENTS_CHAR, PAGE_BREAK]) {
+        if ans.original.contains([IMAGE_CHAR, PAGE_BREAK]) {
             return Err("The passage holds a picture or page break; copy the text instead");
         }
         let now = (b <= self.doc.total_chars()).then(|| &self.doc.flow.text[self.doc.char_to_byte(a)..self.doc.char_to_byte(b)]);

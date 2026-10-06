@@ -1,10 +1,10 @@
-//! The contents page: one `CONTENTS_CHAR` in a paragraph of its own stands in the flow for a list
-//! of the chapter titles and the pages they start on. The list is never stored; it is made from
-//! the titles every time the page is laid out, so it is always up to date.
+//! The contents: pages before the story listing the chapter titles and the pages they start on,
+//! when `PageSetup::contents` asks for them. The list is never stored; it is made from the titles
+//! every time a page of it is laid out, so it is always up to date. Its pages hold none of the
+//! story's text, so the caret is never on them.
 //!
-//! Its height depends only on the titles, not on their page numbers, so pagination never goes in
-//! circles: the pages are worked out first, and the numbers filled in when the page is drawn.
-//! A long list goes on over more pages, which all hold the one char (see `Span::part`).
+//! How many pages it takes depends only on the titles, not on their page numbers, so pagination
+//! never goes in circles: the pages are worked out first, and the numbers filled in when drawn.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2, pos2, vec2};
 
 use crate::layout::run_format;
-use crate::model::{CHAPTER_TITLE_SCALE, CONTENTS_CHAR, Doc, IMAGE_CHAR, PAGE_BREAK, ParaAttrs, Style, is_terminator};
+use crate::model::{CHAPTER_TITLE_SCALE, CONTENTS_CHAR, Doc, IMAGE_CHAR, ParaAttrs, Style, is_terminator};
 
 /// One line of the contents.
 #[derive(Clone, Debug, PartialEq)]
@@ -42,7 +42,7 @@ impl Doc {
                 continue;
             }
             if self.flow.styles[c].para.is_chapter_title() {
-                let title: String = self.flow.text[pb..b].chars().filter(|&k| k != IMAGE_CHAR && k != CONTENTS_CHAR).collect();
+                let title: String = self.flow.text[pb..b].chars().filter(|&k| k != IMAGE_CHAR).collect();
                 let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
                 if !title.is_empty() {
                     let page = (with_pages && !self.spans.is_empty()).then(|| self.page_of(pc));
@@ -54,29 +54,62 @@ impl Doc {
         out
     }
 
-    /// Are chars `c..ec`, starting at byte `b`, exactly a contents block?
-    pub fn contents_in(&self, c: usize, b: usize, ec: usize) -> bool {
-        ec == c + 1 && self.flow.text[b..].starts_with(CONTENTS_CHAR)
+    /// Files saved before the contents became a page setting held a char for them, in a
+    /// paragraph of its own: take those out (with their paragraph end) and turn the setting on.
+    /// Returns where the removed chars were, in the text as it was, in order.
+    pub fn take_out_contents_chars(&mut self) -> Vec<usize> {
+        let mut removed = Vec::new();
+        let (mut text, mut styles) = (String::new(), Vec::new());
+        let chars: Vec<char> = self.flow.text.chars().collect();
+        let mut k = 0;
+        while k < chars.len() {
+            if chars[k] == CONTENTS_CHAR {
+                removed.push(k);
+                let alone = (k == 0 || is_terminator(chars[k - 1])) && chars.get(k + 1).is_some_and(|&t| is_terminator(t));
+                if alone && k + 2 < chars.len() {
+                    removed.push(k + 1);
+                    k += 1;
+                }
+            } else {
+                text.push(chars[k]);
+                styles.push(self.flow.styles[k].clone());
+            }
+            k += 1;
+        }
+        if !removed.is_empty() {
+            self.flow.text = text;
+            self.flow.styles = styles;
+            self.setup.contents = true;
+        }
+        removed
     }
 
-    /// The char where the first contents block is, if the story has one.
-    pub fn contents_at(&self) -> Option<usize> {
-        let b = self.flow.text.find(CONTENTS_CHAR)?;
-        Some(self.flow.text[..b].chars().count())
+    /// The look of the contents: the font and size most of the text (looked at up to a point)
+    /// has, plain.
+    pub fn contents_style(&self) -> Style {
+        let mut counts: Vec<(&Style, usize)> = Vec::new();
+        for (ch, st) in self.flow.text.chars().zip(&self.flow.styles).take(20_000) {
+            if is_terminator(ch) || ch == IMAGE_CHAR {
+                continue;
+            }
+            match counts.iter_mut().find(|(s, _)| s.font == st.font && s.size == st.size) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((st, 1)),
+            }
+        }
+        let most = counts.iter().max_by_key(|(_, n)| *n).map(|(st, _)| *st);
+        let st = most.or(self.flow.styles.first()).cloned().unwrap_or_else(|| Style::new("Default"));
+        Style { size: st.size, ..Style::new(&st.font) }
     }
 
-    /// How many pages the contents take up (1 if there are none).
+    /// How many pages the contents take up (none if the setup has no contents).
     pub fn contents_pages(&self, ctx: &egui::Context) -> usize {
-        let Some(c) = self.contents_at() else { return 1 };
+        if !self.setup.contents {
+            return 0;
+        }
         let content = self.setup.content_size();
-        split(ctx, &self.chapters(false), &self.flow.styles[c], content.x, content.y).len()
+        split(ctx, &self.chapters(false), &self.contents_style(), content.x, content.y).len()
     }
-
-    /// Does the story open with a contents page?
-    pub fn has_contents_page(&self) -> bool {
-        self.flow.text.starts_with(&contents_text())
-    }
-
 }
 
 fn text(ctx: &egui::Context, s: &str, st: &Style, scale: f32, wrap: f32) -> Arc<egui::Galley> {
@@ -162,18 +195,14 @@ pub fn layout_contents(ctx: &egui::Context, entries: &[Entry], st: &Style, width
     ContentsBlock { size: vec2(width, bottom) * scale, texts, links }
 }
 
-/// The text to insert for a contents page: the block, then a page break so the story goes on
-/// on the next page.
-pub fn contents_text() -> String {
-    format!("{CONTENTS_CHAR}{PAGE_BREAK}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout::with_ctx;
+    use crate::model::PAGE_BREAK;
 
-    /// A document of paragraphs; `true` marks a chapter title. "@" stands for the contents.
+    /// A document of paragraphs; `true` marks a chapter title. One ending in a page break ends
+    /// with that instead of a line break.
     fn doc(paras: &[(&str, bool)]) -> Doc {
         let mut d = Doc::new();
         let st = Style::new("x");
@@ -182,8 +211,7 @@ mod tests {
         d.flow.text.clear();
         d.flow.styles.clear();
         for &(text, is_title) in paras {
-            let text = text.replace('@', &CONTENTS_CHAR.to_string());
-            d.flow.text.push_str(&text);
+            d.flow.text.push_str(text);
             d.flow.styles.extend(std::iter::repeat_n(st.clone(), text.chars().count()));
             let end = if text.ends_with(PAGE_BREAK) { d.flow.text.pop(); d.flow.styles.pop(); PAGE_BREAK } else { '\n' };
             d.flow.text.push(end);
@@ -192,17 +220,16 @@ mod tests {
         d
     }
 
-    fn story(chapters: usize, paras_each: usize) -> Vec<(String, bool)> {
-        let mut out = vec![("@\u{c}".to_owned(), false)];
+    /// A story of `chapters` chapters of `paras_each` long paragraphs, with the contents.
+    fn story(chapters: usize, paras_each: usize) -> Doc {
+        let mut paras = Vec::new();
         for n in 1..=chapters {
-            out.push((format!("Chapter {n}"), true));
-            out.extend(std::iter::repeat_n(("It was nearly midnight and the Prime Minister sat alone in his office. ".repeat(8), false), paras_each));
+            paras.push((format!("Chapter {n}"), true));
+            paras.extend(std::iter::repeat_n(("It was nearly midnight and the Prime Minister sat alone in his office. ".repeat(8), false), paras_each));
         }
-        out
-    }
-
-    fn as_refs(v: &[(String, bool)]) -> Vec<(&str, bool)> {
-        v.iter().map(|(s, t)| (s.as_str(), *t)).collect()
+        let mut d = doc(&paras.iter().map(|(s, t)| (s.as_str(), *t)).collect::<Vec<_>>());
+        d.setup.contents = true;
+        d
     }
 
     #[test]
@@ -221,13 +248,13 @@ mod tests {
     #[test]
     fn the_contents_list_each_chapter_and_lead_to_its_page() {
         with_ctx(|ctx| {
-            let paras = story(4, 6);
-            let mut d = doc(&as_refs(&paras));
+            let mut d = story(4, 6);
             d.full_paginate(ctx, &Style::new("x"));
             assert!(d.pages() >= 3);
             assert!(d.chapters(true).windows(2).any(|w| w[0].page != w[1].page), "chapters on different pages");
+            assert_eq!(d.spans[0], crate::model::Span { contents: Some(0), ..Default::default() }, "a page holding no text");
+            assert_eq!((d.spans[1].start, d.spans[1].contents), (0, None), "the story starts on the next");
             let l = d.layout_page(ctx, 0, 1.0, &[]);
-            assert_eq!(d.spans[0], crate::model::Span { start: 0, end: 1, bstart: 0, bend: 3, hard: true, part: 0 }, "a page of its own");
             let block = l.paras[0].contents.as_ref().expect("the first page is the contents");
             assert_eq!(block.links.len(), 4);
             let shown: Vec<String> = block.texts.iter().map(|(g, _)| g.text().to_owned()).collect();
@@ -239,28 +266,27 @@ mod tests {
                 assert_eq!(page, e.page.unwrap());
             }
             assert_eq!(l.link_at(vec2(1.0, 1.0)), None, "the heading leads nowhere");
-            // The caret goes before or after the block, like a picture.
-            assert_eq!(l.hit(vec2(1.0, 30.0)), 0);
-            assert_eq!(l.hit(vec2(l.paras[0].block().unwrap().right() - 1.0, 30.0)), 1);
+            // No spot in the story is on it.
+            assert_eq!(d.page_of(0), 1);
         });
     }
 
     #[test]
-    fn the_contents_are_a_page_of_their_own_even_without_page_breaks() {
+    fn without_the_setting_there_are_no_contents_pages() {
         with_ctx(|ctx| {
-            let mut d = doc(&[("Foreword", false), ("@", false), ("Chapter One", true), ("Text", false)]);
+            let mut d = story(4, 1);
+            d.setup.contents = false;
             d.full_paginate(ctx, &Style::new("x"));
-            let starts: Vec<usize> = d.spans.iter().map(|s| s.start).collect();
-            assert_eq!(starts, [0, 9, 11], "the foreword, the contents, then the first chapter");
-            assert_eq!(d.chapters(true)[0].page, Some(2));
+            assert_eq!(d.contents_pages(ctx), 0);
+            assert!(d.spans.iter().all(|s| s.contents.is_none()));
+            assert_eq!(d.page_of(0), 0);
         });
     }
 
     #[test]
     fn the_contents_take_the_same_room_at_every_zoom() {
         with_ctx(|ctx| {
-            let paras = story(3, 1);
-            let mut d = doc(&as_refs(&paras));
+            let mut d = story(3, 1);
             d.full_paginate(ctx, &Style::new("x"));
             let h = d.layout_page(ctx, 0, 1.0, &[]).height;
             for sc in [0.8f32, 1.37] {
@@ -272,15 +298,14 @@ mod tests {
     #[test]
     fn long_contents_go_on_over_as_many_pages_as_they_take() {
         with_ctx(|ctx| {
-            let paras = story(120, 0);
-            let mut d = doc(&as_refs(&paras));
+            let mut d = story(120, 0);
             d.full_paginate(ctx, &Style::new("x"));
             let n = d.contents_pages(ctx);
             assert!(n >= 3, "{n} pages");
             for (k, sp) in d.spans[..n].iter().enumerate() {
-                assert_eq!((sp.start, sp.end, sp.part, sp.hard), (0, 1, k, k + 1 == n), "they all hold the one char");
+                assert_eq!((sp.start, sp.end, sp.contents), (0, 0, Some(k)));
             }
-            assert_eq!((d.spans[n].start, d.spans[n].part), (2, 0), "the story goes on after them");
+            assert_eq!((d.spans[n].start, d.spans[n].contents), (0, None), "the story goes on after them");
 
             let mut shown = Vec::new();
             for k in 0..n {
@@ -294,28 +319,37 @@ mod tests {
             let pages: Vec<usize> = d.chapters(true).iter().map(|e| e.page.unwrap()).collect();
             assert_eq!(shown, pages, "every chapter, once, in order");
             assert_eq!(pages[0], n, "the first chapter is on the page after the contents");
-            // The caret is before them on their first page, after them on their last.
-            assert_eq!((d.page_of(0), d.page_of(1), d.page_of(2)), (0, n - 1, n));
         });
     }
 
     #[test]
-    fn chapters_added_far_on_give_the_contents_more_pages_like_from_scratch() {
+    fn chapters_added_or_taken_away_change_the_contents_pages_like_from_scratch() {
         with_ctx(|ctx| {
             let st = Style::new("x");
-            let mut d = doc(&as_refs(&story(30, 0)));
+            let mut d = story(30, 0);
             d.full_paginate(ctx, &st);
             let before = d.contents_pages(ctx);
             let mut title = ParaAttrs::default();
             title.set_chapter_title(true);
+            let check = |d: &mut Doc| {
+                let incremental = d.spans.clone();
+                d.full_paginate(ctx, &st);
+                assert_eq!(incremental, d.spans);
+            };
             while d.contents_pages(ctx) == before {
                 let at = d.total_chars() - 1;
                 let new = crate::edit::Piece { text: "More\n".into(), styles: [vec![st.clone(); 4], vec![st.with_para(title)]].concat() };
                 d.apply(crate::edit::Edit::Replace { at, old: crate::edit::Piece::default(), new }, 0.0);
                 d.paginate_after(ctx, &st, at, at, 5, 5);
-                let incremental = d.spans.clone();
-                d.full_paginate(ctx, &st);
-                assert_eq!(incremental, d.spans);
+                check(&mut d);
+            }
+            // Taking them all away again, from the end.
+            while d.contents_pages(ctx) > before {
+                let at = d.total_chars() - 6;
+                let old = crate::edit::Piece { text: "More\n".into(), styles: d.flow.styles[at..at + 5].to_vec() };
+                d.apply(crate::edit::Edit::Replace { at, old, new: crate::edit::Piece::default() }, 0.0);
+                d.paginate_after(ctx, &st, at, at + 5, -5, -5);
+                check(&mut d);
             }
         });
     }
@@ -324,11 +358,8 @@ mod tests {
     fn a_new_chapter_far_on_reflows_like_from_scratch() {
         with_ctx(|ctx| {
             let st = Style::new("x");
-            // Without a page break after the contents, and a title made of a paragraph begun pages before.
-            let mut paras = story(3, 5);
-            paras[0].0 = "@".into();
-            paras.insert(1, ("Foreword. ".repeat(300), false));
-            let mut d = doc(&as_refs(&paras));
+            // A title made of a paragraph begun pages before.
+            let mut d = story(3, 5);
             d.full_paginate(ctx, &st);
             let at = d.flow.text.rfind("It was").unwrap();
             let at = d.flow.text[..at].chars().count();
@@ -341,5 +372,33 @@ mod tests {
             d.full_paginate(ctx, &st);
             assert_eq!(incremental, d.spans);
         });
+    }
+
+    #[test]
+    fn the_contents_look_like_most_of_the_text_plain() {
+        let mut d = doc(&[("Heading", false), ("Body text, most of it.", false)]);
+        let body = Style { size: 11.0, underline: true, ..Style::new("Body") };
+        for st in &mut d.flow.styles[..7] {
+            *st = Style { size: 20.0, bold: true, ..Style::new("Head") };
+        }
+        for st in &mut d.flow.styles[8..30] {
+            *st = body.clone();
+        }
+        assert_eq!(d.contents_style(), Style { size: 11.0, ..Style::new("Body") });
+    }
+
+    #[test]
+    fn files_with_a_contents_char_open_with_the_setting_instead() {
+        let mut d = doc(&[("\u{e000}\u{c}", false), ("Chapter One", true), ("Text", false)]);
+        assert_eq!(d.take_out_contents_chars(), [0, 1]);
+        assert_eq!(d.flow.text, "Chapter One\nText\n");
+        assert_eq!(d.flow.styles.len(), d.flow.text.chars().count());
+        assert!(d.setup.contents);
+        // In the middle of a paragraph, only the char goes; without one, nothing changes.
+        let mut d = doc(&[("Fore\u{e000}word", false)]);
+        assert_eq!(d.take_out_contents_chars(), [4]);
+        assert_eq!(d.flow.text, "Foreword\n");
+        let mut d = doc(&[("Plain", false)]);
+        assert!(d.take_out_contents_chars().is_empty() && !d.setup.contents);
     }
 }

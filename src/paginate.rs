@@ -15,36 +15,19 @@ const WINDOW: usize = 4000;
 impl Doc {
     /// Recompute every page.
     pub fn full_paginate(&mut self, ctx: &egui::Context, fallback: &Style) {
-        let mut spans = Vec::new();
+        let mut spans = self.contents_spans(ctx);
         let mut start = Some((0, 0));
         while let Some((c, b)) = start {
             let (span, next) = self.next_span(ctx, fallback, c, b);
-            self.push_page(ctx, &mut spans, span);
+            spans.push(span);
             start = next;
         }
         self.spans = spans;
     }
 
-    /// Add a page; if it is the contents, as many as they take up.
-    fn push_page(&self, ctx: &egui::Context, spans: &mut Vec<Span>, span: Span) {
-        if !self.contents_in(span.start, span.bstart, span.start + 1) {
-            return spans.push(span);
-        }
-        let n = self.contents_pages(ctx);
-        spans.extend((0..n).map(|part| Span { part, hard: span.hard && part + 1 == n, ..span }));
-    }
-
-    /// Give the contents as many pages as they take up now: a chapter added or taken away far
-    /// after them can change that, though their first page stays the same.
-    fn recount_contents_pages(&mut self, ctx: &egui::Context) {
-        let Some(first) = self.spans.iter().position(|s| s.part == 0 && self.contents_in(s.start, s.bstart, s.start + 1)) else { return };
-        let have = self.spans[first..].iter().take_while(|s| s.start == self.spans[first].start).count();
-        if have != self.contents_pages(ctx) {
-            let last = self.spans[first + have - 1];
-            let mut pages = Vec::new();
-            self.push_page(ctx, &mut pages, Span { part: 0, ..last });
-            self.spans.splice(first..first + have, pages);
-        }
+    /// The pages of the contents, if there are any.
+    fn contents_spans(&self, ctx: &egui::Context) -> Vec<Span> {
+        (0..self.contents_pages(ctx)).map(|k| Span { contents: Some(k), ..Span::default() }).collect()
     }
 
     /// Recompute after an edit that replaced the flow chars `at..old_end` (old coordinates) and
@@ -58,17 +41,16 @@ impl Doc {
         // A paragraph is formatted by its mark, so an edit can change all of it, from its start on.
         // (The text before `at` is unchanged, so its start is the same as before the edit.)
         let (ps, _) = self.para_start(at.min(self.total_chars().saturating_sub(1)));
-        let mut first = self.page_of(ps).min(self.spans.len() - 1);
-        while self.spans[first].part > 0 {
-            first -= 1; // the contents are laid out from their first page
-        }
+        let first = self.page_of(ps).min(self.spans.len() - 1);
         let old = std::mem::take(&mut self.spans);
-        let mut spans: Vec<Span> = old[..first].to_vec();
+        // The contents list every chapter, so an edit anywhere can give them more pages or fewer.
+        let mut spans = self.contents_spans(ctx);
+        spans.extend(old[..first].iter().filter(|s| s.contents.is_none()));
         let mut start = Some((old[first].start, old[first].bstart));
         let mut j = first + 1;
         while let Some((c, b)) = start {
             let (span, next) = self.next_span(ctx, fallback, c, b);
-            self.push_page(ctx, &mut spans, span);
+            spans.push(span);
             start = next;
             if let Some((nc, _)) = next {
                 // Old pages that begin after the edited stretch are unchanged, merely shifted.
@@ -82,7 +64,6 @@ impl Doc {
             }
         }
         self.spans = spans;
-        self.recount_contents_pages(ctx);
     }
 
     /// Whether a paragraph gets a drop cap depends on the ones before it, so an edit can give one
@@ -110,14 +91,13 @@ impl Doc {
         let limit = content.y + 0.5;
         let (mut c, mut b) = (c0, b0);
         let mut y = 0.0f32;
-        let mut chapters = None; // made only if the page holds the contents
         // After the paragraph ending at (`tc`, `tb`): the page this makes, or where to go on.
         let after = |tc: usize, tb: usize| -> Result<(usize, usize), PageAndNext> {
             if self.flow.text[tb..].starts_with(PAGE_BREAK) {
-                return Err((Span { start: c0, end: tc, bstart: b0, bend: tb, hard: true, part: 0 }, Some((tc + 1, tb + 1))));
+                return Err((Span { start: c0, end: tc, bstart: b0, bend: tb, hard: true, contents: None }, Some((tc + 1, tb + 1))));
             }
             if tc + 1 >= total {
-                return Err((Span { start: c0, end: total, bstart: b0, bend: self.flow.text.len(), hard: false, part: 0 }, None));
+                return Err((Span { start: c0, end: total, bstart: b0, bend: self.flow.text.len(), hard: false, contents: None }, None));
             }
             Ok((tc + 1, tb + 1))
         };
@@ -126,17 +106,11 @@ impl Doc {
             let is_break = self.flow.text[tb..].starts_with(PAGE_BREAK);
             let term = &self.flow.styles[tc];
 
-            // The contents are a page of their own: they start one, and nothing follows them on it.
-            let is_contents = self.contents_in(c, b, tc);
-            if is_contents && (c, b) != (c0, b0) {
-                return (Span { start: c0, end: c, bstart: b0, bend: b, hard: false, part: 0 }, Some((c, b)));
-            }
-
             // A drop cap and the lines beside it stay together; the rest goes on like other text.
             let at_para_start = c == 0 || matches!(self.flow.text.as_bytes()[b - 1], b'\n' | 0x0c);
             if let Some(cap) = self.drop_cap(ctx, c, b).filter(|_| at_para_start) {
                 if y + cap.height > limit && (c, b) != (c0, b0) {
-                    return (Span { start: c0, end: c, bstart: b0, bend: b, hard: false, part: 0 }, Some((c, b)));
+                    return (Span { start: c0, end: c, bstart: b0, bend: b, hard: false, contents: None }, Some((c, b)));
                 }
                 y += cap.height;
                 let rest = c + 1 + cap.beside;
@@ -171,7 +145,7 @@ impl Doc {
                     invisible: ec == c && is_break && ec == tc,
                     marker: None,
                     image: self.picture_in(c, ec),
-                    contents: self.contents_in(c, b, ec).then(|| (chapters.get_or_insert_with(|| self.chapters(false)).as_slice(), content.y, 0)),
+                    contents: None,
                 };
                 let p = layout_piece(ctx, &spec, 0, ec - c, 0.0);
                 if ec < tc && y + p.height <= limit {
@@ -188,9 +162,6 @@ impl Doc {
             let empty_para = ec == c;
             if whole || (nothing_fits_on_empty_page && empty_para) {
                 y += height;
-                if is_contents && !is_break && tc + 1 < total {
-                    return (Span { start: c0, end: tc + 1, bstart: b0, bend: tb + 1, hard: false, part: 0 }, Some((tc + 1, tb + 1)));
-                }
                 match after(tc, tb) {
                     Ok(next) => (c, b) = next,
                     Err(page) => return page,
@@ -199,14 +170,14 @@ impl Doc {
             }
             if rows_fit == 0 && (c, b) != (c0, b0) {
                 // This paragraph starts the next page.
-                return (Span { start: c0, end: c, bstart: b0, bend: b, hard: false, part: 0 }, Some((c, b)));
+                return (Span { start: c0, end: c, bstart: b0, bend: b, hard: false, contents: None }, Some((c, b)));
             }
             // Split the paragraph after the rows that fit (at least one, to always make progress).
             let n_rows = rows_fit.max(1);
             let chars: usize = rows[..n_rows].iter().map(|r| r.chars).sum();
             let cut = c + chars.max(1).min(ec - c);
             let cut_b = b + self.flow.text[b..eb].char_indices().nth(cut - c).map_or(eb - b, |(o, _)| o);
-            return (Span { start: c0, end: cut, bstart: b0, bend: cut_b, hard: false, part: 0 }, Some((cut, cut_b)));
+            return (Span { start: c0, end: cut, bstart: b0, bend: cut_b, hard: false, contents: None }, Some((cut, cut_b)));
         }
     }
 }

@@ -110,7 +110,8 @@ impl Style {
 
 /// Stands in the text for a picture (which sits in a paragraph of its own).
 pub const IMAGE_CHAR: char = '\u{fffc}';
-/// Stands in the text for the contents (in a paragraph of its own, see `contents`).
+/// Stood in the text for the contents in files saved before they became a page setting; taken
+/// out when such a file is opened, and never let in again.
 pub const CONTENTS_CHAR: char = '\u{e000}';
 
 /// A picture of the document: the original file bytes, and how wide it is shown.
@@ -161,6 +162,8 @@ pub struct PageSetup {
     pub page_numbers: bool,
     /// How many lines deep the first letter of a chapter sinks (0: no drop caps).
     pub drop_cap_lines: u8,
+    /// Pages listing the chapters go before the story.
+    pub contents: bool,
 }
 
 impl Default for PageSetup {
@@ -175,6 +178,7 @@ impl Default for PageSetup {
             margin_right: 72.0,
             page_numbers: false,
             drop_cap_lines: 0,
+            contents: false,
         }
     }
 }
@@ -218,8 +222,9 @@ pub struct Span {
     pub bend: usize,
     /// Does a hard page break follow (rather than the page ending because it is full)?
     pub hard: bool,
-    /// Which of the contents' pages this is. They all hold the one contents char; 0 on other pages.
-    pub part: usize,
+    /// On a page of the contents, which of them (0 for the first). These pages go before the
+    /// story and hold none of its text: their span is the empty one at its start.
+    pub contents: Option<usize>,
 }
 
 impl Span {
@@ -230,7 +235,7 @@ impl Span {
             bstart: self.bstart.wrapping_add_signed(dbytes),
             bend: self.bend.wrapping_add_signed(dbytes),
             hard: self.hard,
-            part: self.part,
+            contents: self.contents,
         }
     }
 
@@ -278,7 +283,7 @@ impl Doc {
         Self {
             flow: Flow { text: "\n".into(), styles: vec![Style::new("Default")] },
             setup: PageSetup::default(),
-            spans: vec![Span { start: 0, end: 1, bstart: 0, bend: 1, hard: false, part: 0 }],
+            spans: vec![Span { start: 0, end: 1, bstart: 0, bend: 1, hard: false, contents: None }],
             version: 0,
             notes: Vec::new(),
             next_note_id: 1,
@@ -442,8 +447,8 @@ mod tests {
         assert_eq!(d.para_attrs_at(0).align, Align::Left);
         assert_eq!(d.para_attrs_at(99).align, Align::Center);
         d.spans = vec![
-            Span { start: 0, end: 2, bstart: 0, bend: 2, hard: false, part: 0 },
-            Span { start: 2, end: 4, bstart: 2, bend: 4, hard: false, part: 0 },
+            Span { start: 0, end: 2, bstart: 0, bend: 2, hard: false, contents: None },
+            Span { start: 2, end: 4, bstart: 2, bend: 4, hard: false, contents: None },
         ];
         assert_eq!(d.spans[1].chars(), 2);
         assert_eq!(d.page_of(1), 0);

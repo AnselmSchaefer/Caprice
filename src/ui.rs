@@ -320,7 +320,7 @@ impl App {
         ui.add_space(2.0);
         ui.separator();
         ui.add_space(2.0);
-        let (new_setup, toggle_contents) = self.page_menu(ui);
+        let new_setup = self.page_menu(ui);
 
         let mut image_action = None;
         let selected_image = self.selected_image().is_some();
@@ -369,13 +369,6 @@ impl App {
             Some(ParaChange::ChapterTitle(on)) => self.set_para(&ctx, |p| p.set_chapter_title(on)),
             None => {}
         }
-        if toggle_contents {
-            if self.doc.has_contents_page() {
-                self.remove_contents(&ctx);
-            } else {
-                self.insert_contents(&ctx);
-            }
-        }
         if let Some(setup) = new_setup {
             self.set_setup(&ctx, setup);
         }
@@ -406,10 +399,9 @@ impl App {
         }
     }
 
-    /// The Page menu: new page settings if they were changed, and whether to toggle the contents page.
-    fn page_menu(&mut self, ui: &mut egui::Ui) -> (Option<crate::model::PageSetup>, bool) {
+    /// The Page menu: new page settings, if they were changed.
+    fn page_menu(&mut self, ui: &mut egui::Ui) -> Option<crate::model::PageSetup> {
         let mut setup = self.doc.setup.clone();
-        let mut contents = false;
         let mut look = self.appearance;
         egui::containers::menu::MenuButton::new("Page")
             .config(
@@ -465,25 +457,15 @@ impl App {
                     ui.selectable_value(&mut setup.drop_cap_lines, 2, "2 lines").on_hover_text(tip);
                     ui.selectable_value(&mut setup.drop_cap_lines, 3, "3 lines").on_hover_text(tip);
                 });
-                ui.separator();
-                let has_contents = self.doc.has_contents_page();
-                let label = if has_contents { "Remove contents page" } else { "Insert contents page" };
-                let tip = if has_contents {
-                    "Take out the first page listing the chapter titles and their pages."
-                } else {
-                    "A first page listing the chapter titles and their pages. Mark titles with the Chapter button."
-                };
-                if ui.add(egui::Button::new(label)).on_hover_text(tip).clicked() {
-                    contents = true;
-                    ui.close();
-                }
+                ui.checkbox(&mut setup.contents, "Contents pages")
+                    .on_hover_text("Pages before the story listing the chapter titles and their pages. Mark titles with the Chapter button.");
             });
         if look != self.appearance {
             self.appearance = look;
             // Whatever was moving finishes the new way.
             (self.held, self.batch) = (0.0, None);
         }
-        ((setup != self.doc.setup).then_some(setup), contents)
+        (setup != self.doc.setup).then_some(setup)
     }
 
     pub fn scrollbar(&mut self, ui: &mut egui::Ui, r: Rect) {
