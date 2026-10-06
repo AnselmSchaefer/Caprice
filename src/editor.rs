@@ -95,8 +95,21 @@ impl App {
 
     fn replace_raw(&mut self, ctx: &egui::Context, a: usize, b: usize, text: &str) {
         let max = self.max_caret();
-        let (a, b) = (a.min(max), b.min(max));
+        let (mut a, mut b) = (a.min(max), b.min(max));
         let mut text: String = text.chars().filter(|&c| c != CONTENTS_CHAR).collect();
+        // The contents page holds the contents and nothing else: what is typed on it goes to the
+        // start of the story, and its page break goes only with the contents themselves.
+        if self.doc.has_contents_page() && a < 2 {
+            if a == 0 && b >= 1 {
+                b = b.max(2);
+            } else if b > 2 {
+                a = 2;
+            } else if text.is_empty() {
+                return;
+            } else {
+                (a, b) = (2, 2);
+            }
+        }
         // The contents keep a paragraph of their own: text typed next to them goes on a line of its own.
         if !text.is_empty() {
             if a > 0 && self.doc.char_at(a - 1) == Some(CONTENTS_CHAR) && !text.starts_with(is_terminator) {
@@ -291,9 +304,12 @@ impl App {
         self.replace_raw(ctx, at, at, &text);
     }
 
-    /// Put a contents page at the start of the caret's paragraph; the story goes on on the next page.
+    /// Put a contents page first, unless there is one; the story goes on on the next page.
     pub fn insert_contents(&mut self, ctx: &egui::Context) {
-        let (ps, _) = self.doc.para_start(self.caret);
+        if self.doc.has_contents_page() {
+            return;
+        }
+        let ps = 0;
         let text = crate::contents::contents_text();
         let styles = text.chars().map(|_| self.typing.with_para(ParaAttrs::default())).collect();
         let old = Piece::default();

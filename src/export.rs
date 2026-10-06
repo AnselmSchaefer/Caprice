@@ -154,7 +154,8 @@ impl Body {
     fn push_contents(&mut self, entries: &[Entry], st: &Style, tab: i32) {
         self.flush_run();
         let heading = Style { size: st.size * CHAPTER_TITLE_SCALE, bold: true, ..st.clone() };
-        let page_break = self.take_page_break();
+        // They start a page of their own, too.
+        let page_break = if self.at_page_start { self.take_page_break() } else { "<w:pageBreakBefore/>" };
         let _ = write!(
             self.xml,
             "<w:p><w:pPr>{page_break}<w:spacing w:after=\"{}\"/><w:jc w:val=\"center\"/></w:pPr>{}<w:r><w:rPr>{}</w:rPr><w:t>Contents</w:t></w:r></w:p>",
@@ -267,7 +268,8 @@ impl Body {
         if !held_contents && (!is_break || self.has_content || self.at_page_start) {
             self.emit(st.para, st);
         }
-        if is_break {
+        // The contents are a page of their own, even without a page break after them.
+        if is_break || held_contents {
             self.page_break_before = true;
             self.at_page_start = true;
         }
@@ -808,6 +810,20 @@ mod tests {
         for name in ["word/document.xml", "word/styles.xml", "word/settings.xml"] {
             roxmltree::Document::parse(&read_part(&bytes, name).unwrap()).unwrap();
         }
+    }
+
+    #[test]
+    fn the_contents_are_a_page_of_their_own_even_without_page_breaks() {
+        let st = Style::new("Liberation Serif");
+        let mut d = doc_with(&format!("Foreword\n{CONTENTS_CHAR}\nChapter One\nText.\n"), st);
+        d.flow.styles[22].para.set_chapter_title(true);
+        crate::layout::with_ctx(|ctx| d.full_paginate(ctx, &Style::new("x")));
+        let xml = read_part(&to_docx(&d).unwrap(), "word/document.xml").unwrap();
+        let paras = paragraphs(&xml);
+        let texts: Vec<&str> = paras.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(texts, ["Foreword", "Contents", "Chapter One3", "Chapter One", "Text."]);
+        assert!(paras[1].1.contains("<w:pageBreakBefore/>"), "{}", paras[1].1);
+        assert!(paras[3].1.contains("<w:pageBreakBefore/>"), "{}", paras[3].1);
     }
 
     #[test]

@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn a_contents_page_goes_before_the_story_and_keeps_its_own_line() {
+    fn a_contents_page_is_always_first_and_holds_nothing_else() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.type_text("Chapter One");
@@ -663,15 +663,29 @@ mod tests {
         let layout = h.app.doc.layout_page(&ctx, 0, 1.0, &[]);
         assert_eq!(layout.paras[0].contents.as_ref().unwrap().links[0].1, 1, "Chapter One is on page 2");
 
-        // Typed next to the contents, text gets a line of its own.
-        h.app.set_caret(&ctx, 1, false);
-        h.type_text("x");
-        assert!(h.app.doc.flow.text.starts_with(&format!("{contents}\nx\u{c}")), "{:?}", h.app.doc.flow.text);
+        // Only one, and always first.
+        h.app.set_caret(&ctx, 10, false);
+        h.app.insert_contents(&ctx);
+        assert_eq!(h.app.doc.flow.text, format!("{contents}\u{c}Chapter One\nIt was dark.\n"));
+
+        // Typed on the contents page, text goes to the start of the story.
+        for at in [0, 1] {
+            h.app.set_caret(&ctx, at, false);
+            h.type_text("x");
+        }
+        assert_eq!(h.app.doc.flow.text, format!("{contents}\u{c}xxChapter One\nIt was dark.\n"));
+        // Backspace at the start of the story leaves the contents page alone.
+        h.app.set_caret(&ctx, 2, false);
+        h.key(Key::Backspace, Modifiers::NONE);
+        assert!(h.app.doc.has_contents_page());
+        // Deleting the contents takes their page with them.
         h.app.set_caret(&ctx, 0, false);
-        h.type_text("y");
-        assert!(h.app.doc.flow.text.starts_with(&format!("y\n{contents}\n")), "{:?}", h.app.doc.flow.text);
-        // One undo each, and the contents can be undone away entirely.
-        for _ in 0..3 {
+        h.key(Key::Delete, Modifiers::NONE);
+        assert_eq!(h.app.doc.flow.text, "xxChapter One\nIt was dark.\n");
+        // Undo brings the contents back, and in the end undoes them away.
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert!(h.app.doc.has_contents_page());
+        while h.app.doc.has_contents_page() {
             h.key(Key::Z, Modifiers::COMMAND);
         }
         assert_eq!(h.app.doc.flow.text, "Chapter One\nIt was dark.\n");

@@ -57,11 +57,11 @@ impl Doc {
         ec == c + 1 && self.flow.text[b..].starts_with(CONTENTS_CHAR)
     }
 
-    /// The char where the first contents block is, if the story has one.
-    pub fn contents_at(&self) -> Option<usize> {
-        let b = self.flow.text.find(CONTENTS_CHAR)?;
-        Some(self.flow.text[..b].chars().count())
+    /// Does the story open with a contents page?
+    pub fn has_contents_page(&self) -> bool {
+        self.flow.text.starts_with(&contents_text())
     }
+
 }
 
 fn text(ctx: &egui::Context, s: &str, st: &Style, scale: f32, wrap: f32) -> Arc<egui::Galley> {
@@ -197,6 +197,17 @@ mod tests {
     }
 
     #[test]
+    fn the_contents_are_a_page_of_their_own_even_without_page_breaks() {
+        with_ctx(|ctx| {
+            let mut d = doc(&[("Foreword", false), ("@", false), ("Chapter One", true), ("Text", false)]);
+            d.full_paginate(ctx, &Style::new("x"));
+            let starts: Vec<usize> = d.spans.iter().map(|s| s.start).collect();
+            assert_eq!(starts, [0, 9, 11], "the foreword, the contents, then the first chapter");
+            assert_eq!(d.chapters(true)[0].page, Some(2));
+        });
+    }
+
+    #[test]
     fn the_contents_take_the_same_room_at_every_zoom_and_never_more_than_a_page() {
         with_ctx(|ctx| {
             let paras = story(3, 1);
@@ -216,10 +227,10 @@ mod tests {
     }
 
     #[test]
-    fn a_new_chapter_far_on_reflows_the_contents_page_like_from_scratch() {
+    fn a_new_chapter_far_on_reflows_like_from_scratch() {
         with_ctx(|ctx| {
             let st = Style::new("x");
-            // Contents with text right after them on the same page, so their height moves it.
+            // Without a page break after the contents, and a title made of a paragraph begun pages before.
             let mut paras = story(3, 5);
             paras[0].0 = "@".into();
             paras.insert(1, ("Foreword. ".repeat(300), false));

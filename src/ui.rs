@@ -463,9 +463,10 @@ impl App {
                     ui.selectable_value(&mut setup.drop_cap_lines, 3, "3 lines").on_hover_text(tip);
                 });
                 ui.separator();
-                let insert = ui.button("Insert contents page").on_hover_text(
-                    "A page listing the chapter titles and their pages, put before the caret's paragraph. Mark titles with the Chapter button.",
-                );
+                let insert = ui
+                    .add_enabled(!self.doc.has_contents_page(), egui::Button::new("Insert contents page"))
+                    .on_hover_text("A first page listing the chapter titles and their pages. Mark titles with the Chapter button.")
+                    .on_disabled_hover_text("The story already opens with a contents page.");
                 if insert.clicked() {
                     contents = true;
                     ui.close();

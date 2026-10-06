@@ -32,16 +32,10 @@ impl Doc {
             return self.full_paginate(ctx, fallback);
         }
         let old_end = if self.setup.drop_cap_lines > 0 { self.drop_cap_reach(old_end, dchars) } else { old_end };
-        let first = self.page_of(at.min(self.total_chars().saturating_sub(1)));
-        let mut first = first.min(self.spans.len() - 1);
-        // The contents list every chapter title, so an edit far after them can still change their
-        // height. If their page now ends elsewhere, reflow from there.
-        if let Some(k) = self.contents_at().map(|c| self.page_of(c)).filter(|&k| k < first) {
-            let (span, _) = self.next_span(ctx, fallback, self.spans[k].start, self.spans[k].bstart);
-            if span != self.spans[k] {
-                first = k;
-            }
-        }
+        // A paragraph is formatted by its mark, so an edit can change all of it, from its start on.
+        // (The text before `at` is unchanged, so its start is the same as before the edit.)
+        let (ps, _) = self.para_start(at.min(self.total_chars().saturating_sub(1)));
+        let first = self.page_of(ps).min(self.spans.len() - 1);
         let old = std::mem::take(&mut self.spans);
         let mut spans: Vec<Span> = old[..first].to_vec();
         let mut start = Some((old[first].start, old[first].bstart));
@@ -105,6 +99,12 @@ impl Doc {
             let is_break = self.flow.text[tb..].starts_with(PAGE_BREAK);
             let term = &self.flow.styles[tc];
 
+            // The contents are a page of their own: they start one, and nothing follows them on it.
+            let is_contents = self.contents_in(c, b, tc);
+            if is_contents && (c, b) != (c0, b0) {
+                return (Span { start: c0, end: c, bstart: b0, bend: b, hard: false }, Some((c, b)));
+            }
+
             // A drop cap and the lines beside it stay together; the rest goes on like other text.
             let at_para_start = c == 0 || matches!(self.flow.text.as_bytes()[b - 1], b'\n' | 0x0c);
             if let Some(cap) = self.drop_cap(ctx, c, b).filter(|_| at_para_start) {
@@ -161,6 +161,9 @@ impl Doc {
             let empty_para = ec == c;
             if whole || (nothing_fits_on_empty_page && empty_para) {
                 y += height;
+                if is_contents && !is_break && tc + 1 < total {
+                    return (Span { start: c0, end: tc + 1, bstart: b0, bend: tb + 1, hard: false }, Some((tc + 1, tb + 1)));
+                }
                 match after(tc, tb) {
                     Ok(next) => (c, b) = next,
                     Err(page) => return page,
