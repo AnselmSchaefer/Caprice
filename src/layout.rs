@@ -7,8 +7,10 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, FontId, Rect, Stroke, TextFormat, Vec2, pos2, text::LayoutJob, vec2};
 use egui::text::CCursor;
 
+use crate::contents::{ContentsBlock, Entry, layout_contents};
+use crate::dropcap::layout_with_cap;
 use crate::fonts::family_for;
-use crate::model::{Align, Doc, IMAGE_CHAR, ListKind, PAGE_BREAK, ParaAttrs, Style, is_terminator};
+use crate::model::{Align, CHAPTER_TITLE_SCALE, Doc, IMAGE_CHAR, ListKind, PAGE_BREAK, ParaAttrs, Style, is_terminator};
 use crate::theme::INK;
 
 /// Width reserved for the bullet or number of a list item, in page points.
@@ -21,8 +23,11 @@ pub struct Mark {
     pub color: Color32,
 }
 
-fn run_format(ctx: &egui::Context, st: &Style, scale: f32, background: Color32, spacing: f32) -> TextFormat {
-    let font_id = FontId::new(st.size * scale, family_for(&st.font, st.bold));
+pub fn run_format(ctx: &egui::Context, st: &Style, scale: f32, background: Color32, attrs: ParaAttrs) -> TextFormat {
+    let title = attrs.is_chapter_title();
+    let size = if title { st.size * CHAPTER_TITLE_SCALE } else { st.size };
+    let font_id = FontId::new(size * scale, family_for(&st.font, st.bold || title));
+    let spacing = attrs.spacing;
     let line_height = ((spacing - 1.0).abs() > 0.001).then(|| ctx.fonts_mut(|f| f.row_height(&font_id)) * spacing);
     TextFormat {
         background,
@@ -56,7 +61,7 @@ pub fn paragraph_job(
     job.justify = attrs.align == Align::Justify;
     if text.is_empty() {
         // An empty paragraph still has a height: that of the mark that ends it.
-        job.append("", 0.0, run_format(ctx, term, scale, Color32::TRANSPARENT, attrs.spacing));
+        job.append("", 0.0, run_format(ctx, term, scale, Color32::TRANSPARENT, attrs));
         return job;
     }
     let style_at = |k: usize| styles.get(k).or(styles.last()).unwrap_or(term);
@@ -65,13 +70,13 @@ pub fn paragraph_job(
     for (k, (b, _)) in text.char_indices().enumerate() {
         let mark = mark_at(k);
         if k > run && (!style_at(k).same_char(style_at(run)) || mark != run_mark) {
-            job.append(&text[start..b], 0.0, run_format(ctx, style_at(run), scale, run_mark, attrs.spacing));
+            job.append(&text[start..b], 0.0, run_format(ctx, style_at(run), scale, run_mark, attrs));
             start = b;
             run = k;
             run_mark = mark;
         }
     }
-    job.append(&text[start..], 0.0, run_format(ctx, style_at(run), scale, run_mark, attrs.spacing));
+    job.append(&text[start..], 0.0, run_format(ctx, style_at(run), scale, run_mark, attrs));
     job
 }
 
@@ -109,11 +114,23 @@ pub struct ParaLayout {
     pub image: Option<ImageBox>,
     /// Does this piece begin its paragraph (rather than continue one from the previous page)?
     pub starts_paragraph: bool,
+    /// Is this piece a drop cap (see `dropcap`)?
+    pub cap: bool,
+    /// Does it sit beside the piece before it (the lines next to a drop cap) rather than below?
+    pub beside: bool,
+    /// Set when the paragraph is the contents.
+    pub contents: Option<ContentsBlock>,
 }
 
 impl ParaLayout {
+    /// A picture or the contents: one block that the caret goes before or after, relative to the
+    /// top-left of the piece.
+    pub fn block(&self) -> Option<Rect> {
+        self.image.map(|img| img.rect).or_else(|| self.contents.as_ref().map(|c| Rect::from_min_size(pos2(0.0, 0.0), c.size)))
+    }
+
     pub fn row_table(&self) -> Vec<RowGeom> {
-        if self.image.is_some() {
+        if self.block().is_some() || self.cap {
             return vec![RowGeom { chars: self.end - self.start, y: 0.0, height: self.height }];
         }
         self.galley
@@ -145,6 +162,8 @@ pub struct PieceSpec<'a> {
     pub marker: Option<String>,
     /// The picture this piece is: its id, its size in page points and its rotation.
     pub image: Option<(u32, Vec2, u8)>,
+    /// The contents, if this piece is them: the chapters, and the most height they may take up.
+    pub contents: Option<(&'a [Entry], f32)>,
 }
 
 pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, local_end: usize, y: f32) -> ParaLayout {
@@ -172,7 +191,29 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
             marker: None,
             attrs: spec.attrs,
             starts_paragraph: false,
+            cap: false,
+            beside: false,
+            contents: None,
             image: Some(ImageBox { id, rect: Rect::from_min_size(pos2(x, 0.0), size), rotation }),
+        };
+    }
+    if let Some((entries, max_height)) = spec.contents {
+        let st = spec.styles.first().unwrap_or(spec.term);
+        let block = layout_contents(ctx, entries, st, spec.content_width / spec.scale, max_height, spec.scale);
+        return ParaLayout {
+            start: local_start,
+            end: local_end,
+            y,
+            x: 0.0,
+            height: block.size.y,
+            galley,
+            marker: None,
+            attrs: spec.attrs,
+            starts_paragraph: false,
+            cap: false,
+            beside: false,
+            contents: Some(block),
+            image: None,
         };
     }
     let galley = true_to_scale(ctx, spec, galley, wrap);
@@ -203,6 +244,9 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
         marker,
         attrs: spec.attrs,
         starts_paragraph: false,
+        cap: false,
+        beside: false,
+        contents: None,
         image: None,
     }
 }
@@ -304,6 +348,7 @@ impl Doc {
         let mut y = 0.0;
         let (mut c, mut b) = (sp.start, sp.bstart);
         let mut number: Option<usize> = None; // the number of the last numbered paragraph seen
+        let mut chapters = None; // made only if the page holds the contents
 
         while c < sp.end || (c == sp.end && hard_end) {
             let (tc, tb) = self.term_from(c, b);
@@ -349,11 +394,23 @@ impl Doc {
                 invisible: pe_c == c && self.flow.text[tb..].starts_with(PAGE_BREAK) && tc == pe_c,
                 marker,
                 image: self.picture_in(c, pe_c),
+                contents: self
+                    .contents_in(c, b, pe_c)
+                    .then(|| (chapters.get_or_insert_with(|| self.chapters(true)).as_slice(), self.setup.content_size().y)),
             };
-            let mut p = layout_piece(ctx, &spec, local(c), local(pe_c), y);
-            p.starts_paragraph = at_para_start;
-            y += p.height;
-            paras.push(p);
+            match self.drop_cap(ctx, c, b).filter(|_| at_para_start) {
+                Some(cap) => {
+                    let pieces = layout_with_cap(ctx, &spec, cap, local(c), y);
+                    y = pieces.iter().map(|p| p.y + p.height).fold(y, f32::max);
+                    paras.extend(pieces);
+                }
+                None => {
+                    let mut p = layout_piece(ctx, &spec, local(c), local(pe_c), y);
+                    p.starts_paragraph = at_para_start;
+                    y += p.height;
+                    paras.push(p);
+                }
+            }
 
             if tc >= sp.end {
                 break;
@@ -378,28 +435,37 @@ pub struct RowRef {
 }
 
 impl PageLayout {
-    /// Index of the paragraph piece the page-local position belongs to.
-    pub fn piece_of(&self, local: usize) -> Option<usize> {
-        self.paras
+    /// Index of the paragraph piece the page-local position belongs to. Where one piece of a
+    /// paragraph ends and the next begins, that is the next one if `prefer_next_row` (as at a
+    /// line wrap), and always the lines beside a drop cap rather than the cap.
+    pub fn piece_of(&self, local: usize, prefer_next_row: bool) -> Option<usize> {
+        let k = self
+            .paras
             .iter()
             .position(|p| local >= p.start && local <= p.end)
-            .or_else(|| self.paras.len().checked_sub(1))
+            .or_else(|| self.paras.len().checked_sub(1))?;
+        let next = self.paras.get(k + 1).filter(|n| n.start == local && (n.beside || prefer_next_row));
+        Some(if next.is_some() { k + 1 } else { k })
     }
 
     /// The caret rectangle (a thin vertical bar) relative to the writing area.
     pub fn caret_rect(&self, local: usize, prefer_next_row: bool) -> Rect {
-        let Some(k) = self.piece_of(local) else {
+        let Some(k) = self.piece_of(local, prefer_next_row) else {
             return Rect::from_min_size(pos2(0.0, 0.0), vec2(1.0, 14.0 * self.scale));
         };
         let p = &self.paras[k];
-        if let Some(img) = p.image {
-            // Before the picture: its left edge; after it: its right edge.
-            let x = if local <= p.start { img.rect.left() } else { img.rect.right() };
+        if let Some(block) = p.block() {
+            // Before a picture or the contents: its left edge; after it: its right edge.
+            let x = if local <= p.start { block.left() } else { block.right() };
             return Rect::from_min_max(pos2(x, p.y), pos2(x + 1.0, p.y + p.height));
         }
         let idx = local.clamp(p.start, p.end) - p.start;
-        let r = p.galley.pos_from_cursor(CCursor { index: idx.into(), prefer_next_row });
-        r.translate(vec2(p.x, p.y))
+        let r = p.galley.pos_from_cursor(CCursor { index: idx.into(), prefer_next_row }).translate(vec2(p.x, p.y));
+        if p.cap {
+            // The cap's line reaches high above the letter: keep the caret beside it.
+            return Rect::from_x_y_ranges(r.x_range(), p.y..=p.y + p.height);
+        }
+        r
     }
 
     /// Where a dragged picture would land for a pointer at height `y`: the paragraph start nearest
@@ -421,14 +487,26 @@ impl PageLayout {
 
     /// Page-local position closest to a point relative to the writing area.
     pub fn hit(&self, pos: Vec2) -> usize {
-        let Some(p) = self.paras.iter().find(|p| pos.y < p.y + p.height).or(self.paras.last()) else {
+        let Some(mut k) = self.paras.iter().position(|p| pos.y < p.y + p.height).or(self.paras.len().checked_sub(1)) else {
             return 0;
         };
-        if let Some(img) = p.image {
-            return if pos.x < img.rect.center().x { p.start } else { p.end };
+        // Right of a drop cap are the lines beside it.
+        if self.paras.get(k + 1).is_some_and(|n| n.beside && pos.x >= n.x) {
+            k += 1;
+        }
+        let p = &self.paras[k];
+        if let Some(block) = p.block() {
+            return if pos.x < block.center().x { p.start } else { p.end };
         }
         let idx = usize::from(p.galley.cursor_from_pos(vec2(pos.x - p.x, pos.y - p.y)).index);
         p.start + idx.min(p.end - p.start)
+    }
+
+    /// The page a contents line under a point (relative to the writing area) leads to.
+    pub fn link_at(&self, pos: Vec2) -> Option<usize> {
+        let p = self.paras.iter().find(|p| p.contents.is_some() && pos.y >= p.y && pos.y < p.y + p.height)?;
+        let at = (pos - vec2(p.x, p.y)).to_pos2();
+        p.contents.as_ref()?.links.iter().find(|(r, _)| r.contains(at)).map(|&(_, page)| page)
     }
 
     pub fn rows(&self) -> Vec<RowRef> {
@@ -446,7 +524,7 @@ impl PageLayout {
     /// The visual row containing the page-local position (the later one at a wrap point).
     pub fn row_of(&self, local: usize, prefer_next_row: bool) -> Option<RowRef> {
         let rows = self.rows();
-        let k = self.piece_of(local)?;
+        let k = self.piece_of(local, prefer_next_row)?;
         let in_piece: Vec<&RowRef> = rows.iter().filter(|r| r.para == k).collect();
         let last = in_piece.len().checked_sub(1)?;
         for (n, r) in in_piece.iter().enumerate() {
@@ -467,8 +545,8 @@ impl PageLayout {
         let mut out = Vec::new();
         for r in self.rows() {
             let p = &self.paras[r.para];
-            if let Some(img) = p.image {
-                out.push((p.start, img.rect.translate(vec2(0.0, p.y)).center()));
+            if let Some(block) = p.block() {
+                out.push((p.start, block.translate(vec2(0.0, p.y)).center()));
                 continue;
             }
             let x = |c: usize, next: bool| p.galley.pos_from_cursor(CCursor { index: (c - p.start).into(), prefer_next_row: next }).left();
@@ -484,9 +562,9 @@ impl PageLayout {
         let mut out = Vec::new();
         for r in self.rows() {
             let p = &self.paras[r.para];
-            if let Some(img) = p.image {
+            if let Some(block) = p.block() {
                 if a < p.end && b > p.start {
-                    out.push(img.rect.translate(vec2(0.0, p.y)));
+                    out.push(block.translate(vec2(0.0, p.y)));
                 }
                 continue;
             }
@@ -571,6 +649,23 @@ mod tests {
                 let h = d.layout_page(ctx, 0, sc, &[]).height / sc;
                 assert!((h - at_page_size).abs() < 0.01, "at zoom {sc} the text is {h}pt tall instead of {at_page_size}pt");
             }
+        });
+    }
+
+    #[test]
+    fn a_chapter_title_is_drawn_larger_and_bold() {
+        with_ctx(|ctx| {
+            let mut title = ParaAttrs::default();
+            title.set_chapter_title(true);
+            let laid_out = |attrs| {
+                let mut d = doc_with("Chapter One", attrs);
+                d.full_paginate(ctx, &Style::new("x"));
+                let l = d.layout_page(ctx, 0, 1.0, &[]);
+                (l.height, l.paras[0].galley.size().x)
+            };
+            let (body, title) = (laid_out(ParaAttrs::default()), laid_out(title));
+            assert!(title.0 > body.0 * 1.4 && title.0 < body.0 * 1.8, "taller: {body:?} {title:?}");
+            assert!(title.1 > body.1 * 1.5, "wider, from the size and the bold: {body:?} {title:?}");
         });
     }
 

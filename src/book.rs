@@ -129,8 +129,11 @@ impl App {
                 if let Some((g, at)) = &p.marker {
                     tess.tessellate_shape(Shape::galley(pos2(origin.x + at.x, origin.y + p.y + at.y), g.clone(), INK), &mut text_mesh);
                 }
-                if p.image.is_none() {
+                if p.block().is_none() {
                     tess.tessellate_shape(Shape::galley(pos2(origin.x + p.x, origin.y + p.y), p.galley.clone(), INK), &mut text_mesh);
+                }
+                for (g, at) in p.contents.iter().flat_map(|c| &c.texts) {
+                    tess.tessellate_shape(Shape::galley(pos2(origin.x + p.x + at.x, origin.y + p.y + at.y), g.clone(), INK), &mut text_mesh);
                 }
             }
             if let Some((g, at)) = self.footer(ctx, i, sc) {

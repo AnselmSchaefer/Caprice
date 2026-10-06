@@ -20,6 +20,7 @@ enum ParaChange {
     Align(Align),
     Spacing(f32),
     List(ListKind),
+    ChapterTitle(bool),
 }
 
 #[derive(Clone, Copy)]
@@ -311,10 +312,15 @@ impl App {
             });
         });
 
+        let chapter = egui::Button::new("Chapter").selected(attrs.is_chapter_title()).min_size(vec2(0.0, 30.0));
+        if ui.add(chapter).on_hover_text("Chapter title: starts a new chapter").clicked() {
+            para_change = Some(ParaChange::ChapterTitle(!attrs.is_chapter_title()));
+        }
+
         ui.add_space(2.0);
         ui.separator();
         ui.add_space(2.0);
-        let new_setup = self.page_menu(ui);
+        let (new_setup, insert_contents) = self.page_menu(ui);
 
         let mut image_action = None;
         let selected_image = self.selected_image().is_some();
@@ -360,7 +366,11 @@ impl App {
                 let kind = if attrs.list == kind { ListKind::None } else { kind };
                 self.set_para(&ctx, |p| p.list = kind);
             }
+            Some(ParaChange::ChapterTitle(on)) => self.set_para(&ctx, |p| p.set_chapter_title(on)),
             None => {}
+        }
+        if insert_contents {
+            self.insert_contents(&ctx);
         }
         if let Some(setup) = new_setup {
             self.set_setup(&ctx, setup);
@@ -393,8 +403,10 @@ impl App {
     }
 
     /// Orientation, paper, margins and page numbers. Returns the new setup if something changed.
-    fn page_menu(&mut self, ui: &mut egui::Ui) -> Option<crate::model::PageSetup> {
+    /// The Page menu: new page settings if they were changed, and whether to insert the contents.
+    fn page_menu(&mut self, ui: &mut egui::Ui) -> (Option<crate::model::PageSetup>, bool) {
         let mut setup = self.doc.setup.clone();
+        let mut contents = false;
         let mut look = self.appearance;
         egui::containers::menu::MenuButton::new("Page")
             .config(
@@ -443,13 +455,28 @@ impl App {
                 });
                 ui.separator();
                 ui.checkbox(&mut setup.page_numbers, "Page numbers");
+                ui.horizontal(|ui| {
+                    ui.label("Chapter initials");
+                    let tip = "The first letter of each chapter, enlarged to sink into its first lines";
+                    ui.selectable_value(&mut setup.drop_cap_lines, 0, "Off").on_hover_text(tip);
+                    ui.selectable_value(&mut setup.drop_cap_lines, 2, "2 lines").on_hover_text(tip);
+                    ui.selectable_value(&mut setup.drop_cap_lines, 3, "3 lines").on_hover_text(tip);
+                });
+                ui.separator();
+                let insert = ui.button("Insert contents page").on_hover_text(
+                    "A page listing the chapter titles and their pages, put before the caret's paragraph. Mark titles with the Chapter button.",
+                );
+                if insert.clicked() {
+                    contents = true;
+                    ui.close();
+                }
             });
         if look != self.appearance {
             self.appearance = look;
             // Whatever was moving finishes the new way.
             (self.held, self.batch) = (0.0, None);
         }
-        (setup != self.doc.setup).then_some(setup)
+        ((setup != self.doc.setup).then_some(setup), contents)
     }
 
     pub fn scrollbar(&mut self, ui: &mut egui::Ui, r: Rect) {

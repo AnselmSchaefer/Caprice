@@ -6,13 +6,17 @@
 //! * font, size, bold, underline = run properties
 //! * page setup = section properties (paper, orientation, margins), page numbers = a footer field
 //! * notes = Word comments anchored to the same text
+//! * chapter titles = the built-in "Heading 1" style; drop caps = Word's own drop caps (a framed
+//!   paragraph holding the letter); the contents = a `TOC` field over the headings, filled in with
+//!   Caprice's pages and brought up to date by Word when the file is opened
 
 use std::fmt::Write as _;
 use std::io::{Cursor, Write};
 
 use zip::write::SimpleFileOptions;
 
-use crate::model::{Align, Doc, IMAGE_CHAR, ListKind, Note, PAGE_BREAK, ParaAttrs, Style};
+use crate::contents::Entry;
+use crate::model::{Align, CHAPTER_TITLE_SCALE, CONTENTS_CHAR, Doc, IMAGE_CHAR, ListKind, Note, PAGE_BREAK, ParaAttrs, Style, is_terminator};
 
 const NS_W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const NS_WP: &str = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
@@ -89,6 +93,10 @@ struct Body {
     /// Pictures: id -> (width, height) in EMU (1 pt = 12700 EMU), and the ids used.
     pics: std::collections::HashMap<u32, (i64, i64, String)>,
     used_pics: Vec<u32>,
+    /// Is the open paragraph a chapter title (whose text is drawn larger and bold)?
+    title: bool,
+    /// The contents were just written: the empty paragraph that held them makes no paragraph.
+    after_contents: bool,
 }
 
 impl Body {
@@ -104,7 +112,81 @@ impl Body {
             numbered_lists: 0,
             pics: Default::default(),
             used_pics: Vec::new(),
+            title: false,
+            after_contents: false,
         }
+    }
+
+    /// How text of style `st` looks in the open paragraph.
+    fn shown(&self, st: &Style) -> Style {
+        if self.title { Style { size: st.size * CHAPTER_TITLE_SCALE, bold: true, ..st.clone() } } else { st.clone() }
+    }
+
+    /// Properties that only the first paragraph after a page break gets.
+    fn take_page_break(&mut self) -> &'static str {
+        self.at_page_start = false;
+        if std::mem::take(&mut self.page_break_before) { "<w:pageBreakBefore/>" } else { "" }
+    }
+
+    /// A drop cap: Word wants the letter in a paragraph of its own, framed `lines` deep into the
+    /// paragraph that follows. Its size is the one Word itself picks for a drop cap.
+    fn push_drop_cap(&mut self, c: char, st: &Style, lines: u8, spacing: f32) {
+        self.flush_run();
+        let cap = Style { size: st.size * f32::from(lines) * 1.15 * spacing, ..st.clone() };
+        let page_break = self.take_page_break();
+        let ppr = format!(
+            "<w:keepNext/>{page_break}<w:framePr w:dropCap=\"drop\" w:lines=\"{lines}\" w:wrap=\"around\" w:vAnchor=\"text\" w:hAnchor=\"text\"/>\
+<w:spacing w:line=\"{}\" w:lineRule=\"exact\"/><w:textAlignment w:val=\"baseline\"/>",
+            twips(cap.size)
+        );
+        let _ = write!(
+            self.xml,
+            "<w:p><w:pPr>{ppr}</w:pPr>{}<w:r><w:rPr>{}</w:rPr><w:t>{}</w:t></w:r></w:p>",
+            std::mem::take(&mut self.para),
+            run_props(&cap),
+            esc(&c.to_string())
+        );
+        self.has_content = false;
+    }
+
+    /// The contents: a heading, then a `TOC` field over the chapter titles, filled in with
+    /// `entries` until Word updates it. `tab` is where the page numbers end, in twips.
+    fn push_contents(&mut self, entries: &[Entry], st: &Style, tab: i32) {
+        self.flush_run();
+        let heading = Style { size: st.size * CHAPTER_TITLE_SCALE, bold: true, ..st.clone() };
+        let page_break = self.take_page_break();
+        let _ = write!(
+            self.xml,
+            "<w:p><w:pPr>{page_break}<w:spacing w:after=\"{}\"/><w:jc w:val=\"center\"/></w:pPr>{}<w:r><w:rPr>{}</w:rPr><w:t>Contents</w:t></w:r></w:p>",
+            twips(st.size * 1.2),
+            std::mem::take(&mut self.para),
+            run_props(&heading)
+        );
+        let props = run_props(st);
+        let field = |kind: &str| format!("<w:r><w:rPr>{props}</w:rPr><w:fldChar w:fldCharType=\"{kind}\"/></w:r>");
+        let begin = format!(
+            "{}<w:r><w:rPr>{props}</w:rPr><w:instrText xml:space=\"preserve\"> TOC \\o \"1-1\" \\h \\z </w:instrText></w:r>{}",
+            field("begin"),
+            field("separate")
+        );
+        let ppr = format!("<w:pStyle w:val=\"TOC1\"/><w:tabs><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"{tab}\"/></w:tabs>");
+        let text = |t: &str| format!("<w:r><w:rPr>{props}</w:rPr><w:t xml:space=\"preserve\">{}</w:t></w:r>", esc(t));
+        if entries.is_empty() {
+            let _ = write!(self.xml, "<w:p><w:pPr>{ppr}</w:pPr>{begin}{}</w:p>", field("end"));
+        }
+        for (k, e) in entries.iter().enumerate() {
+            let mut runs = if k == 0 { begin.clone() } else { String::new() };
+            runs.push_str(&text(&e.title));
+            if let Some(page) = e.page {
+                let _ = write!(runs, "<w:r><w:rPr>{props}</w:rPr><w:tab/></w:r>{}", text(&(page + 1).to_string()));
+            }
+            if k + 1 == entries.len() {
+                runs.push_str(&field("end"));
+            }
+            let _ = write!(self.xml, "<w:p><w:pPr>{ppr}</w:pPr>{runs}</w:p>");
+        }
+        self.has_content = false;
+        self.after_contents = true;
     }
 
     fn flush_run(&mut self) {
@@ -112,7 +194,7 @@ impl Body {
             let _ = write!(
                 self.para,
                 "<w:r><w:rPr>{}</w:rPr><w:t xml:space=\"preserve\">{}</w:t></w:r>",
-                run_props(&st),
+                run_props(&self.shown(&st)),
                 esc(&text)
             );
             self.has_content = true;
@@ -148,7 +230,7 @@ impl Body {
         match c {
             '\t' => {
                 self.flush_run();
-                let _ = write!(self.para, "<w:r><w:rPr>{}</w:rPr><w:tab/></w:r>", run_props(st));
+                let _ = write!(self.para, "<w:r><w:rPr>{}</w:rPr><w:tab/></w:r>", run_props(&self.shown(st)));
                 self.has_content = true;
             }
             c => match &mut self.run {
@@ -181,7 +263,8 @@ impl Body {
     fn end_paragraph(&mut self, term: char, st: &Style) {
         self.flush_run();
         let is_break = term == PAGE_BREAK;
-        if !is_break || self.has_content || self.at_page_start {
+        let held_contents = std::mem::take(&mut self.after_contents) && !self.has_content;
+        if !held_contents && (!is_break || self.has_content || self.at_page_start) {
             self.emit(st.para, st);
         }
         if is_break {
@@ -192,6 +275,9 @@ impl Body {
 
     fn emit(&mut self, attrs: ParaAttrs, term: &Style) {
         let mut ppr = String::new();
+        if attrs.is_chapter_title() {
+            ppr.push_str("<w:pStyle w:val=\"Heading1\"/>");
+        }
         if self.page_break_before {
             ppr.push_str("<w:pageBreakBefore/>");
         }
@@ -218,7 +304,7 @@ impl Body {
             Align::Justify => ppr.push_str("<w:jc w:val=\"both\"/>"),
         }
         // The paragraph mark's own size keeps empty lines the right height.
-        let _ = write!(ppr, "<w:rPr>{}</w:rPr>", run_props(term));
+        let _ = write!(ppr, "<w:rPr>{}</w:rPr>", run_props(&self.shown(term)));
         let _ = write!(self.xml, "<w:p><w:pPr>{ppr}</w:pPr>{}</w:p>", std::mem::take(&mut self.para));
         self.has_content = false;
         self.at_page_start = false;
@@ -237,7 +323,10 @@ fn document_xml(doc: &Doc, has_footer: bool, media: &std::collections::HashMap<u
     }
     let notes: &[Note] = &doc.notes;
     let fallback = Style::new("Times New Roman");
-    let mut chars = doc.flow.text.chars().zip(doc.flow.styles.iter().chain(std::iter::repeat(&fallback)));
+    let mut chars = doc.flow.text.char_indices().zip(doc.flow.styles.iter().chain(std::iter::repeat(&fallback)));
+    let chapters = if doc.flow.text.contains(CONTENTS_CHAR) { doc.chapters(true) } else { Vec::new() };
+    let tab = twips(doc.setup.content_size().x);
+    let mut para_start = true;
 
     let n = doc.total_chars();
     for k in 0..=n {
@@ -251,12 +340,24 @@ fn document_xml(doc: &Doc, has_footer: bool, media: &std::collections::HashMap<u
                 body.comment_end(id);
             }
         }
-        if let Some((c, st)) = chars.next() {
-            if crate::model::is_terminator(c) {
+        if let Some(((b, c), st)) = chars.next() {
+            // At a paragraph start, look at how the paragraph is formatted (that is on its mark).
+            let cap = para_start.then(|| {
+                let (tc, _) = doc.term_from(k, b);
+                let attrs = doc.flow.styles[tc].para;
+                body.title = attrs.is_chapter_title();
+                doc.has_drop_cap(k, b).then_some(attrs.spacing)
+            });
+            if let Some(Some(spacing)) = cap {
+                body.push_drop_cap(c, st, doc.setup.drop_cap_lines, spacing);
+            } else if c == CONTENTS_CHAR {
+                body.push_contents(&chapters, st, tab);
+            } else if is_terminator(c) {
                 body.end_paragraph(c, st);
             } else {
                 body.push_char(c, st);
             }
+            para_start = is_terminator(c);
         }
     }
     body.flush_run();
@@ -310,7 +411,9 @@ fn numbering_xml(numbered_lists: u32) -> String {
     s
 }
 
-fn styles_xml(default: &Style) -> String {
+/// The default look, plus Word's built-in "heading 1" (chapter titles, which the contents list) and
+/// "toc 1" (lines of the contents, with dots leading to the page number at `tab` twips).
+fn styles_xml(default: &Style, tab: i32) -> String {
     let font = esc(office_font(&default.font));
     let half_points = (default.size * 2.0).round() as i32;
     format!(
@@ -320,6 +423,10 @@ fn styles_xml(default: &Style) -> String {
 <w:sz w:val=\"{half_points}\"/><w:szCs w:val=\"{half_points}\"/></w:rPr></w:rPrDefault>\
 <w:pPrDefault><w:pPr><w:spacing w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr></w:pPrDefault>\
 </w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/><w:qFormat/></w:style>\
+<w:style w:type=\"paragraph\" w:styleId=\"Heading1\"><w:name w:val=\"heading 1\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/>\
+<w:uiPriority w:val=\"9\"/><w:qFormat/><w:pPr><w:keepNext/><w:outlineLvl w:val=\"0\"/></w:pPr><w:rPr><w:b/><w:bCs/></w:rPr></w:style>\
+<w:style w:type=\"paragraph\" w:styleId=\"TOC1\"><w:name w:val=\"toc 1\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/>\
+<w:uiPriority w:val=\"39\"/><w:pPr><w:tabs><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"{tab}\"/></w:tabs><w:spacing w:after=\"100\"/></w:pPr></w:style>\
 </w:styles>"
     )
 }
@@ -415,6 +522,12 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
         let _ = write!(content_types, "<Override PartName=\"/word/numbering.xml\" ContentType=\"{CT}.numbering+xml\"/>");
         let _ = write!(rels, "<Relationship Id=\"rIdNumbering\" Type=\"{REL}/numbering\" Target=\"numbering.xml\"/>");
     }
+    // Word fills in the contents' page numbers by its own layout when it opens the file.
+    let has_contents = doc.flow.text.contains(CONTENTS_CHAR);
+    if has_contents {
+        let _ = write!(content_types, "<Override PartName=\"/word/settings.xml\" ContentType=\"{CT}.settings+xml\"/>");
+        let _ = write!(rels, "<Relationship Id=\"rIdSettings\" Type=\"{REL}/settings\" Target=\"settings.xml\"/>");
+    }
     if has_footer {
         let _ = write!(content_types, "<Override PartName=\"/word/footer1.xml\" ContentType=\"{CT}.footer+xml\"/>");
         let _ = write!(rels, "<Relationship Id=\"rIdFooter\" Type=\"{REL}/footer\" Target=\"footer1.xml\"/>");
@@ -434,7 +547,7 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
         ("_rels/.rels", root_rels),
         ("word/document.xml", document),
         ("word/_rels/document.xml.rels", rels),
-        ("word/styles.xml", styles_xml(&default)),
+        ("word/styles.xml", styles_xml(&default, twips(doc.setup.content_size().x))),
     ];
     if has_comments {
         text_parts.push(("word/comments.xml", comments_xml(&doc.notes)));
@@ -444,6 +557,12 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
     }
     if has_footer {
         text_parts.push(("word/footer1.xml", footer_xml(&default)));
+    }
+    if has_contents {
+        let settings = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:settings xmlns:w=\"{NS_W}\"><w:updateFields w:val=\"true\"/></w:settings>"
+        );
+        text_parts.push(("word/settings.xml", settings));
     }
     parts.extend(text_parts.into_iter().map(|(n, s)| (n.to_owned(), s.into_bytes())));
     for &id in &used_pics {
@@ -634,6 +753,76 @@ mod tests {
         let xml = read_part(&bytes, "word/document.xml").unwrap();
         assert_eq!(count(&xml, "p"), 1);
     }
+
+    /// The body's paragraphs: their text, and their properties as XML.
+    fn paragraphs(xml: &str) -> Vec<(String, String)> {
+        let d = roxmltree::Document::parse(xml).unwrap();
+        let body = d.descendants().find(|n| n.tag_name().name() == "body").unwrap();
+        body.children()
+            .filter(|n| n.tag_name().name() == "p")
+            .map(|p| {
+                let text = p.descendants().filter(|n| n.tag_name().name() == "t").filter_map(|n| n.text()).collect();
+                let ppr = p.children().find(|n| n.tag_name().name() == "pPr").map_or(String::new(), |n| xml[n.range()].to_owned());
+                (text, ppr)
+            })
+            .collect()
+    }
+
+    /// A story with a contents page and a chapter, laid out (so pages are known).
+    fn chapter_doc(lines: u8) -> Doc {
+        let st = Style::new("Liberation Serif");
+        let mut d = doc_with(&format!("{CONTENTS_CHAR}{PAGE_BREAK}Chapter One\nIt was a dark night.\nMore.\n"), st);
+        d.flow.styles[13].para.set_chapter_title(true);
+        d.setup.drop_cap_lines = lines;
+        crate::layout::with_ctx(|ctx| d.full_paginate(ctx, &Style::new("x")));
+        d
+    }
+
+    #[test]
+    fn chapters_become_headings_with_drop_caps_and_a_contents_field() {
+        let d = chapter_doc(3);
+        let bytes = to_docx(&d).unwrap();
+        let xml = read_part(&bytes, "word/document.xml").unwrap();
+        let paras = paragraphs(&xml);
+        let texts: Vec<&str> = paras.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(texts, ["Contents", "Chapter One2", "Chapter One", "I", "t was a dark night.", "More."]);
+
+        // The contents: a field over the headings, shown with Caprice's page until Word updates it.
+        assert!(xml.contains(r#"<w:instrText xml:space="preserve"> TOC \o "1-1" \h \z </w:instrText>"#));
+        assert_eq!((count(&xml, "fldChar"), count(&xml, "tab")), (3, 2), "begin, separate, end; the entry's tab stop and tab");
+        assert!(paras[1].1.contains(r#"<w:pStyle w:val="TOC1"/>"#) && paras[1].1.contains(r#"w:leader="dot""#));
+        let settings = read_part(&bytes, "word/settings.xml").expect("Word is asked to update the field");
+        assert!(settings.contains(r#"<w:updateFields w:val="true"/>"#));
+        assert!(read_part(&bytes, "word/_rels/document.xml.rels").unwrap().contains("settings.xml"));
+
+        // The title: Heading 1, after the page break, drawn larger and bold as in Caprice.
+        assert!(paras[2].1.starts_with(r#"<w:pPr><w:pStyle w:val="Heading1"/><w:pageBreakBefore/>"#), "{}", paras[2].1);
+        assert!(xml.contains(r#"<w:b/><w:bCs/><w:sz w:val="38"/>"#), "12pt × 1.6, bold");
+        let styles = read_part(&bytes, "word/styles.xml").unwrap();
+        assert!(styles.contains(r#"<w:name w:val="heading 1"/>"#) && styles.contains(r#"<w:outlineLvl w:val="0"/>"#));
+
+        // The drop cap: Word's own, three lines deep, then the rest of the paragraph.
+        assert!(paras[3].1.contains(r#"<w:framePr w:dropCap="drop" w:lines="3""#), "{}", paras[3].1);
+        assert!(!paras[4].1.contains("framePr") && !paras[5].1.contains("framePr"), "only the chapter's first paragraph");
+
+        for name in ["word/document.xml", "word/styles.xml", "word/settings.xml"] {
+            roxmltree::Document::parse(&read_part(&bytes, name).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn without_contents_or_drop_caps_word_gets_neither() {
+        let mut d = chapter_doc(0);
+        let n = d.flow.text.chars().count();
+        d.flow.text = d.flow.text.replace([CONTENTS_CHAR, PAGE_BREAK], "");
+        d.flow.styles.drain(0..n - d.flow.text.chars().count());
+        let bytes = to_docx(&d).unwrap();
+        let xml = read_part(&bytes, "word/document.xml").unwrap();
+        let texts: Vec<String> = paragraphs(&xml).into_iter().map(|(t, _)| t).collect();
+        assert_eq!(texts, ["Chapter One", "It was a dark night.", "More."]);
+        assert!(!xml.contains("framePr") && !xml.contains("fldChar"));
+        assert!(read_part(&bytes, "word/settings.xml").is_none());
+    }
 }
 
 #[cfg(test)]
@@ -653,10 +842,17 @@ mod sample {
         let bullet = ParaAttrs { list: ListKind::Bullet, ..Default::default() };
         let numbered = ParaAttrs { list: ListKind::Numbered, ..Default::default() };
         let double = ParaAttrs { spacing: 2.0, align: Align::Justify, ..Default::default() };
+        let mut title = ParaAttrs::default();
+        title.set_chapter_title(true);
+        let justified = ParaAttrs { align: Align::Justify, ..Default::default() };
+        let story = "It was nearly midnight and the Prime Minister was sitting alone in his office, reading a long memo \
+that was slipping through his brain without leaving the slightest trace of meaning behind. He was waiting for a call \
+from the President of a far distant country.";
         let mut d = Doc::new();
         d.flow.text.clear();
         d.flow.styles.clear();
         let parts: Vec<(&str, &Style, ParaAttrs)> = vec![
+            ("\u{e000}\u{c}", &plain, ParaAttrs::default()),
             ("A centered title", &bold, ParaAttrs::default()),
             ("\n", &bold, centered),
             ("Plain text, then ", &plain, ParaAttrs::default()),
@@ -676,6 +872,16 @@ mod sample {
             ("\u{c}", &plain, ParaAttrs::default()),
             ("Second page starts here.", &plain, ParaAttrs::default()),
             ("\n", &plain, ParaAttrs::default()),
+            ("The Other Minister", &plain, ParaAttrs::default()),
+            ("\n", &plain, title),
+            (story, &plain, ParaAttrs::default()),
+            ("\n", &plain, justified),
+            ("A second paragraph without a drop cap.", &plain, ParaAttrs::default()),
+            ("\u{c}", &plain, justified),
+            ("Hagrid?", &plain, ParaAttrs::default()),
+            ("\n", &plain, title),
+            (story, &plain, ParaAttrs::default()),
+            ("\n", &plain, justified),
         ];
         for (t, s, p) in parts {
             d.flow.text.push_str(t);
@@ -685,7 +891,10 @@ mod sample {
         }
         d.setup.page_numbers = true;
         d.setup.margin_left = 100.0;
-        d.notes.push(Note { id: 1, start: 26, end: 42, text: "Remember to rephrase this.".into(), color: 1 });
+        d.setup.drop_cap_lines = 3;
+        d.notes.push(Note { id: 1, start: 28, end: 44, text: "Remember to rephrase this.".into(), color: 1 });
+        crate::layout::with_ctx(|ctx| d.full_paginate(ctx, &plain));
         std::fs::write(out, to_docx(&d).unwrap()).unwrap();
     }
+
 }

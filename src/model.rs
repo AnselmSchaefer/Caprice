@@ -29,6 +29,19 @@ pub enum ListKind {
     Numbered,
 }
 
+/// What a paragraph is in the story's structure.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum ParaKind {
+    #[default]
+    Body,
+    /// Starts a chapter. Drawn larger and bold (see `CHAPTER_TITLE_SCALE`), on top of its own
+    /// character formatting, so taking the title off gives the plain text back.
+    ChapterTitle,
+}
+
+/// How much larger a chapter title is drawn than its characters' own size.
+pub const CHAPTER_TITLE_SCALE: f32 = 1.6;
+
 /// Paragraph formatting. It lives on the paragraph's terminating character (`\n` or `\f`), like
 /// Word keeps it on the paragraph mark, so splitting, merging and undo handle it for free.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
@@ -37,11 +50,34 @@ pub struct ParaAttrs {
     /// Line spacing as a multiple of the font's natural line height.
     pub spacing: f32,
     pub list: ListKind,
+    #[serde(default, skip_serializing_if = "ParaKind::is_body")]
+    pub kind: ParaKind,
 }
 
 impl Default for ParaAttrs {
     fn default() -> Self {
-        Self { align: Align::Left, spacing: 1.0, list: ListKind::None }
+        Self { align: Align::Left, spacing: 1.0, list: ListKind::None, kind: ParaKind::Body }
+    }
+}
+
+impl ParaKind {
+    fn is_body(&self) -> bool {
+        *self == ParaKind::Body
+    }
+}
+
+impl ParaAttrs {
+    pub fn is_chapter_title(&self) -> bool {
+        self.kind == ParaKind::ChapterTitle
+    }
+
+    /// The paragraph made a chapter title (centered, no list), or back into ordinary text.
+    pub fn set_chapter_title(&mut self, on: bool) {
+        if on {
+            *self = ParaAttrs { kind: ParaKind::ChapterTitle, align: Align::Center, list: ListKind::None, ..*self };
+        } else {
+            *self = ParaAttrs { kind: ParaKind::Body, align: Align::Left, ..*self };
+        }
     }
 }
 
@@ -74,6 +110,8 @@ impl Style {
 
 /// Stands in the text for a picture (which sits in a paragraph of its own).
 pub const IMAGE_CHAR: char = '\u{fffc}';
+/// Stands in the text for the contents (in a paragraph of its own, see `contents`).
+pub const CONTENTS_CHAR: char = '\u{e000}';
 
 /// A picture of the document: the original file bytes, and how wide it is shown.
 #[derive(Clone, Debug, PartialEq)]
@@ -121,6 +159,8 @@ pub struct PageSetup {
     pub margin_left: f32,
     pub margin_right: f32,
     pub page_numbers: bool,
+    /// How many lines deep the first letter of a chapter sinks (0: no drop caps).
+    pub drop_cap_lines: u8,
 }
 
 impl Default for PageSetup {
@@ -134,6 +174,7 @@ impl Default for PageSetup {
             margin_left: 72.0,
             margin_right: 72.0,
             page_numbers: false,
+            drop_cap_lines: 0,
         }
     }
 }
@@ -377,6 +418,16 @@ mod tests {
         let size = d.image_size(&img);
         assert!((size.y - content.y).abs() < 0.01);
         assert!((size.x - content.y / 10.0).abs() < 0.01, "keeps its proportions: {size:?}");
+    }
+
+    #[test]
+    fn a_chapter_title_is_centered_without_a_list_and_turns_back_into_text() {
+        let mut p = ParaAttrs { list: ListKind::Bullet, spacing: 1.5, ..Default::default() };
+        p.set_chapter_title(true);
+        assert!(p.is_chapter_title());
+        assert_eq!((p.align, p.list, p.spacing), (Align::Center, ListKind::None, 1.5));
+        p.set_chapter_title(false);
+        assert_eq!(p, ParaAttrs { spacing: 1.5, ..Default::default() });
     }
 
     #[test]

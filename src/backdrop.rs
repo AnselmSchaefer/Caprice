@@ -12,7 +12,7 @@ use eframe::egui::{self, Color32, ColorImage, Id, Key, Modifiers, Pos2, Rect, Sh
 
 use crate::App;
 use crate::claude::{Outcome, run_claude};
-use crate::model::{IMAGE_CHAR, PAGE_BREAK};
+use crate::model::{CONTENTS_CHAR, IMAGE_CHAR, PAGE_BREAK};
 use crate::theme::TEXT_DIM;
 
 /// How strongly a scene shows through the paper.
@@ -114,7 +114,7 @@ impl Default for Backdrop {
 /// The last `n` finished sentences of `text`, one per line, the newest last. A sentence is finished
 /// by `.`, `!`, `?` or `…` followed by a space or line break, or by the end of its paragraph.
 pub fn last_sentences(text: &str, n: usize) -> String {
-    let chars: Vec<char> = text.chars().filter(|&c| c != IMAGE_CHAR).map(|c| if c == PAGE_BREAK { '\n' } else { c }).collect();
+    let chars: Vec<char> = text.chars().filter(|&c| c != IMAGE_CHAR && c != CONTENTS_CHAR).map(|c| if c == PAGE_BREAK { '\n' } else { c }).collect();
     let mut done: Vec<String> = Vec::new();
     let mut current = String::new();
     for (k, &c) in chars.iter().enumerate() {

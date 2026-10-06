@@ -6,6 +6,9 @@ use eframe::egui;
 use crate::layout::{PieceSpec, layout_piece};
 use crate::model::{Doc, PAGE_BREAK, Span, Style};
 
+/// A page, and where the next one starts (if there is one).
+type PageAndNext = (Span, Option<(usize, usize)>);
+
 /// Chars of one paragraph laid out at a time (more are laid out only if they still fit).
 const WINDOW: usize = 4000;
 
@@ -28,8 +31,17 @@ impl Doc {
         if self.spans.is_empty() {
             return self.full_paginate(ctx, fallback);
         }
+        let old_end = if self.setup.drop_cap_lines > 0 { self.drop_cap_reach(old_end, dchars) } else { old_end };
         let first = self.page_of(at.min(self.total_chars().saturating_sub(1)));
-        let first = first.min(self.spans.len() - 1);
+        let mut first = first.min(self.spans.len() - 1);
+        // The contents list every chapter title, so an edit far after them can still change their
+        // height. If their page now ends elsewhere, reflow from there.
+        if let Some(k) = self.contents_at().map(|c| self.page_of(c)).filter(|&k| k < first) {
+            let (span, _) = self.next_span(ctx, fallback, self.spans[k].start, self.spans[k].bstart);
+            if span != self.spans[k] {
+                first = k;
+            }
+        }
         let old = std::mem::take(&mut self.spans);
         let mut spans: Vec<Span> = old[..first].to_vec();
         let mut start = Some((old[first].start, old[first].bstart));
@@ -52,18 +64,66 @@ impl Doc {
         self.spans = spans;
     }
 
+    /// Whether a paragraph gets a drop cap depends on the ones before it, so an edit can give one
+    /// to, or take one from, the next paragraph with text. Extend the edited stretch `..old_end`
+    /// (old coordinates) over it, so it is laid out again.
+    fn drop_cap_reach(&self, old_end: usize, dchars: isize) -> usize {
+        let total = self.total_chars();
+        let at = (old_end as isize + dchars).clamp(0, total as isize - 1) as usize;
+        let (mut tc, _) = self.term_from(at, self.char_to_byte(at));
+        while tc + 1 < total {
+            let next = tc + 1;
+            (tc, _) = self.term_from(next, self.char_to_byte(next));
+            if tc > next {
+                break; // a paragraph with text
+            }
+        }
+        ((tc + 1) as isize - dchars).max(old_end as isize) as usize
+    }
+
     /// The page starting at char `c0` / byte `b0`, and where the next one starts (if there is one).
-    fn next_span(&self, ctx: &egui::Context, fallback: &Style, c0: usize, b0: usize) -> (Span, Option<(usize, usize)>) {
+    fn next_span(&self, ctx: &egui::Context, fallback: &Style, c0: usize, b0: usize) -> PageAndNext {
         let _ = fallback;
         let content = self.setup.content_size();
         let total = self.total_chars();
         let limit = content.y + 0.5;
         let (mut c, mut b) = (c0, b0);
         let mut y = 0.0f32;
+        let mut chapters = None; // made only if the page holds the contents
+        // After the paragraph ending at (`tc`, `tb`): the page this makes, or where to go on.
+        let after = |tc: usize, tb: usize| -> Result<(usize, usize), PageAndNext> {
+            if self.flow.text[tb..].starts_with(PAGE_BREAK) {
+                return Err((Span { start: c0, end: tc, bstart: b0, bend: tb, hard: true }, Some((tc + 1, tb + 1))));
+            }
+            if tc + 1 >= total {
+                return Err((Span { start: c0, end: total, bstart: b0, bend: self.flow.text.len(), hard: false }, None));
+            }
+            Ok((tc + 1, tb + 1))
+        };
         loop {
             let (tc, tb) = self.term_from(c, b);
             let is_break = self.flow.text[tb..].starts_with(PAGE_BREAK);
             let term = &self.flow.styles[tc];
+
+            // A drop cap and the lines beside it stay together; the rest goes on like other text.
+            let at_para_start = c == 0 || matches!(self.flow.text.as_bytes()[b - 1], b'\n' | 0x0c);
+            if let Some(cap) = self.drop_cap(ctx, c, b).filter(|_| at_para_start) {
+                if y + cap.height > limit && (c, b) != (c0, b0) {
+                    return (Span { start: c0, end: c, bstart: b0, bend: b, hard: false }, Some((c, b)));
+                }
+                y += cap.height;
+                let rest = c + 1 + cap.beside;
+                if rest < tc {
+                    b += self.flow.text[b..].char_indices().nth(rest - c).map_or(tb - b, |(o, _)| o);
+                    c = rest;
+                    continue;
+                }
+                match after(tc, tb) {
+                    Ok(next) => (c, b) = next,
+                    Err(page) => return page,
+                }
+                continue;
+            }
 
             // Lay out the paragraph (a window of it, if it is huge) and see how much of it fits.
             let mut window = WINDOW;
@@ -84,6 +144,7 @@ impl Doc {
                     invisible: ec == c && is_break && ec == tc,
                     marker: None,
                     image: self.picture_in(c, ec),
+                    contents: self.contents_in(c, b, ec).then(|| (chapters.get_or_insert_with(|| self.chapters(false)).as_slice(), content.y)),
                 };
                 let p = layout_piece(ctx, &spec, 0, ec - c, 0.0);
                 if ec < tc && y + p.height <= limit {
@@ -100,13 +161,9 @@ impl Doc {
             let empty_para = ec == c;
             if whole || (nothing_fits_on_empty_page && empty_para) {
                 y += height;
-                if is_break {
-                    return (Span { start: c0, end: tc, bstart: b0, bend: tb, hard: true }, Some((tc + 1, tb + 1)));
-                }
-                c = tc + 1;
-                b = tb + 1;
-                if c >= total {
-                    return (Span { start: c0, end: total, bstart: b0, bend: self.flow.text.len(), hard: false }, None);
+                match after(tc, tb) {
+                    Ok(next) => (c, b) = next,
+                    Err(page) => return page,
                 }
                 continue;
             }

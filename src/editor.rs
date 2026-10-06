@@ -7,8 +7,8 @@ use egui::output::IMEOutput;
 use crate::App;
 use crate::edit::{Edit, Piece};
 use crate::images::{Handle, PicDrag, ResizeDrag};
-use crate::layout::PageLayout;
-use crate::model::{Align, IMAGE_CHAR, ImageData, ListKind, PAGE_BREAK, PageSetup, ParaAttrs, Style, is_terminator};
+use crate::layout::{PageLayout, RowRef};
+use crate::model::{Align, CONTENTS_CHAR, IMAGE_CHAR, ImageData, ListKind, PAGE_BREAK, PageSetup, ParaAttrs, Style, is_terminator};
 use crate::theme::INK;
 
 /// Roughly how a word processor groups characters when jumping by word.
@@ -96,7 +96,16 @@ impl App {
     fn replace_raw(&mut self, ctx: &egui::Context, a: usize, b: usize, text: &str) {
         let max = self.max_caret();
         let (a, b) = (a.min(max), b.min(max));
-        let text = text.to_owned();
+        let mut text: String = text.chars().filter(|&c| c != CONTENTS_CHAR).collect();
+        // The contents keep a paragraph of their own: text typed next to them goes on a line of its own.
+        if !text.is_empty() {
+            if a > 0 && self.doc.char_at(a - 1) == Some(CONTENTS_CHAR) && !text.starts_with(is_terminator) {
+                text.insert(0, '\n');
+            }
+            if self.doc.char_at(b) == Some(CONTENTS_CHAR) && !text.ends_with(is_terminator) {
+                text.push('\n');
+            }
+        }
         if a == b && text.is_empty() {
             return;
         }
@@ -211,9 +220,21 @@ impl App {
             && !self.has_selection()
             && ps == self.caret
             && self.doc.char_at(self.caret).is_some_and(is_terminator);
+        let end_of_title = attrs.is_chapter_title()
+            && !self.has_selection()
+            && self.doc.char_at(self.caret).is_some_and(is_terminator);
         if empty_item {
             // Enter on an empty list item ends the list.
             self.set_para(ctx, |p| p.list = ListKind::None);
+        } else if end_of_title {
+            // The story goes on below a chapter title in ordinary text.
+            let at = self.caret;
+            let mark = self.doc.flow.styles[at].clone();
+            let new_line = Edit::insert(at, "\n", &self.typing.with_para(attrs));
+            let body = Edit::Restyle { at: at + 1, old: vec![mark.clone()], new: vec![mark.with_para(ParaAttrs::default())] };
+            self.doc.apply_group(vec![new_line, body]);
+            self.doc.paginate_after(ctx, &self.typing, at, at + 1, 1, 1);
+            self.set_caret(ctx, at + 1, false);
         } else {
             self.insert_text(ctx, "\n");
         }
@@ -268,6 +289,15 @@ impl App {
             (c, format!("\n{PAGE_BREAK}"))
         };
         self.replace_raw(ctx, at, at, &text);
+    }
+
+    /// Put a contents page at the start of the caret's paragraph; the story goes on on the next page.
+    pub fn insert_contents(&mut self, ctx: &egui::Context) {
+        let (ps, _) = self.doc.para_start(self.caret);
+        let text = crate::contents::contents_text();
+        let styles = text.chars().map(|_| self.typing.with_para(ParaAttrs::default())).collect();
+        let old = Piece::default();
+        self.apply_edit(ctx, Edit::Replace { at: ps, old, new: Piece { text, styles } }, ps);
     }
 
     /// Insert an empty page after page `i`.
@@ -387,23 +417,34 @@ impl App {
         self.want_x = Some(x);
         let rows = layout.rows();
         let idx = rows.iter().position(|r| r.para == here.para && r.start == here.start)?;
-        let (target_layout, target_start, row) = if up && idx > 0 {
-            (layout, start, rows[idx - 1])
-        } else if !up && idx + 1 < rows.len() {
-            (layout, start, rows[idx + 1])
+        // Rows side by side (a drop cap and the line beside it) are one line to move over.
+        let level = |a: &RowRef, b: &RowRef| (a.top - b.top).abs() < 0.5;
+        let next = if up {
+            rows[..idx].iter().rposition(|r| r.top < here.top && !level(r, &here))
+        } else {
+            rows[idx + 1..].iter().position(|r| r.top > here.top && !level(r, &here)).map(|k| idx + 1 + k)
+        };
+        let (target_layout, target_start, rows, row) = if let Some(k) = next {
+            let row = rows[k];
+            (layout, start, rows, row)
         } else if up && page > 0 {
             let l = self.layout_at_scale_one(ctx, page - 1);
-            let r = *l.rows().last()?;
-            (l, self.doc.spans[page - 1].start, r)
+            let rows = l.rows();
+            let r = *rows.last()?;
+            (l, self.doc.spans[page - 1].start, rows, r)
         } else if !up && page < self.last() {
             let l = self.layout_at_scale_one(ctx, page + 1);
-            let r = *l.rows().first()?;
-            (l, self.doc.spans[page + 1].start, r)
+            let rows = l.rows();
+            let r = *rows.first()?;
+            (l, self.doc.spans[page + 1].start, rows, r)
         } else {
             return None;
         };
+        let line: Vec<&RowRef> = rows.iter().filter(|r| level(r, &row)).collect();
+        let mid = row.top + line.iter().map(|r| r.height).fold(row.height, f32::min) / 2.0;
+        let hit = target_layout.hit(vec2(x, mid));
+        let row = line.into_iter().find(|r| (r.start..=r.end).contains(&hit)).copied().unwrap_or(row);
         let p = &target_layout.paras[row.para];
-        let hit = target_layout.hit(vec2(x, row.top + row.height / 2.0));
         let mut local = hit.clamp(row.start, row.end);
         let last_row_of_piece = p.end == row.end;
         if local == row.end && !last_row_of_piece {
@@ -725,8 +766,16 @@ impl App {
             }
         }
         if resp.hovered() && !self.ctrl_down && !over_handle {
-            let on_picture = ctx.input(|inp| inp.pointer.latest_pos()).is_some_and(|p| layout.image_at(p - content.min).is_some());
-            ui.output_mut(|o| o.cursor_icon = if on_picture { egui::CursorIcon::Grab } else { egui::CursorIcon::Text });
+            let pointer = ctx.input(|inp| inp.pointer.latest_pos());
+            let on_picture = pointer.is_some_and(|p| layout.image_at(p - content.min).is_some());
+            let on_link = pointer.is_some_and(|p| layout.link_at(p - content.min).is_some());
+            ui.output_mut(|o| {
+                o.cursor_icon = match (on_picture, on_link) {
+                    (true, _) => egui::CursorIcon::Grab,
+                    (_, true) => egui::CursorIcon::PointingHand,
+                    _ => egui::CursorIcon::Text,
+                }
+            });
         }
         if self.ctrl_down || over_handle || self.resize.is_some() {
             return; // Ctrl+drag moves the page; handles do their own thing
@@ -760,7 +809,10 @@ impl App {
         if pressed && resp.contains_pointer() {
             if let Some(p) = resp.interact_pointer_pos().or(pos) {
                 self.pic_drag = None;
-                if let Some(pic) = layout.image_at(p - content.min) {
+                if let Some(page) = layout.link_at(p - content.min).filter(|_| !shift) {
+                    // A line of the contents leads to its chapter.
+                    self.go_to_page(&ctx, page);
+                } else if let Some(pic) = layout.image_at(p - content.min) {
                     // Clicking a picture selects it; dragging it moves it.
                     let (s, e) = (start + pic.start, start + pic.end);
                     self.anchor = s;
@@ -818,8 +870,11 @@ impl App {
             if let Some((g, at)) = &p.marker {
                 painter.galley(origin + vec2(at.x, p.y + at.y), g.clone(), INK);
             }
-            if p.image.is_none() {
+            if p.block().is_none() {
                 painter.galley(origin + vec2(p.x, p.y), p.galley.clone(), INK);
+            }
+            for (g, at) in p.contents.iter().flat_map(|c| &c.texts) {
+                painter.galley(origin + vec2(p.x + at.x, p.y + at.y), g.clone(), INK);
             }
         }
     }

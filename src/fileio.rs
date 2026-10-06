@@ -447,6 +447,25 @@ mod tests {
     }
 
     #[test]
+    fn chapter_titles_are_saved_and_older_files_have_none() {
+        let plain = Style::new("Foo");
+        let mut title = ParaAttrs::default();
+        title.set_chapter_title(true);
+        let mut doc = Doc::new();
+        doc.flow.text = "One\ntext\n".into();
+        doc.flow.styles = vec![plain.clone(); 9];
+        doc.flow.styles[3] = plain.with_para(title);
+        let json = serde_json::to_string(&DocFile::from_doc(&doc)).unwrap();
+        assert_eq!(json.matches("ChapterTitle").count(), 1, "ordinary paragraphs say nothing about it: {json}");
+        let back = serde_json::from_str::<DocFile>(&json).unwrap().into_doc();
+        assert_eq!(back.flow.styles, doc.flow.styles);
+
+        let old = json.replace(r#","kind":"ChapterTitle""#, "");
+        let back = serde_json::from_str::<DocFile>(&old).unwrap().into_doc();
+        assert!(!back.para_attrs_at(0).is_chapter_title());
+    }
+
+    #[test]
     fn version_1_files_still_load_as_separate_pages() {
         let json = r#"{"version":1,"pages":[[{"text":"one","font":"F","size":12.0,"bold":false,"underline":false}],
                                              [{"text":"two","font":"F","size":12.0,"bold":true,"underline":false}]]}"#;

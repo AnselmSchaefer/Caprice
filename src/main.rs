@@ -1,6 +1,8 @@
 mod backdrop;
 mod book;
 mod claude;
+mod contents;
+mod dropcap;
 mod edit;
 mod editor;
 mod export;
@@ -586,6 +588,93 @@ mod tests {
             self.frames(1, vec![egui::Event::Text(text.to_owned())], Modifiers::NONE);
             self.frames(2, vec![], Modifiers::NONE);
         }
+    }
+
+    #[test]
+    fn enter_after_a_chapter_title_goes_on_in_ordinary_text() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Chapter One");
+        let ctx = h.ctx.clone();
+        h.app.set_para(&ctx, |p| p.set_chapter_title(true));
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("It was dark.");
+        let d = &h.app.doc;
+        assert_eq!(d.flow.text, "Chapter One\nIt was dark.\n");
+        assert!(d.para_attrs_at(0).is_chapter_title() && d.para_attrs_at(0).align == model::Align::Center);
+        assert_eq!(d.para_attrs_at(12), model::ParaAttrs::default());
+        // One undo takes the text back, the next the paragraph break, leaving the title as it was.
+        h.key(Key::Z, Modifiers::COMMAND);
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert_eq!(h.app.doc.flow.text, "Chapter One\n");
+        assert!(h.app.doc.para_attrs_at(0).is_chapter_title());
+
+        // Enter inside a title splits it into two titles, like any other paragraph format.
+        h.key(Key::ArrowLeft, Modifiers::NONE);
+        h.key(Key::Enter, Modifiers::NONE);
+        assert!(h.app.doc.para_attrs_at(0).is_chapter_title() && h.app.doc.para_attrs_at(12).is_chapter_title());
+    }
+
+    #[test]
+    fn arrow_keys_treat_a_drop_cap_and_the_line_beside_it_as_one_line() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Chapter One");
+        let ctx = h.ctx.clone();
+        h.app.set_para(&ctx, |p| p.set_chapter_title(true));
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text(&"It was nearly midnight and the Prime Minister sat alone in his office. ".repeat(6));
+        let setup = model::PageSetup { drop_cap_lines: 3, ..h.app.doc.setup.clone() };
+        h.app.set_setup(&ctx, setup);
+        let layout = h.app.doc.layout_page(&ctx, 0, 1.0, &[]);
+        let beside = layout.paras.iter().find(|p| p.beside).expect("the chapter has a drop cap");
+        let rows: Vec<(usize, usize)> = layout.rows().iter().filter(|r| r.para == 2).map(|r| (r.start, r.end)).collect();
+        let line = |c: usize| rows.iter().position(|&(s, e)| (s..e).contains(&c));
+
+        // From the middle of the second line beside the cap: up to the first, then to the title.
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, rows[1].0 + 3, false);
+        h.key(Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(line(h.app.caret), Some(0), "the first line beside the cap: {}", h.app.caret);
+        h.key(Key::ArrowUp, Modifiers::NONE);
+        assert!(h.app.caret < 12, "the title: {}", h.app.caret);
+        // And down again, past the cap, line by line.
+        h.key(Key::ArrowDown, Modifiers::NONE);
+        assert!(h.app.caret == 12 || line(h.app.caret) == Some(0), "the cap's line: {}", h.app.caret);
+        h.key(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(line(h.app.caret), Some(1), "{}", h.app.caret);
+        assert!(beside.galley.rows.len() == 3);
+    }
+
+    #[test]
+    fn a_contents_page_goes_before_the_story_and_keeps_its_own_line() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Chapter One");
+        let ctx = h.ctx.clone();
+        h.app.set_para(&ctx, |p| p.set_chapter_title(true));
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("It was dark.");
+        h.app.set_caret(&ctx, 3, false);
+        h.app.insert_contents(&ctx);
+        let contents = model::CONTENTS_CHAR;
+        assert_eq!(h.app.doc.flow.text, format!("{contents}\u{c}Chapter One\nIt was dark.\n"));
+        assert_eq!((h.app.doc.pages(), h.app.doc.page_of(h.app.caret)), (2, 1), "the story goes on on the next page");
+        let layout = h.app.doc.layout_page(&ctx, 0, 1.0, &[]);
+        assert_eq!(layout.paras[0].contents.as_ref().unwrap().links[0].1, 1, "Chapter One is on page 2");
+
+        // Typed next to the contents, text gets a line of its own.
+        h.app.set_caret(&ctx, 1, false);
+        h.type_text("x");
+        assert!(h.app.doc.flow.text.starts_with(&format!("{contents}\nx\u{c}")), "{:?}", h.app.doc.flow.text);
+        h.app.set_caret(&ctx, 0, false);
+        h.type_text("y");
+        assert!(h.app.doc.flow.text.starts_with(&format!("y\n{contents}\n")), "{:?}", h.app.doc.flow.text);
+        // One undo each, and the contents can be undone away entirely.
+        for _ in 0..3 {
+            h.key(Key::Z, Modifiers::COMMAND);
+        }
+        assert_eq!(h.app.doc.flow.text, "Chapter One\nIt was dark.\n");
     }
 
     #[test]
