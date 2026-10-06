@@ -535,6 +535,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_scene() {
+        crate::claude::allow_live();
         // Two unrelated sentences: only the newest, the storm at sea, should be drawn.
         let sentences = "The village lay quiet in the valley, smoke rising from its chimneys.\nFar away, a lone ship fought its way through a storm on the open sea.";
         let (_, image) = draw_scene(&Subject::Sentences(sentences.into()), egui::vec2(595.0, 842.0), &AtomicBool::new(false)).unwrap().unwrap();

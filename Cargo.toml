@@ -16,3 +16,8 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 roxmltree = "0.21.1"
+
+# Used by cargo-mutants (see .cargo/mutants.toml): no debug info keeps each build small and quick.
+[profile.mutants]
+inherits = "test"
+debug = "none"

@@ -345,5 +345,54 @@ mod tests {
         assert_eq!(s.size(), vec2(842.0, 595.0));
         s.clamp_margins();
         assert!(s.content_size().x >= PageSetup::MIN_CONTENT - 0.01);
+        let mut s = PageSetup { margin_left: 300.0, margin_right: 300.0, margin_top: 500.0, margin_bottom: 500.0, ..Default::default() };
+        s.clamp_margins();
+        assert_eq!(s.margin_left, 300.0);
+        assert!((s.content_size().x - PageSetup::MIN_CONTENT).abs() < 0.01, "the right margin gives way");
+        assert!((s.content_size().y - PageSetup::MIN_CONTENT).abs() < 0.01, "the bottom margin gives way");
+    }
+
+    #[test]
+    fn a_centimetre_is_its_share_of_an_inch() {
+        assert!((CM * 2.54 - 72.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn same_char_compares_the_glyph_but_not_the_paragraph() {
+        let a = Style::new("Serif");
+        let list = ParaAttrs { list: ListKind::Bullet, ..Default::default() };
+        assert!(a.same_char(&a.with_para(list)));
+        assert!(!a.same_char(&Style::new("Sans")));
+        assert!(!a.same_char(&Style { size: 14.0, ..a.clone() }));
+        assert!(!a.same_char(&Style { bold: true, ..a.clone() }));
+        assert!(!a.same_char(&Style { underline: true, ..a.clone() }));
+        assert!(!a.same_char(&Style { image: 1, ..a.clone() }));
+    }
+
+    #[test]
+    fn a_tall_picture_is_shrunk_to_fit_the_page() {
+        let d = Doc::new();
+        let content = d.setup.content_size();
+        let img = ImageData { id: 1, format: "png".into(), bytes: vec![], px: (100, 1000), width_pt: content.x, rotation: 0 };
+        let size = d.image_size(&img);
+        assert!((size.y - content.y).abs() < 0.01);
+        assert!((size.x - content.y / 10.0).abs() < 0.01, "keeps its proportions: {size:?}");
+    }
+
+    #[test]
+    fn positions_past_the_end_belong_to_the_last_paragraph_and_page() {
+        let mut d = Doc::new();
+        let centered = ParaAttrs { align: Align::Center, ..Default::default() };
+        d.flow.text = "a\nb\n".into();
+        d.flow.styles = vec![Style::new("x"), Style::new("x"), Style::new("x"), Style::new("x").with_para(centered)];
+        assert_eq!(d.para_attrs_at(0).align, Align::Left);
+        assert_eq!(d.para_attrs_at(99).align, Align::Center);
+        d.spans = vec![
+            Span { start: 0, end: 2, bstart: 0, bend: 2, hard: false },
+            Span { start: 2, end: 4, bstart: 2, bend: 4, hard: false },
+        ];
+        assert_eq!(d.spans[1].chars(), 2);
+        assert_eq!(d.page_of(1), 0);
+        assert_eq!(d.page_of(99), 1);
     }
 }

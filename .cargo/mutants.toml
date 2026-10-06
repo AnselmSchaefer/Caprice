@@ -1,0 +1,8 @@
+# Settings for cargo-mutants (https://mutants.rs): `cargo mutants`, or `cargo mutants --in-diff <(git diff main)`.
+
+# Toolbar widgets and the calls out to `claude` are not tested headlessly; mutants there only add noise.
+exclude_globs = ["src/ui.rs", "src/claude.rs", "src/backdrop.rs"]
+# Drawing and logging code whose output the tests do not look at.
+exclude_re = ["impl Debug", "fn fmt"]
+timeout_multiplier = 3.0
+profile = "mutants"

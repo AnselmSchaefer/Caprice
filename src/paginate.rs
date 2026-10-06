@@ -216,6 +216,44 @@ mod tests {
         });
     }
 
+    /// Replace the chars `a..b` with `new`, repaginate from the old pages, and compare with
+    /// paginating from scratch.
+    fn check_incremental(ctx: &egui::Context, d: &mut Doc, st: &Style, a: usize, b: usize, new: &str) {
+        let (ba, bb) = (d.char_to_byte(a), d.char_to_byte(b));
+        let old = crate::edit::Piece { text: d.flow.text[ba..bb].into(), styles: d.flow.styles[a..b].to_vec() };
+        let edit = Edit::Replace { at: a, old, new: crate::edit::Piece::plain(new, st) };
+        let (dchars, dbytes) = edit.delta();
+        d.apply(edit, 0.0);
+        d.paginate_after(ctx, st, a, b, dchars, dbytes);
+        let incremental = d.spans.clone();
+        d.full_paginate(ctx, st);
+        assert_eq!(incremental, d.spans, "after replacing {a}..{b} with {new:?}");
+    }
+
+    #[test]
+    fn incremental_reuses_later_pages_correctly() {
+        with_ctx(|ctx| {
+            let st = Style::new("x");
+            let text: String = (0..300).map(|n| format!("line {n}\n")).collect();
+            let mut d = doc_with(&text, &st);
+            d.full_paginate(ctx, &st);
+            assert!(d.pages() >= 3);
+            // Edits that keep every line, so the pages after them start where they did, shifted.
+            let at = d.spans[1].start + 2;
+            check_incremental(ctx, &mut d, &st, at, at + 1, "äöü"); // more bytes than chars
+            let at = d.spans[0].start + 3;
+            check_incremental(ctx, &mut d, &st, at, at + 2, ""); // shorter
+            let at = d.spans[1].end - 2;
+            check_incremental(ctx, &mut d, &st, at, at, "é"); // at the end of a page
+            // And edits that move every later line.
+            let at = d.spans[0].start + 4;
+            check_incremental(ctx, &mut d, &st, at, at, "\nnew\n");
+            let at = d.spans[1].start;
+            let to = d.spans[1].start + 30;
+            check_incremental(ctx, &mut d, &st, at, to, "");
+        });
+    }
+
     #[test]
     fn incremental_handles_edits_that_remove_page_breaks() {
         with_ctx(|ctx| {

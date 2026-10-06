@@ -160,11 +160,26 @@ fn find_cli() -> Option<std::path::PathBuf> {
     on_path.chain(usual).find(|p| p.is_file())
 }
 
+// Tests never reach the real Claude, unless one says so with `allow_live` (the `live_*` tests).
+#[cfg(test)]
+thread_local! {
+    static LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub fn allow_live() {
+    LIVE.with(|l| l.set(true));
+}
+
 /// Ask Claude (`model`) through `claude -p` (no tools, no project files, nothing saved) and pass
 /// the answer to `on_text` as it is written, until it ends or `cancel` is set.
 pub fn run_claude(model: &str, system: &str, prompt: &str, effort: &str, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Outcome, String> {
     use std::io::Write;
     use std::process::{Command as Process, Stdio};
+    #[cfg(test)]
+    if !LIVE.with(|l| l.get()) {
+        return Err("Tests do not call Claude".into());
+    }
     let cli = find_cli().ok_or(NO_CLI)?;
     let mut child = Process::new(&cli)
         .args(["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
@@ -552,12 +567,19 @@ mod tests {
     #[test]
     #[ignore]
     fn live_grammar_check() {
+        allow_live();
         let (tx, rx) = channel();
         let ctx = egui::Context::default();
         ask("Their is a dog in the gardn.", &Command::Grammar, &tx, &ctx, &AtomicBool::new(false)).unwrap();
         let text: String = rx.try_iter().filter_map(|m| if let Msg::Text(t) = m { Some(t) } else { None }).collect();
         println!("answer: {text}");
         assert!(text.contains("There") && text.contains("garden"));
+    }
+
+    #[test]
+    fn tests_do_not_call_claude() {
+        let r = run_claude(MODEL, "", "hi", "low", &AtomicBool::new(false), &mut |_| panic!("Claude answered"));
+        assert_eq!(r.err().as_deref(), Some("Tests do not call Claude"));
     }
 
     #[test]

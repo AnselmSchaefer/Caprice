@@ -271,4 +271,97 @@ mod tests {
         d.apply(Edit::Replace { at: 4, old, new: Piece::default() }, 0.0);
         assert_eq!((d.notes[0].start, d.notes[0].end), (4, 4));
     }
+
+    #[test]
+    fn delta_counts_chars_and_bytes() {
+        let old = Piece { text: "ab".into(), styles: vec![Style::new("x"); 2] };
+        let e = Edit::Replace { at: 0, old, new: Piece::plain("äöü", &Style::new("x")) };
+        assert_eq!(e.delta(), (1, 4));
+        assert_eq!(e.inverse().delta(), (-1, -4));
+        assert_eq!(Edit::Restyle { at: 3, old: vec![], new: vec![] }.delta(), (0, 0));
+    }
+
+    #[test]
+    fn undoing_a_format_change_puts_the_caret_after_it() {
+        let (mut d, st) = doc("hello world");
+        let bold = Style { bold: true, ..st.clone() };
+        d.apply(Edit::Restyle { at: 6, old: vec![st.clone(); 5], new: vec![bold; 5] }, 0.0);
+        assert!(d.flow.styles[6].bold);
+        assert_eq!(d.undo(), Some(11));
+        assert!(!d.flow.styles[6].bold);
+        assert_eq!(d.redo(), Some(11));
+    }
+
+    #[test]
+    fn deleting_groups_backwards_and_forwards_but_not_with_typing() {
+        let (mut d, st) = doc("abcdef");
+        let del = |d: &Doc, at: usize| {
+            let b = d.char_to_byte(at);
+            let old = Piece { text: d.flow.text[b..b + 1].into(), styles: vec![d.flow.styles[at].clone()] };
+            Edit::Replace { at, old, new: Piece::default() }
+        };
+        // Backspace twice from the end, then delete forward twice at the front: two steps.
+        d.apply(del(&d, 5), 0.0);
+        d.apply(del(&d, 4), 0.1);
+        d.apply(del(&d, 0), 0.2);
+        d.apply(del(&d, 0), 0.3);
+        assert_eq!(d.flow.text, "cd");
+        d.undo();
+        assert_eq!(d.flow.text, "abcd");
+        d.undo();
+        assert_eq!(d.flow.text, "abcdef");
+        // Typing right after deleting, or typing somewhere else, starts a new step.
+        d.apply(del(&d, 5), 1.0);
+        d.apply(Edit::insert(5, "X", &st), 1.1);
+        d.apply(Edit::insert(0, "Y", &st), 1.2);
+        d.undo();
+        assert_eq!(d.flow.text, "abcdeX");
+        d.undo();
+        assert_eq!(d.flow.text, "abcde");
+        d.undo();
+        assert_eq!(d.flow.text, "abcdef");
+    }
+
+    #[test]
+    fn grouping_needs_edits_less_than_a_second_apart() {
+        let (mut d, st) = doc("");
+        d.apply(Edit::insert(0, "a", &st), 2.0);
+        d.apply(Edit::insert(1, "b", &st), 2.5); // late in the session, still quick: same step
+        d.apply(Edit::insert(2, "c", &st), 3.5); // exactly a second later: a new step
+        d.undo();
+        assert_eq!(d.flow.text, "ab");
+        d.undo();
+        assert_eq!(d.flow.text, "");
+    }
+
+    #[test]
+    fn grouped_edits_undo_together_and_each_group_is_kept() {
+        let (mut d, st) = doc("");
+        d.apply_group(vec![Edit::insert(0, "a", &st), Edit::insert(1, "b", &st)]);
+        d.apply_group(vec![Edit::insert(2, "c", &st)]);
+        d.undo();
+        assert_eq!(d.flow.text, "ab");
+        d.undo();
+        assert_eq!(d.flow.text, "");
+    }
+
+    #[test]
+    fn replacing_across_a_notes_edges() {
+        let (mut d, st) = doc("one two three");
+        d.notes.push(note(4, 7)); // "two"
+        let replace = |d: &mut Doc, a: usize, b: usize, new: &str| {
+            let (ba, bb) = (d.char_to_byte(a), d.char_to_byte(b));
+            let old = Piece { text: d.flow.text[ba..bb].into(), styles: d.flow.styles[a..b].to_vec() };
+            d.apply(Edit::Replace { at: a, old, new: Piece::plain(new, &st) }, 0.0);
+        };
+        replace(&mut d, 0, 5, "ONE-T!"); // "one t" -> the note's start was replaced, its end shifts
+        assert_eq!(d.flow.text, "ONE-T!wo three");
+        assert_eq!((d.notes[0].start, d.notes[0].end), (6, 8));
+        replace(&mut d, 7, 10, "XY"); // "o t" -> the note's end was replaced
+        assert_eq!(d.flow.text, "ONE-T!wXYhree");
+        assert_eq!((d.notes[0].start, d.notes[0].end), (6, 7));
+        d.notes[0] = note(5, 6);
+        replace(&mut d, 4, 8, "Z"); // the whole note was inside the replaced text: a point note
+        assert_eq!((d.notes[0].start, d.notes[0].end), (4, 4));
+    }
 }
