@@ -247,7 +247,7 @@ impl App {
         });
     }
 
-    fn export_docx_to(&mut self, path: PathBuf) {
+    pub(crate) fn export_docx_to(&mut self, path: PathBuf) {
         let written = crate::export::to_docx(&self.doc).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string()));
         self.status = match written {
             Ok(()) => format!("- exported {}", path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned())),

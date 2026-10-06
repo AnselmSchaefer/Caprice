@@ -1319,6 +1319,56 @@ mod tests {
         assert_eq!(h.shown(), 0);
     }
 
+    #[test]
+    fn the_contents_setting_is_saved_opened_and_exported_through_the_app() {
+        use std::io::Read;
+        let docx_text = |path: &std::path::Path| {
+            let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+            let mut xml = String::new();
+            zip.by_name("word/document.xml").unwrap().read_to_string(&mut xml).unwrap();
+            xml
+        };
+        let dir = std::env::temp_dir().join(format!("caprice-contents-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut h = Harness::new();
+        let n = h.long_contents(60);
+        let ctx = h.ctx.clone();
+        assert!(h.app.unsaved(), "turning the contents on is a change to save");
+        let path = dir.join("story.caprice");
+        h.app.save_to(path.clone());
+        assert!(!h.app.unsaved());
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains(r#""contents": true"#) && !saved.contains('\u{e000}'), "a setting, not text");
+
+        // Opened again: the same pages, the contents first.
+        let mut other = Harness::new();
+        other.frames(3, vec![], Modifiers::NONE);
+        let octx = other.ctx.clone();
+        other.app.open_path(&octx, path.clone());
+        assert!(other.app.doc.setup.contents && !other.app.unsaved());
+        assert_eq!(other.app.doc.contents_pages(&octx), n);
+        assert_eq!(other.app.doc.spans, h.app.doc.spans);
+
+        // Exported to Word from either: the contents field first, then the story on a new page.
+        for (app, name) in [(&mut h.app, "a.docx"), (&mut other.app, "b.docx")] {
+            app.export_docx_to(dir.join(name));
+            let xml = docx_text(&dir.join(name));
+            let toc = xml.find("TOC \\o").expect("a contents field");
+            let first = xml.find("Chapter 1<").unwrap();
+            assert!(xml.find("<w:t>Contents</w:t>").unwrap() < toc && toc < first);
+            assert!(xml[..xml.find("Heading1").unwrap() + 60].contains("<w:pageBreakBefore/>"), "the story on a new page");
+        }
+
+        // Turned off and saved, it is gone from the file and from Word.
+        h.app.set_contents(&ctx, false);
+        h.app.save_to(path.clone());
+        h.app.export_docx_to(dir.join("c.docx"));
+        assert!(std::fs::read_to_string(&path).unwrap().contains(r#""contents": false"#));
+        assert!(!docx_text(&dir.join("c.docx")).contains("TOC"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ----------------------------------------------------------- the editor
 
     impl Harness {
