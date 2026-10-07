@@ -507,7 +507,7 @@ impl App {
                     }
                 }
                 Self::paper(ui.painter(), page_rect);
-                ui.painter().extend(self.backdrop_shapes(&ctx, page_rect, &|p| p, 1.0, 1.0));
+                ui.painter().extend(self.backdrop_shapes(&ctx, i, page_rect, &|p| p, 1.0, 1.0));
                 self.draw_footer(ui, page_rect, i);
                 self.editor_surface(ui, page_rect, i, !self.circling());
                 self.draw_notes(ui, page_rect, i);
@@ -516,7 +516,7 @@ impl App {
                     let to_right = area.right() + 40.0 - page_rect.left();
                     let r = page_rect.translate(egui::vec2(to_right * ease(s), 0.0));
                     Self::paper(ui.painter(), r);
-                    ui.painter().extend(self.backdrop_shapes(&ctx, r, &|p| p, 1.0, 1.0));
+                    ui.painter().extend(self.backdrop_shapes(&ctx, i, r, &|p| p, 1.0, 1.0));
                 }
             }
         } else if self.slides_in(base) {
@@ -545,6 +545,7 @@ impl App {
         self.picture_menu(&ctx);
         self.answer_panel(&ctx);
         self.scene_panel(&ctx);
+        self.scene_list(&ctx);
         self.unsaved_prompt(&ctx);
     }
 }
@@ -866,7 +867,7 @@ mod tests {
         }
         h.frames(20, vec![], Modifiers::NONE);
         assert_eq!(h.app.target, 1);
-        assert_eq!(h.app.doc.page_of(h.app.caret), 1, "the caret goes along to the page");
+        assert_eq!(h.app.doc.page_of(h.app.caret), 0, "the caret stays where it was");
         // A pause, then fingers to the right: back again.
         h.frames(30, vec![], Modifiers::NONE);
         for _ in 0..2 {
@@ -1176,15 +1177,11 @@ mod tests {
             self.app.doc.contents_pages(&ctx)
         }
 
-        /// The page shown, once the pages have settled, and that the caret is on it, unless it
-        /// is a page of the contents (which hold no text).
+        /// The page shown, once the pages have settled.
         fn shown(&mut self) -> usize {
             self.frames(90, vec![], Modifiers::NONE);
             let target = self.app.target;
             assert_eq!(self.app.pos, target as f32, "the pages settled on the page shown");
-            if self.app.doc.spans[target].contents.is_none() {
-                assert_eq!(self.app.doc.page_of(self.app.caret), target, "the caret is on the page shown");
-            }
             target
         }
 
@@ -1619,32 +1616,191 @@ mod tests {
         assert!(!h.app.backdrop.drawing());
     }
 
+    const BLUE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 60 85\"><circle cx=\"30\" cy=\"40\" r=\"20\" fill=\"#36c\"/></svg>";
+    const RED: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 60 85\"><circle cx=\"30\" cy=\"40\" r=\"20\" fill=\"#c33\"/></svg>";
+
+    impl Harness {
+        /// Frames until the page shown has its scene's drawing behind it (rendered on a thread).
+        fn scene_shown(&mut self) -> Option<backdrop::DrawingKey> {
+            for _ in 0..200 {
+                self.frames(1, vec![], Modifiers::NONE);
+                let want = self.app.scene_here().map(|s| (s.id, s.shown));
+                if self.app.pos == self.app.target as f32 && self.app.shown_scene() == want {
+                    return want;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("the scene of page {} never showed", self.app.target);
+        }
+
+        /// Save the document and open it again in a new window.
+        fn reopened(&mut self, name: &str) -> Harness {
+            let dir = std::env::temp_dir().join(format!("caprice-scene-test-{}-{name}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("story.caprice");
+            std::fs::write(&path, serde_json::to_string(&self.app.doc_file()).unwrap()).unwrap();
+            let mut other = Harness::new();
+            other.frames(3, vec![], Modifiers::NONE);
+            let ctx = other.ctx.clone();
+            other.app.open_path(&ctx, path);
+            std::fs::remove_dir_all(dir).unwrap();
+            other
+        }
+    }
+
+    /// Twelve paragraphs over several pages, the caret at the start.
+    fn paragraphs_over_pages(h: &mut Harness) {
+        h.frames(3, vec![], Modifiers::NONE);
+        let para = "It was nearly midnight and the Prime Minister sat alone in his office. ".repeat(20);
+        h.type_text(&format!("{para}\n").repeat(12));
+        assert!(h.app.doc.pages() >= 4, "pages: {}", h.app.doc.pages());
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, 0, false);
+        h.frames(120, vec![], Modifiers::NONE);
+    }
+
+    /// Where paragraph `k` (from 0) starts.
+    fn para_at(h: &Harness, k: usize) -> usize {
+        if k == 0 {
+            return 0;
+        }
+        h.app.doc.flow.text.chars().enumerate().filter(|&(_, c)| c == '\n').nth(k - 1).unwrap().0 + 1
+    }
+
     #[test]
-    fn the_scene_is_saved_with_the_document_and_comes_back() {
+    fn the_picture_follows_the_caret_from_one_part_of_the_story_to_the_next() {
+        let mut h = Harness::new();
+        paragraphs_over_pages(&mut h);
+        let ctx = h.ctx.clone();
+        // A paragraph that begins partway down a page, so its scene starts there.
+        let k = (2..12).find(|&k| {
+            let p = para_at(&h, k);
+            p > h.app.doc.spans[h.app.doc.page_of(p)].start + 200
+        });
+        let late = para_at(&h, k.unwrap());
+        let page = h.app.doc.page_of(late);
+        h.app.fake_painting(5, BLUE); // painted in the first paragraph
+        h.frames(2, vec![], Modifiers::NONE);
+        h.app.fake_painting(late, RED);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(h.app.doc.scenes.len(), 2, "the first scene is kept, not replaced");
+        let (blue, red) = (h.app.doc.scenes[0].id, h.app.doc.scenes[1].id);
+        assert_eq!(h.app.doc.scenes[1].at, late, "pinned to its paragraph's start");
+
+        h.app.set_caret(&ctx, 0, false);
+        assert_eq!(h.scene_shown(), Some((blue, 0)));
+        // On the same page, just before the red scene's paragraph, and then in it.
+        h.app.set_caret(&ctx, late - 2, false);
+        assert_eq!((h.scene_shown(), h.app.target), (Some((blue, 0)), page));
+        h.key(Key::ArrowRight, Modifiers::NONE);
+        h.key(Key::ArrowRight, Modifiers::NONE);
+        assert_eq!((h.scene_shown(), h.app.target), (Some((red, 0)), page), "the caret moved into the red part");
+        h.key(Key::ArrowLeft, Modifiers::NONE);
+        assert_eq!(h.scene_shown(), Some((blue, 0)), "and back out of it");
+        // Every page after shows red, until the end.
+        h.app.go_to_page(&ctx, h.app.last());
+        assert_eq!(h.scene_shown(), Some((red, 0)));
+        // Hidden, the scene before shows in its place.
+        h.app.doc.scenes[1].hidden = true;
+        assert_eq!(h.scene_shown(), Some((blue, 0)));
+    }
+
+    #[test]
+    fn painting_a_paragraph_again_adds_a_version_and_keeps_the_others() {
+        let mut h = Harness::new();
+        paragraphs_over_pages(&mut h);
+        let p = para_at(&h, 1);
+        h.app.fake_painting(p + 3, BLUE);
+        h.frames(2, vec![], Modifiers::NONE);
+        h.app.fake_painting(p + 40, RED);
+        h.frames(2, vec![], Modifiers::NONE);
+        let s = &h.app.doc.scenes;
+        assert_eq!(s.len(), 1, "one scene per paragraph");
+        assert_eq!((s[0].at, s[0].versions.len(), s[0].shown), (p, 2, 1), "the new version shows");
+        assert_eq!(s[0].versions[0], BLUE);
+        // The list of scenes shows it.
+        let id = s[0].id;
+        h.app.backdrop.list = true;
+        for _ in 0..100 {
+            h.frames(1, vec![], Modifiers::NONE);
+            if h.app.has_thumb_of((id, 1)) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(h.app.has_thumb_of((id, 1)), "its small picture is in the list");
+        h.app.doc.scenes[0].shown = 0;
+        let other = h.reopened("versions");
+        let s = &other.app.doc.scenes;
+        assert_eq!((s.len(), s[0].at, s[0].versions.len(), s[0].shown), (1, p, 2, 0), "versions and the one shown are saved");
+    }
+
+    #[test]
+    fn scenes_stay_with_their_paragraph_through_edits_and_saving() {
+        let mut h = Harness::new();
+        paragraphs_over_pages(&mut h);
+        let p = para_at(&h, 3);
+        h.app.fake_painting(p, BLUE);
+        h.frames(2, vec![], Modifiers::NONE);
+        // Typed before it, and right at its start: it still starts the paragraph.
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, 0, false);
+        h.type_text("Prologue. ");
+        h.app.set_caret(&ctx, para_at(&h, 3), false);
+        h.type_text("Then ");
+        assert_eq!(h.app.doc.scenes[0].at, para_at(&h, 3));
+        assert!(h.app.doc.flow.text[h.app.doc.char_to_byte(para_at(&h, 3))..].starts_with("Then "));
+        let at = h.app.doc.scenes[0].at;
+        let mut other = h.reopened("edits");
+        assert_eq!(other.app.doc.scenes[0].at, at);
+        assert_eq!(other.app.doc.scene_at(at).map(|s| s.at), Some(at), "it shows from its paragraph on");
+        // Its paragraph deleted, it stays where the text was.
+        let (a, b) = (para_at(&other, 2), para_at(&other, 4));
+        let ctx = other.ctx.clone();
+        other.app.replace_range(&ctx, a, b, "");
+        assert_eq!(other.app.doc.scenes[0].at, a);
+    }
+
+    #[test]
+    fn a_scene_still_being_painted_is_not_saved_and_goes_if_stopped() {
+        let mut h = Harness::new();
+        paragraphs_over_pages(&mut h);
+        let _tx = h.app.fake_painting_under_way(10);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(h.app.doc.scenes.len(), 1);
+        assert!(h.reopened("unpainted").app.doc.scenes.is_empty(), "nothing to save yet");
+        drop(_tx); // stopped: the painting never comes
+        h.frames(2, vec![], Modifiers::NONE);
+        assert!(h.app.doc.scenes.is_empty());
+    }
+
+    #[test]
+    fn an_older_files_one_scene_opens_pinned_to_the_start_of_the_story() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.type_text("A storm at sea.");
-        let ctx = h.ctx.clone();
-        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 60 85\"><circle cx=\"30\" cy=\"40\" r=\"20\" fill=\"#36c\"/></svg>";
-        let scene = backdrop::SceneFile { svg: Some(svg.into()), description: "A ship in a storm".into(), hidden: false };
-        h.app.open_scene(&ctx, Some(scene.clone())).unwrap();
-
-        let dir = std::env::temp_dir().join(format!("caprice-scene-test-{}", std::process::id()));
+        let old = backdrop::SceneFile { svg: Some(BLUE.into()), description: "A ship in a storm".into(), hidden: false };
+        let mut json = serde_json::to_value(fileio::DocFile::from_doc(&h.app.doc)).unwrap();
+        json["scene"] = serde_json::to_value(&old).unwrap();
+        let dir = std::env::temp_dir().join(format!("caprice-scene-test-{}-old", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("story.caprice");
-        std::fs::write(&path, serde_json::to_string(&h.app.doc_file()).unwrap()).unwrap();
+        std::fs::write(&path, json.to_string()).unwrap();
 
         let mut other = Harness::new();
         other.frames(3, vec![], Modifiers::NONE);
-        let octx = other.ctx.clone();
-        other.app.open_path(&octx, path.clone());
-        assert_eq!(other.app.doc.visible_text(), "A storm at sea.");
-        assert_eq!(other.app.backdrop.to_file(), Some(scene), "picture and description are back");
+        let ctx = other.ctx.clone();
+        other.app.open_path(&ctx, path.clone());
+        let s = &other.app.doc.scenes;
+        assert_eq!((s.len(), s[0].at, s[0].versions.clone()), (1, 0, vec![BLUE.to_owned()]));
+        assert_eq!(other.app.backdrop.description, "A ship in a storm");
+        assert!(other.scene_shown().is_some());
+        assert!(!other.app.unsaved(), "opening an old file is no change");
 
-        // A document without a scene clears the one shown before.
-        std::fs::write(&path, serde_json::to_string(&fileio::DocFile::from_doc(&other.app.doc)).unwrap()).unwrap();
-        other.app.open_path(&octx, path);
-        assert_eq!(other.app.backdrop.to_file(), None);
+        // Saved again, it is a scene like any other, and the description stays.
+        let again = other.reopened("old-again");
+        assert_eq!(again.app.doc.scenes.len(), 1);
+        assert_eq!(again.app.backdrop.to_file().map(|f| (f.svg, f.description)), Some((None, "A ship in a storm".into())));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1888,11 +2044,35 @@ mod tests {
         assert_eq!(h.app.doc.page_text(1), "page two\n");
         assert_eq!(h.text(), "page one\u{c}page two");
         h.key(Key::PageUp, Modifiers::NONE);
-        assert_eq!(h.app.caret, 0);
+        assert_eq!(h.app.caret, 17, "turning pages leaves the caret");
         h.frames(60, vec![], Modifiers::NONE);
         assert_eq!(h.app.pos.round() as usize, 0);
         h.key(Key::PageDown, Modifiers::NONE);
-        assert_eq!(h.app.doc.page_of(h.app.caret), 1);
+        assert_eq!(h.app.target, 1);
+    }
+
+    #[test]
+    fn turning_pages_leaves_the_caret_where_it_is_until_typing_or_a_click() {
+        let mut h = Harness::new();
+        pages_of_text(&mut h);
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, 50, false);
+        h.key(Key::PageDown, Modifiers::NONE);
+        h.key(Key::PageDown, Modifiers::NONE);
+        assert_eq!((h.shown(), h.app.caret), (2, 50), "the pages turn, the caret stays");
+        // Typing goes in at the caret, and its page comes back.
+        h.type_text("Q");
+        assert_eq!(h.app.doc.char_at(50), Some('Q'));
+        assert_eq!(h.shown(), 0);
+        // Turned away again, a click puts the caret on the page shown.
+        h.app.go_to_page(&ctx, 2);
+        assert_eq!(h.shown(), 2);
+        h.click_in_page(egui::vec2(50.0, 50.0));
+        assert_eq!((h.shown(), h.app.doc.page_of(h.app.caret)), (2, 2));
+        // Shift+Page Down still selects on to the next page's start.
+        let from = h.app.caret;
+        h.key(Key::PageDown, Modifiers::SHIFT);
+        assert_eq!((h.shown(), h.app.selection()), (3, (from, h.app.doc.spans[3].start)));
     }
 
     #[test]

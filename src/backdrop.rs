@@ -1,18 +1,25 @@
-//! Scenes behind the page: Claude paints a scene, and the picture fades in faintly behind the text
-//! of every page, replacing the one before. The scene is either one the writer describes and asks
-//! for, or follows the writing: each finished sentence brings a picture of the newest sentence.
-//! The pictures are SVG drawn through the Claude Code CLI and rendered here; they are not part of
-//! the document.
+//! Scenes behind the pages. Claude paints a scene as SVG (through the Claude Code CLI), and it is
+//! kept with the story, pinned to the start of the paragraph it was painted for, like a note. It
+//! covers the story up to the next scene, and the page shown shows the one the caret is in, faintly
+//! behind its text, so the pictures change as the caret moves on through the story. A scene is one
+//! the writer describes, a passage they select, or follows the writing: each finished sentence
+//! brings a picture of the newest one. Painting again for the same paragraph adds a version to its
+//! scene rather than replacing it. The list of scenes shows them all, to go to, show again, step
+//! through versions, hide or delete.
+//!
+//! Drawings are rendered on a background thread when a page near the one shown needs them, and
+//! only those near are kept as textures.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use eframe::egui::{self, Color32, ColorImage, Id, Key, Modifiers, Pos2, Rect, Shape, TextureHandle, TextureOptions, epaint::Mesh, pos2};
 
 use crate::App;
 use crate::claude::{Outcome, run_claude};
-use crate::model::{IMAGE_CHAR, PAGE_BREAK};
+use crate::model::{Doc, IMAGE_CHAR, PAGE_BREAK, Scene};
 use crate::theme::TEXT_DIM;
 
 /// How strongly a scene shows through the paper.
@@ -23,8 +30,13 @@ const SENTENCES: usize = 3;
 const PAUSE: f64 = 1.5;
 /// Seconds one scene takes to fade into the next.
 const FADE: f64 = 2.5;
-/// Width in pixels scenes are rendered at.
+/// Width in pixels scenes are rendered at, behind the pages and in the list of scenes.
 const RENDER_WIDTH: f32 = 1000.0;
+const THUMB_WIDTH: f32 = 120.0;
+/// How many pages either side of the one shown get their scene rendered ahead.
+const NEAR: usize = 2;
+/// How many full-size drawings are kept rendered at most, besides those near the page shown.
+const KEEP: usize = 6;
 
 /// The model that paints the scenes.
 const MODEL: &str = "claude-opus-5-5";
@@ -33,20 +45,17 @@ const SYSTEM: &str = "You are a skilled illustrator who paints with SVG code. Yo
     atmospheric illustrations for the pages of a story, in the manner of a classic book \
     illustration: believable light, depth and texture rather than cartoon shapes.";
 
-/// A scene on screen, and when it began to fade in.
-struct Shown {
-    texture: TextureHandle,
-    since: f64,
-    /// The drawing itself, kept to save it.
-    svg: Arc<str>,
-}
-
 /// A painted scene: its drawing, and the drawing rendered.
-type Painted = (String, ColorImage);
+pub type Painted = (String, ColorImage);
 
+/// One drawing of one scene: the scene's id and which of its versions.
+pub type DrawingKey = (u64, usize);
+
+/// A painting under way, for the scene with id `scene`.
 struct Job {
     rx: Receiver<Result<Painted, String>>,
     cancel: Arc<AtomicBool>,
+    scene: u64,
 }
 
 impl Drop for Job {
@@ -55,7 +64,14 @@ impl Drop for Job {
     }
 }
 
-/// Where the scene comes from.
+/// A drawing rendered on a background thread, full size or small for the list.
+struct Rendered {
+    key: DrawingKey,
+    thumb: bool,
+    image: Result<ColorImage, String>,
+}
+
+/// Where new scenes come from.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
     /// The writer's description, drawn when they ask.
@@ -68,20 +84,40 @@ pub enum Mode {
 /// What a picture is to show.
 enum Subject {
     Description(String),
+    /// A passage the writer selected.
+    Passage(String),
     /// The last few finished sentences, one per line, the newest last.
     Sentences(String),
+}
+
+impl Subject {
+    fn text(&self) -> &str {
+        match self {
+            Subject::Description(t) | Subject::Passage(t) | Subject::Sentences(t) => t,
+        }
+    }
 }
 
 pub struct Backdrop {
     /// The dialog to describe the scene is open.
     pub panel: bool,
+    /// The list of scenes is open.
+    pub list: bool,
     pub mode: Mode,
-    /// The picture shows behind the pages.
+    /// The pictures show behind the pages.
     pub visible: bool,
     /// What the writer wants to see.
     pub description: String,
-    current: Option<Shown>,
-    previous: Option<Shown>,
+    /// Drawings rendered: full size behind the pages, small in the list.
+    textures: HashMap<DrawingKey, TextureHandle>,
+    thumbs: HashMap<DrawingKey, TextureHandle>,
+    /// Drawings being rendered, or that could not be, so they are not tried again and again.
+    rendering: HashSet<(DrawingKey, bool)>,
+    rendered: (Sender<Rendered>, Receiver<Rendered>),
+    /// The page shown and the drawing behind it, and the drawing it fades from and since when.
+    /// Turning to another page shows its drawing at once; only a change on the same page fades.
+    on_target: Option<(usize, Option<DrawingKey>)>,
+    fade: Option<(Option<DrawingKey>, f64)>,
     job: Option<Job>,
     /// Put the keyboard on the description when the dialog opens.
     focus_field: bool,
@@ -97,11 +133,16 @@ impl Default for Backdrop {
     fn default() -> Self {
         Self {
             panel: false,
+            list: false,
             mode: Mode::Described,
             visible: true,
             description: String::new(),
-            current: None,
-            previous: None,
+            textures: HashMap::new(),
+            thumbs: HashMap::new(),
+            rendering: HashSet::new(),
+            rendered: channel(),
+            on_target: None,
+            fade: None,
             job: None,
             focus_field: false,
             drawn_for: String::new(),
@@ -143,13 +184,13 @@ fn extract_svg(reply: &str) -> Option<&str> {
     (end > start).then(|| &reply[start..end])
 }
 
-/// Render an SVG to an image `RENDER_WIDTH` pixels wide.
-fn rasterize(svg: &str) -> Result<ColorImage, String> {
+/// Render an SVG to an image `width` pixels wide.
+fn rasterize(svg: &str, width: f32) -> Result<ColorImage, String> {
     use resvg::{tiny_skia, usvg};
     let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).map_err(|e| format!("the picture could not be read: {e}"))?;
     let size = tree.size();
-    let scale = RENDER_WIDTH / size.width();
-    let (w, h) = (RENDER_WIDTH.round() as u32, (size.height() * scale).round().max(1.0) as u32);
+    let scale = width / size.width();
+    let (w, h) = (width.round() as u32, (size.height() * scale).round().max(1.0) as u32);
     let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("the picture has no size")?;
     resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
     Ok(ColorImage::from_rgba_premultiplied([w as usize, h as usize], pixmap.data()))
@@ -160,6 +201,7 @@ fn draw_scene(subject: &Subject, size: egui::Vec2, cancel: &AtomicBool) -> Resul
     let (w, h) = (size.x.round(), size.y.round());
     let what = match subject {
         Subject::Description(d) => format!("<scene>\n{d}\n</scene>\n\nPaint one illustration of this scene"),
+        Subject::Passage(p) => format!("<passage>\n{p}\n</passage>\n\nPaint one illustration of the scene this passage of a story describes"),
         Subject::Sentences(sentences) => {
             let (earlier, latest) = sentences.rsplit_once('\n').unwrap_or(("", sentences));
             let context = if earlier.is_empty() {
@@ -198,7 +240,7 @@ fn draw_scene(subject: &Subject, size: egui::Vec2, cancel: &AtomicBool) -> Resul
         Outcome::Refused => Err("Claude declined to draw this scene".into()),
         Outcome::Finished => {
             let svg = extract_svg(&reply).ok_or("Claude's reply held no picture")?;
-            rasterize(svg).map(|image| Some((svg.to_owned(), image)))
+            rasterize(svg, RENDER_WIDTH).map(|image| Some((svg.to_owned(), image)))
         }
     }
 }
@@ -221,7 +263,8 @@ fn strip_mesh(texture: &TextureHandle, rect: Rect, tint: Color32, map: &dyn Fn(P
     mesh
 }
 
-/// The scene as kept in a document file.
+/// The scenes' settings as kept in a document file. Older files also hold their one scene's
+/// drawing here; it opens as a scene pinned to the start of the story.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct SceneFile {
@@ -233,26 +276,48 @@ pub struct SceneFile {
     pub hidden: bool,
 }
 
+impl Doc {
+    /// The scene behind char `c`: the one pinned last at or before it that has a drawing and shows.
+    pub fn scene_at(&self, c: usize) -> Option<&Scene> {
+        self.scenes.iter().filter(|s| s.at <= c && !s.hidden && s.svg().is_some()).max_by_key(|s| (s.at, s.id))
+    }
+
+    /// The scene behind page `i` when the caret is not on it: the one of the text at its top, as
+    /// the page is when turned to. The contents pages, holding no text, show the story's first.
+    pub fn page_scene(&self, i: usize) -> Option<&Scene> {
+        self.scene_at(self.spans[i].start)
+    }
+
+    pub fn page_scene_key(&self, i: usize) -> Option<DrawingKey> {
+        self.page_scene(i).map(|s| (s.id, s.shown))
+    }
+
+    fn scene_mut(&mut self, id: u64) -> Option<&mut Scene> {
+        self.scenes.iter_mut().find(|s| s.id == id)
+    }
+}
+
+impl App {
+    /// The scene behind the page shown: the one of the part of the story the caret is in, so
+    /// moving the caret into the next part brings its picture. On a page without the caret (the
+    /// contents), the one at its top.
+    pub fn scene_here(&self) -> Option<&Scene> {
+        if self.doc.page_of(self.caret) == self.target {
+            self.doc.scene_at(self.caret)
+        } else {
+            self.doc.page_scene(self.target)
+        }
+    }
+}
+
 impl Backdrop {
     pub fn drawing(&self) -> bool {
         self.job.is_some()
     }
 
-    /// What is kept in the document file, if there is anything.
+    /// What is kept in the document file besides the scenes, if anything.
     pub fn to_file(&self) -> Option<SceneFile> {
-        let svg = self.current.as_ref().map(|s| s.svg.to_string());
-        (svg.is_some() || !self.description.trim().is_empty()).then(|| SceneFile { svg, description: self.description.clone(), hidden: !self.visible })
-    }
-
-    /// The scene of a document just opened (or none): it replaces whatever was shown or painted.
-    fn load(&mut self, ctx: &egui::Context, file: Option<SceneFile>) -> Result<(), String> {
-        let file = file.unwrap_or_default();
-        *self = Backdrop { mode: self.mode, description: file.description, visible: !file.hidden, ..Backdrop::default() };
-        let Some(svg) = file.svg else { return Ok(()) };
-        let image = rasterize(&svg)?;
-        let texture = ctx.load_texture("scene", image, TextureOptions::LINEAR);
-        self.current = Some(Shown { texture, since: ctx.input(|i| i.time), svg: svg.into() });
-        Ok(())
+        (!self.description.trim().is_empty() || !self.visible).then(|| SceneFile { svg: None, description: self.description.clone(), hidden: !self.visible })
     }
 
     /// Following the writing: the sentences waiting to be drawn.
@@ -260,29 +325,111 @@ impl Backdrop {
     pub fn pending(&self) -> Option<&str> {
         self.pending.as_ref().map(|(p, _)| p.as_str())
     }
+
+    /// Render the drawing `svg` of `key` on a background thread, unless it is or has been already.
+    fn render(&mut self, ctx: &egui::Context, key: DrawingKey, svg: &str, thumb: bool) {
+        let have = if thumb { &self.thumbs } else { &self.textures };
+        if have.contains_key(&key) || !self.rendering.insert((key, thumb)) {
+            return;
+        }
+        let (tx, ctx, svg) = (self.rendered.0.clone(), ctx.clone(), svg.to_owned());
+        std::thread::spawn(move || {
+            let image = rasterize(&svg, if thumb { THUMB_WIDTH } else { RENDER_WIDTH });
+            let _ = tx.send(Rendered { key, thumb, image });
+            ctx.request_repaint();
+        });
+    }
 }
 
 impl App {
-    /// Start painting the described scene (replacing a drawing still in progress).
+    /// Start painting the described scene, for the paragraph the selection starts in.
     pub fn draw_backdrop(&mut self, ctx: &egui::Context) {
         let description = self.backdrop.description.trim().to_owned();
         if !description.is_empty() {
-            self.start_scene(ctx, Subject::Description(description));
+            self.start_scene(ctx, Subject::Description(description), self.selection().0);
         }
     }
 
-    fn start_scene(&mut self, ctx: &egui::Context, subject: Subject) {
-        let (tx, rx) = channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let (ctx2, cancel2, size) = (ctx.clone(), cancel.clone(), self.doc.setup.size());
+    /// Paint the scene the passage `a..b` describes, for the paragraph it starts in.
+    pub fn paint_passage(&mut self, ctx: &egui::Context, a: usize, b: usize) {
+        let passage = self.selected_passage(a, b);
+        if !passage.trim().is_empty() {
+            self.start_scene(ctx, Subject::Passage(passage), a);
+        }
+    }
+
+    fn selected_passage(&self, a: usize, b: usize) -> String {
+        let (ba, bb) = (self.doc.char_to_byte(a), self.doc.char_to_byte(b));
+        self.doc.flow.text[ba..bb].chars().filter(|&c| c != IMAGE_CHAR).map(|c| if c == PAGE_BREAK { '\n' } else { c }).collect()
+    }
+
+    /// Paint `subject` for the paragraph char `c` is in (replacing a painting still in progress).
+    /// A scene already pinned to that paragraph gets another version; otherwise a new scene is
+    /// pinned there, which shows once its drawing is done.
+    fn start_scene(&mut self, ctx: &egui::Context, subject: Subject, c: usize) {
+        let (tx, cancel) = self.pin_painting(subject.text(), c);
+        let (ctx, size) = (ctx.clone(), self.doc.setup.size());
         std::thread::spawn(move || {
-            if let Some(result) = draw_scene(&subject, size, &cancel2).transpose() {
+            if let Some(result) = draw_scene(&subject, size, &cancel).transpose() {
                 let _ = tx.send(result);
             }
-            ctx2.request_repaint();
+            ctx.request_repaint();
         });
-        let b = &mut self.backdrop;
-        b.job = Some(Job { rx, cancel });
+    }
+
+    /// The scene a painting for char `c` goes to, made if need be, and the painting as the job
+    /// under way: where to send the result, and the flag that stops it.
+    fn pin_painting(&mut self, subject: &str, c: usize) -> (Sender<Result<Painted, String>>, Arc<AtomicBool>) {
+        self.backdrop.job = None;
+        self.drop_unpainted_scenes();
+        let at = self.doc.para_start(c).0;
+        let id = match self.doc.scenes.iter_mut().find(|s| s.at == at) {
+            Some(s) => {
+                s.subject = subject.to_owned();
+                s.id
+            }
+            None => {
+                let id = self.doc.next_scene_id;
+                self.doc.next_scene_id += 1;
+                self.doc.scenes.push(Scene { id, at, versions: Vec::new(), shown: 0, subject: subject.to_owned(), hidden: false });
+                id
+            }
+        };
+        let (tx, rx) = channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.backdrop.job = Some(Job { rx, cancel: cancel.clone(), scene: id });
+        (tx, cancel)
+    }
+
+    /// A painting of `svg` for the paragraph of char `c`, as if Claude had just finished it.
+    #[cfg(test)]
+    pub fn fake_painting(&mut self, c: usize, svg: &str) {
+        let (tx, _) = self.pin_painting("a test", c);
+        tx.send(Ok((svg.to_owned(), rasterize(svg, RENDER_WIDTH).unwrap()))).unwrap();
+    }
+
+    /// Start painting for char `c` without finishing, as if Claude were still at it.
+    #[cfg(test)]
+    pub fn fake_painting_under_way(&mut self, c: usize) -> Sender<Result<Painted, String>> {
+        self.pin_painting("a test", c).0
+    }
+
+    /// The list of scenes has the small picture of drawing `key`.
+    #[cfg(test)]
+    pub fn has_thumb_of(&self, key: DrawingKey) -> bool {
+        self.backdrop.thumbs.contains_key(&key)
+    }
+
+    /// The drawing shown behind the page shown, once rendered.
+    #[cfg(test)]
+    pub fn shown_scene(&self) -> Option<DrawingKey> {
+        self.backdrop.on_target.and_then(|(page, key)| (page == self.target).then_some(key)?)
+    }
+
+    /// A scene whose first drawing was never finished (stopped, failed) is no scene.
+    fn drop_unpainted_scenes(&mut self) {
+        let painting = self.backdrop.job.as_ref().map(|j| j.scene);
+        self.doc.scenes.retain(|s| !s.versions.is_empty() || Some(s.id) == painting);
     }
 
     /// The sentences written last, before the caret.
@@ -291,15 +438,21 @@ impl App {
         last_sentences(&self.doc.flow.text[..upto], SENTENCES)
     }
 
-    /// Show the scene of a document just opened. Following the writing, a saved picture counts as
-    /// the picture of what is written, so only new sentences bring a new one.
-    pub fn open_scene(&mut self, ctx: &egui::Context, file: Option<SceneFile>) -> Result<(), String> {
-        let shown = self.backdrop.load(ctx, file);
-        if self.backdrop.current.is_some() {
+    /// Take in the scene settings of a document just opened (its scenes came with the `Doc`). An
+    /// older file's one drawing becomes a scene pinned to the story's start. Following the
+    /// writing, what is already written counts as drawn, so only new sentences bring a picture.
+    pub fn open_scene(&mut self, file: Option<SceneFile>) {
+        let file = file.unwrap_or_default();
+        self.backdrop = Backdrop { mode: self.backdrop.mode, description: file.description, visible: !file.hidden, ..Backdrop::default() };
+        if let Some(svg) = file.svg.filter(|_| self.doc.scenes.is_empty()) {
+            let id = self.doc.next_scene_id;
+            self.doc.next_scene_id += 1;
+            self.doc.scenes.push(Scene { id, at: 0, versions: vec![svg], shown: 0, subject: String::new(), hidden: false });
+        }
+        if !self.doc.scenes.is_empty() {
             self.backdrop.drawn_for = self.sentences_now();
             self.backdrop.read_at = Some(self.doc.version);
         }
-        shown
     }
 
     /// Following the writing: notice finished sentences and draw the newest after a pause.
@@ -322,11 +475,11 @@ impl App {
         } else {
             b.pending = None;
             b.drawn_for = sentences.clone();
-            self.start_scene(ctx, Subject::Sentences(sentences));
+            self.start_scene(ctx, Subject::Sentences(sentences), self.caret);
         }
     }
 
-    /// Set where the scene comes from.
+    /// Set where new scenes come from.
     pub fn set_scene_mode(&mut self, mode: Mode) {
         let b = &mut self.backdrop;
         if b.mode == mode {
@@ -338,45 +491,113 @@ impl App {
         // Following the writing starts with a picture of what is already written.
         b.drawn_for.clear();
         b.read_at = None;
+        self.drop_unpainted_scenes();
     }
 
-    /// Take in a finished picture and keep a fade going.
+    /// Take in finished paintings and renderings, keep the drawings near the page shown rendered,
+    /// and fade between drawings on the page shown.
     pub fn update_backdrop(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         if self.backdrop.mode == Mode::Writing {
             self.follow_writing(ctx, now);
         }
-        let b = &mut self.backdrop;
-        if let Some(job) = &b.job {
-            match job.rx.try_recv() {
-                Ok(Ok((svg, image))) => {
+        self.take_painting(ctx);
+        while let Ok(r) = self.backdrop.rendered.1.try_recv() {
+            match r.image {
+                Ok(image) => {
+                    self.backdrop.rendering.remove(&(r.key, r.thumb));
                     let texture = ctx.load_texture("scene", image, TextureOptions::LINEAR);
-                    b.previous = b.current.take();
-                    b.current = Some(Shown { texture, since: now, svg: svg.into() });
-                    b.visible = true;
-                    b.job = None;
+                    if r.thumb { &mut self.backdrop.thumbs } else { &mut self.backdrop.textures }.insert(r.key, texture);
                 }
-                Ok(Err(e)) => {
-                    self.status = format!("- no picture: {e}");
-                    b.job = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => b.job = None,
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(e) => self.status = format!("- a scene could not be shown: {e}"),
             }
         }
-        if b.current.as_ref().is_some_and(|s| now - s.since < FADE) {
+
+        // The drawings of the pages near the one shown, and of the list, rendered ahead.
+        let (lo, hi) = (self.target.min(self.pos as usize).saturating_sub(NEAR), (self.target.max(self.pos.ceil() as usize) + NEAR).min(self.last()));
+        // Those at the pages' tops, and those that begin on them, for the caret to come to.
+        let (from, to) = (self.doc.spans[lo].start, self.doc.spans[hi].end);
+        let begin_on = self.doc.scenes.iter().filter(|s| (from..=to).contains(&s.at) && s.svg().is_some()).map(|s| (s.id, s.shown));
+        let near: Vec<DrawingKey> = (lo..=hi).filter_map(|i| self.doc.page_scene_key(i)).chain(begin_on).collect();
+        for &key in &near {
+            if let Some(svg) = self.doc.scenes.iter().find(|s| s.id == key.0).and_then(|s| s.versions.get(key.1)).cloned() {
+                self.backdrop.render(ctx, key, &svg, false);
+            }
+        }
+        if self.backdrop.list {
+            let all: Vec<(DrawingKey, String)> = self.doc.scenes.iter().filter_map(|s| Some(((s.id, s.shown), s.svg()?.to_owned()))).collect();
+            for (key, svg) in all {
+                self.backdrop.render(ctx, key, &svg, true);
+            }
+        }
+
+        // On the page shown, a new drawing (the caret moved into another scene's part, painted,
+        // another version, hidden) fades in. Turned to, a page first shows what it showed while
+        // turning, the scene at its top, and fades from there to the caret's.
+        let wanted = self.scene_here().map(|s| (s.id, s.shown));
+        let top = self.doc.page_scene_key(self.target);
+        let b = &mut self.backdrop;
+        let ready = wanted.filter(|k| b.textures.contains_key(k));
+        match b.on_target {
+            Some((page, shown)) if page == self.target => {
+                if shown != ready && (ready.is_some() || wanted.is_none()) {
+                    b.fade = Some((shown, now));
+                    b.on_target = Some((page, ready));
+                }
+            }
+            _ => {
+                b.on_target = Some((self.target, top.filter(|k| b.textures.contains_key(k))));
+                b.fade = None;
+            }
+        }
+        if b.fade.is_some_and(|(_, since)| now - since < FADE) {
             ctx.request_repaint();
         } else {
-            b.previous = None;
+            b.fade = None;
+        }
+
+        // Only the drawings near the page shown, and the ones fading, stay rendered.
+        if b.textures.len() > near.len() + KEEP {
+            let keep: HashSet<DrawingKey> = near.into_iter().chain(b.on_target.and_then(|t| t.1)).chain(b.fade.and_then(|f| f.0)).collect();
+            b.textures.retain(|k, _| keep.contains(k));
         }
     }
 
-    /// The toolbar's Scene menu: follow the writing, describe the scene, show or hide the picture.
+    /// A painting finished: it becomes its scene's newest version, shown.
+    fn take_painting(&mut self, ctx: &egui::Context) {
+        let Some(job) = &self.backdrop.job else { return };
+        let id = job.scene;
+        match job.rx.try_recv() {
+            Ok(Ok((svg, image))) => {
+                self.backdrop.job = None;
+                if let Some(scene) = self.doc.scene_mut(id) {
+                    scene.versions.push(svg);
+                    scene.shown = scene.versions.len() - 1;
+                    scene.hidden = false;
+                    let texture = ctx.load_texture("scene", image, TextureOptions::LINEAR);
+                    self.backdrop.textures.insert((id, scene.shown), texture);
+                    self.backdrop.visible = true;
+                }
+            }
+            Ok(Err(e)) => {
+                self.status = format!("- no picture: {e}");
+                self.backdrop.job = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.backdrop.job = None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+        }
+        self.drop_unpainted_scenes();
+    }
+
+    /// The toolbar's Scene menu: follow the writing, describe a scene, the list of scenes, show or
+    /// hide the pictures.
     pub fn scene_menu(&mut self, ui: &mut egui::Ui) {
+        let count = self.doc.scenes.iter().filter(|s| !s.versions.is_empty()).count();
+        let has_picture = self.scene_here().is_some();
         let b = &mut self.backdrop;
         let title = if b.job.is_some() { "Scene \u{b7} painting\u{2026}" } else { "Scene" };
         let (mut mode, mut describe, mut stop, mut save) = (b.mode, false, false, false);
-        let tip = "Pictures Claude paints faintly behind the page";
+        let tip = "Pictures Claude paints faintly behind the pages, each for its part of the story";
         egui::containers::menu::MenuButton::new(title).ui(ui, |ui| {
             ui.set_min_width(230.0);
             let mut follow = mode == Mode::Writing;
@@ -388,9 +609,14 @@ impl App {
                 describe = true;
                 ui.close();
             }
+            let list_tip = "Every scene painted, by where it is in the story";
+            if ui.add_enabled(count > 0, egui::Button::new(format!("All scenes ({count})\u{2026}")).frame(false)).on_hover_text(list_tip).clicked() {
+                b.list = true;
+                ui.close();
+            }
             ui.separator();
-            ui.add_enabled(b.current.is_some(), egui::Checkbox::new(&mut b.visible, "Show picture"));
-            if ui.add_enabled(b.current.is_some(), egui::Button::new("Save picture as\u{2026}").frame(false)).clicked() {
+            ui.add_enabled(count > 0, egui::Checkbox::new(&mut b.visible, "Show pictures"));
+            if ui.add_enabled(has_picture, egui::Button::new("Save picture as\u{2026}").frame(false)).clicked() {
                 save = true;
                 ui.close();
             }
@@ -402,8 +628,10 @@ impl App {
         .on_hover_text(tip);
         if stop {
             b.job = None;
+            self.drop_unpainted_scenes();
         }
         if describe {
+            let b = &mut self.backdrop;
             b.panel = true;
             b.focus_field = true;
         }
@@ -413,9 +641,9 @@ impl App {
         }
     }
 
-    /// Write the picture shown to a PNG (or, given a .svg name, an SVG) file the user picks.
+    /// Write the picture shown now to a PNG (or, given a .svg name, an SVG) file the user picks.
     fn save_scene_picture(&mut self, ctx: &egui::Context) {
-        if self.backdrop.current.is_none() {
+        if self.scene_here().is_none() {
             return;
         }
         let stem = self.path.as_ref().and_then(|p| p.file_stem()).map_or("Scene".to_owned(), |s| format!("{} scene", s.to_string_lossy()));
@@ -429,12 +657,12 @@ impl App {
     }
 
     pub fn save_scene_picture_to(&mut self, path: std::path::PathBuf) {
-        let Some(svg) = self.backdrop.current.as_ref().map(|s| s.svg.clone()) else { return };
+        let Some(svg) = self.scene_here().and_then(|s| s.svg()).map(str::to_owned) else { return };
         let is_svg = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg"));
         let written = if is_svg {
             std::fs::write(&path, svg.as_bytes()).map_err(|e| e.to_string())
         } else {
-            rasterize(&svg).and_then(|image| {
+            rasterize(&svg, RENDER_WIDTH).and_then(|image| {
                 let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
                 image::save_buffer(&path, &rgba, image.size[0] as u32, image.size[1] as u32, image::ColorType::Rgba8).map_err(|e| e.to_string())
             })
@@ -460,7 +688,7 @@ impl App {
             .resizable(true)
             .collapsible(false)
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new("What should Claude paint behind the page?").color(TEXT_DIM));
+                ui.label(egui::RichText::new("What should Claude paint behind this part of the story?").color(TEXT_DIM));
                 let field = egui::TextEdit::multiline(&mut b.description)
                     .hint_text("A rural village in a valley between the mountains and the sea, at dusk\u{2026}")
                     .desired_rows(5)
@@ -473,9 +701,9 @@ impl App {
                     draw = true;
                 }
                 ui.add_space(4.0);
-                let label = if b.current.is_some() { "Redraw" } else { "Draw" };
                 let can = !b.description.trim().is_empty();
-                draw |= ui.add_enabled(can, egui::Button::new(label)).on_hover_text("Have Claude paint this scene (Ctrl+Enter)").clicked();
+                let tip = "Have Claude paint this scene, from the caret's paragraph on (Ctrl+Enter)";
+                draw |= ui.add_enabled(can, egui::Button::new("Draw")).on_hover_text(tip).clicked();
             });
         if !open || draw {
             b.panel = false;
@@ -486,22 +714,145 @@ impl App {
         }
     }
 
-    /// The scene behind a page at `rect` (on screen through `map`), faded in, at `shade` and `alpha`.
-    pub fn backdrop_shapes(&self, ctx: &egui::Context, rect: Rect, map: &dyn Fn(Pos2) -> Pos2, shade: f32, alpha: f32) -> Vec<Shape> {
+    /// The list of scenes, in story order: each to go to, pin at the caret, step through its
+    /// versions, show or hide, or delete.
+    pub fn scene_list(&mut self, ctx: &egui::Context) {
+        if !self.backdrop.list {
+            return;
+        }
+        enum Do {
+            GoTo(usize),
+            PinHere(u64),
+            Step(u64, isize),
+            Hidden(u64, bool),
+            Delete(u64),
+        }
+        let mut action = None;
+        let mut open = true;
+        let mut scenes: Vec<&Scene> = self.doc.scenes.iter().filter(|s| !s.versions.is_empty()).collect();
+        scenes.sort_by_key(|s| (s.at, s.id));
+        let here = self.scene_here().map(|s| s.id);
+        egui::Window::new("Scenes")
+            .id(Id::new("scene_list"))
+            .open(&mut open)
+            .default_width(380.0)
+            .default_height(480.0)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
+                    for s in &scenes {
+                        let key = (s.id, s.shown);
+                        ui.horizontal(|ui| {
+                            let size = egui::vec2(THUMB_WIDTH * 0.6, THUMB_WIDTH * 0.6 * 1.414);
+                            match self.backdrop.thumbs.get(&key) {
+                                Some(t) => {
+                                    let tint = if s.hidden { Color32::from_white_alpha(90) } else { Color32::WHITE };
+                                    ui.add(egui::Image::new((t.id(), size)).tint(tint).bg_fill(Color32::WHITE));
+                                }
+                                None => {
+                                    let (r, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                                    ui.painter().rect_filled(r, 2.0, Color32::from_gray(235));
+                                }
+                            }
+                            ui.vertical(|ui| {
+                                let page = self.doc.page_of(s.at) + 1;
+                                let mark = if here == Some(s.id) { "  \u{b7} shown now" } else { "" };
+                                ui.label(egui::RichText::new(format!("Page {page}{mark}")).size(12.0).color(TEXT_DIM));
+                                ui.label(self.scene_snippet(s.at)).on_hover_text(&s.subject);
+                                ui.horizontal(|ui| {
+                                    if ui.small_button("Go to").on_hover_text("Turn to its place in the story").clicked() {
+                                        action = Some(Do::GoTo(s.at));
+                                    }
+                                    if ui.small_button("Pin here").on_hover_text("Show it from the caret's paragraph on").clicked() {
+                                        action = Some(Do::PinHere(s.id));
+                                    }
+                                    if s.versions.len() > 1 {
+                                        if ui.add_enabled(s.shown > 0, egui::Button::new("\u{2039}").small()).clicked() {
+                                            action = Some(Do::Step(s.id, -1));
+                                        }
+                                        ui.label(format!("{}/{}", s.shown + 1, s.versions.len()));
+                                        if ui.add_enabled(s.shown + 1 < s.versions.len(), egui::Button::new("\u{203a}").small()).clicked() {
+                                            action = Some(Do::Step(s.id, 1));
+                                        }
+                                    }
+                                    let mut shows = !s.hidden;
+                                    if ui.checkbox(&mut shows, "Show").changed() {
+                                        action = Some(Do::Hidden(s.id, !shows));
+                                    }
+                                    if ui.small_button("Delete").on_hover_text("Delete this scene and all its versions").clicked() {
+                                        action = Some(Do::Delete(s.id));
+                                    }
+                                });
+                            });
+                        });
+                        ui.separator();
+                    }
+                });
+            });
+        self.backdrop.list = open;
+        let caret_para = self.doc.para_start(self.caret).0;
+        match action {
+            Some(Do::GoTo(at)) => self.set_caret(ctx, at, false),
+            Some(Do::PinHere(id)) => {
+                // Another scene pinned to that paragraph already gives way.
+                self.doc.scenes.retain(|s| s.id == id || s.at != caret_para);
+                if let Some(s) = self.doc.scene_mut(id) {
+                    s.at = caret_para;
+                }
+            }
+            Some(Do::Step(id, by)) => {
+                if let Some(s) = self.doc.scene_mut(id) {
+                    s.shown = s.shown.saturating_add_signed(by).min(s.versions.len() - 1);
+                }
+            }
+            Some(Do::Hidden(id, hidden)) => {
+                if let Some(s) = self.doc.scene_mut(id) {
+                    s.hidden = hidden;
+                }
+            }
+            Some(Do::Delete(id)) => self.doc.scenes.retain(|s| s.id != id),
+            None => {}
+        }
+    }
+
+    /// The first words of the paragraph a scene is pinned to.
+    fn scene_snippet(&self, at: usize) -> String {
+        let text: String = self.selected_passage(at, self.doc.total_chars()).lines().find(|l| !l.trim().is_empty()).unwrap_or("").to_owned();
+        let mut words = String::new();
+        for w in text.split_whitespace() {
+            if words.len() + w.len() > 60 {
+                words.push('\u{2026}');
+                break;
+            }
+            if !words.is_empty() {
+                words.push(' ');
+            }
+            words.push_str(w);
+        }
+        if words.is_empty() { "(empty)".into() } else { words }
+    }
+
+    /// The scene behind page `i` at `rect` (on screen through `map`), at `shade` and `alpha`. On
+    /// the page shown, a new drawing fades in over the one before.
+    pub fn backdrop_shapes(&self, ctx: &egui::Context, i: usize, rect: Rect, map: &dyn Fn(Pos2) -> Pos2, shade: f32, alpha: f32) -> Vec<Shape> {
         let b = &self.backdrop;
-        let Some(current) = b.current.as_ref().filter(|_| b.visible) else { return Vec::new() };
-        let t = ((ctx.input(|i| i.time) - current.since) / FADE).clamp(0.0, 1.0) as f32;
-        let t = t * t * (3.0 - 2.0 * t);
+        if !b.visible {
+            return Vec::new();
+        }
         let tint = |a: f32| {
             let v = (255.0 * shade).clamp(0.0, 255.0) as u8;
             Color32::from_rgb(v, v, v).gamma_multiply(a * alpha * OPACITY)
         };
-        let mut out = Vec::new();
-        if let Some(prev) = &b.previous {
-            out.push(Shape::mesh(strip_mesh(&prev.texture, rect, tint(1.0 - t), map)));
+        let mesh = |key: Option<DrawingKey>, a: f32| key.and_then(|k| b.textures.get(&k)).map(|t| Shape::mesh(strip_mesh(t, rect, tint(a), map)));
+        match b.on_target {
+            Some((page, shown)) if page == i => {
+                let Some((from, since)) = b.fade else { return mesh(shown, 1.0).into_iter().collect() };
+                let t = ((ctx.input(|inp| inp.time) - since) / FADE).clamp(0.0, 1.0) as f32;
+                let t = t * t * (3.0 - 2.0 * t);
+                mesh(from, 1.0 - t).into_iter().chain(mesh(shown, t)).collect()
+            }
+            _ => mesh(self.doc.page_scene_key(i), 1.0).into_iter().collect(),
         }
-        out.push(Shape::mesh(strip_mesh(&current.texture, rect, tint(t), map)));
-        out
     }
 }
 
@@ -523,7 +874,7 @@ mod tests {
         let reply = "```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 60 85\"><circle cx=\"30\" cy=\"40\" r=\"20\" fill=\"#36c\"/></svg>\n```";
         let svg = extract_svg(reply).unwrap();
         assert!(svg.starts_with("<svg") && svg.ends_with("</svg>"));
-        let image = rasterize(svg).unwrap();
+        let image = rasterize(svg, RENDER_WIDTH).unwrap();
         assert_eq!(image.size, [1000, 1417]);
         let middle = image.pixels[708 * 1000 + 500];
         assert!(middle.b() > 150 && middle.a() == 255, "the circle is drawn: {middle:?}");

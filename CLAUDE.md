@@ -61,7 +61,7 @@ Full list with reasons and tests in `ARCHITECTURE.md` §4.
    `set_caret(spans[i].start)`. Contents pages hold no text.
 6. **Derived things must not depend on their own results** (the contents' page count comes from
    the titles only).
-7. **Notes are char positions outside the text.** Anything that rewrites text without
+7. **Notes and scenes are char positions outside the text.** Anything that rewrites text without
    `Doc::apply` must move them.
 8. **Files hold only stored state.** New fields get `#[serde(default)]`; old formats are converted
    in `DocFile::into_doc`.

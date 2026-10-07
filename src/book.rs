@@ -117,7 +117,7 @@ impl App {
         painter.add(Shape::mesh(mesh));
 
         if front {
-            painter.extend(self.backdrop_shapes(ui.ctx(), rect, &on_page, shade, 1.0));
+            painter.extend(self.backdrop_shapes(ui.ctx(), i, rect, &on_page, shade, 1.0));
             // Text: tessellate the galleys, then squash/lift the vertices with the paper.
             let ctx = ui.ctx();
             let page = self.page_layout(ctx, i, sc);

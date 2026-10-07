@@ -527,7 +527,7 @@ impl App {
                 f = ((p.x - track.left() - thumb_w / 2.0) / travel).clamp(0.0, 1.0);
                 self.scrub_to = Some(f * (n - 1) as f32);
                 if self.appearance == Appearance::Book {
-                    // In a book the pages turn along with the thumb, and the caret goes along.
+                    // In a book the pages turn along with the thumb.
                     self.pos = f * (n - 1) as f32;
                     let ctx = ui.ctx().clone();
                     self.turn_to(&ctx, (self.pos.round() as usize).min(self.last()), false);

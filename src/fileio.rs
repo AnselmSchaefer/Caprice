@@ -14,7 +14,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::App;
-use crate::model::{Doc, Flow, ImageData, Note, PAGE_BREAK, PageSetup, ParaAttrs, Style};
+use crate::model::{Doc, Flow, ImageData, Note, PAGE_BREAK, PageSetup, ParaAttrs, Scene, Style};
 
 #[derive(Serialize, Deserialize)]
 struct Run {
@@ -63,6 +63,19 @@ fn is_zero_u8(n: &u8) -> bool {
     *n == 0
 }
 
+/// A scene painted for the story, pinned to char `at`.
+#[derive(Serialize, Deserialize)]
+struct SceneEntry {
+    at: usize,
+    versions: Vec<String>,
+    #[serde(default)]
+    shown: usize,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    subject: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hidden: bool,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct DocFile {
     version: u32,
@@ -77,9 +90,11 @@ pub struct DocFile {
     /// Version 1 only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pages: Vec<Vec<Run>>,
-    /// The picture behind the pages and its description.
+    /// The scenes' description and whether they show; in older files also the one scene there was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<crate::backdrop::SceneFile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    scenes: Vec<SceneEntry>,
 }
 
 fn to_runs(text: &str, styles: &[Style]) -> Vec<Run> {
@@ -118,6 +133,14 @@ impl DocFile {
             .filter(|i| used.contains(&i.id))
             .map(|i| ImageFile { id: i.id, format: i.format.clone(), data: BASE64.encode(&i.bytes), width_pt: i.width_pt, rotation: i.rotation })
             .collect();
+        // A scene whose first picture is still being painted has nothing to keep yet.
+        let mut scenes: Vec<SceneEntry> = doc
+            .scenes
+            .iter()
+            .filter(|s| !s.versions.is_empty())
+            .map(|s| SceneEntry { at: s.at, versions: s.versions.clone(), shown: s.shown, subject: s.subject.clone(), hidden: s.hidden })
+            .collect();
+        scenes.sort_by_key(|s| s.at);
         Self {
             version: 2,
             setup: doc.setup.clone(),
@@ -126,6 +149,7 @@ impl DocFile {
             images,
             pages: Vec::new(),
             scene: None,
+            scenes,
         }
     }
 
@@ -153,8 +177,15 @@ impl DocFile {
             doc.images.push(ImageData { id: img.id, format, bytes, px, width_pt: img.width_pt, rotation: img.rotation % 4 });
         }
         let total = doc.total_chars();
+        let shift = |c: usize| c - removed.iter().filter(|&&r| r < c).count();
+        for s in self.scenes.into_iter().filter(|s| !s.versions.is_empty()) {
+            let id = doc.next_scene_id;
+            doc.next_scene_id += 1;
+            let shown = s.shown.min(s.versions.len() - 1);
+            let at = shift(s.at).min(total - 1);
+            doc.scenes.push(Scene { id, at, versions: s.versions, shown, subject: s.subject, hidden: s.hidden });
+        }
         for n in self.notes {
-            let shift = |c: usize| c - removed.iter().filter(|&&r| r < c).count();
             let (start, end) = (shift(n.start).min(total), shift(n.end).min(total));
             let id = doc.next_note_id;
             doc.next_note_id += 1;
@@ -413,10 +444,8 @@ impl App {
                 self.set_caret(ctx, 0, false);
                 self.fit = true;
                 self.path = Some(path);
-                self.status = match self.open_scene(ctx, scene) {
-                    Ok(()) => "- opened".into(),
-                    Err(e) => format!("- opened, but its scene could not be shown: {e}"),
-                };
+                self.open_scene(scene);
+                self.status = "- opened".into();
                 self.saved_hash = self.content_hash();
             }
             Err(e) => self.status = format!("- open failed: {e}"),
@@ -468,17 +497,19 @@ mod tests {
     }
 
     #[test]
-    fn files_with_the_old_contents_char_open_with_the_setting_and_post_its_in_place() {
+    fn files_with_the_old_contents_char_open_with_the_setting_and_post_its_and_scenes_in_place() {
         let st = Style::new("Foo");
         let mut doc = Doc::new();
         doc.flow.text = "\u{e000}\u{c}One\ntext\n".into();
         doc.flow.styles = vec![st; 11];
         doc.notes.push(Note { id: 1, start: 2, end: 5, text: "the title".into(), color: 0 });
+        doc.scenes.push(Scene { id: 1, at: 6, versions: vec!["<svg/>".into()], shown: 0, subject: String::new(), hidden: false });
         let json = serde_json::to_string(&DocFile::from_doc(&doc)).unwrap();
         let back = serde_json::from_str::<DocFile>(&json).unwrap().into_doc();
         assert_eq!(back.flow.text, "One\ntext\n");
         assert!(back.setup.contents);
         assert_eq!((back.notes[0].start, back.notes[0].end), (0, 3), "still on \"One\"");
+        assert_eq!(back.scenes[0].at, 4, "the scene still on \"text\"");
         // Saved again, the setting stays, and the char does not come back.
         let json = serde_json::to_string(&DocFile::from_doc(&back)).unwrap();
         let again = serde_json::from_str::<DocFile>(&json).unwrap().into_doc();

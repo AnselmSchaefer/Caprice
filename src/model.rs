@@ -256,6 +256,29 @@ pub struct Note {
     pub color: usize,
 }
 
+/// A scene Claude painted, shown faintly behind the pages from its place in the story on, until
+/// the next scene. Like a note, it is a position outside the text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Scene {
+    pub id: u64,
+    /// The char it is pinned to: the start of the paragraph it was painted for.
+    pub at: usize,
+    /// Every drawing (SVG) painted for this place, oldest first. Repainting adds one.
+    pub versions: Vec<String>,
+    /// Which of them shows.
+    pub shown: usize,
+    /// What it was painted from: the description, or the passage.
+    pub subject: String,
+    pub hidden: bool,
+}
+
+impl Scene {
+    /// The drawing that shows, or none while the first is still being painted.
+    pub fn svg(&self) -> Option<&str> {
+        self.versions.get(self.shown).map(String::as_str)
+    }
+}
+
 pub const NOTE_COLORS: [(u8, u8, u8); 5] =
     [(255, 214, 90), (255, 150, 185), (130, 215, 140), (120, 195, 255), (255, 175, 100)];
 
@@ -275,6 +298,9 @@ pub struct Doc {
     pub next_note_id: u64,
     pub images: Vec<ImageData>,
     pub history: crate::edit::History,
+    /// Scenes painted for the story, in no particular order.
+    pub scenes: Vec<Scene>,
+    pub next_scene_id: u64,
 }
 
 impl Doc {
@@ -289,6 +315,8 @@ impl Doc {
             next_note_id: 1,
             images: Vec::new(),
             history: Default::default(),
+            scenes: Vec::new(),
+            next_scene_id: 1,
         }
     }
 

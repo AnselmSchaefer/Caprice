@@ -173,6 +173,7 @@ impl Doc {
                 self.flow.text.replace_range(b..b + old.text.len(), &new.text);
                 self.flow.styles.splice(*at..*at + old.chars(), new.styles.iter().cloned());
                 rebase_notes(&mut self.notes, *at, old.chars(), new.chars());
+                rebase_scenes(&mut self.scenes, *at, old.chars(), new.chars());
             }
             Edit::Restyle { at, new, .. } => {
                 self.flow.styles[*at..*at + new.len()].clone_from_slice(new);
@@ -190,6 +191,15 @@ fn rebase_notes(notes: &mut [Note], at: usize, a: usize, b: usize) {
     for n in notes {
         let (s, e) = (start(n.start), end(n.end));
         (n.start, n.end) = if s > e { (e, e) } else { (s, e) };
+    }
+}
+
+/// Move scene pins with the same replacement. Text typed right at a pin goes after it, so a
+/// scene pinned to a paragraph's start still covers what is typed there; a pin whose text is
+/// deleted stays where the text was.
+fn rebase_scenes(scenes: &mut [crate::model::Scene], at: usize, a: usize, b: usize) {
+    for s in scenes {
+        s.at = if s.at <= at { s.at } else if s.at >= at + a { s.at + b - a } else { at };
     }
 }
 

@@ -14,7 +14,8 @@ A desktop word processor in Rust on egui/eframe 0.36. It shows one page at a tim
 the pages before and after it as piles, and turns pages with an animation ("Book": hinged like a
 book; "Paperstack": sliding into the pile). Post-its stick out of the page's edge. Chapters get
 titles, drop caps and contents pages. It saves `.caprice` (JSON) and exports `.docx`. Claude Code
-(the CLI) can review a passage drawn around with the pen or selected with the cursor, and paint a scene behind the pages.
+(the CLI) can review a passage drawn around with the pen or selected with the cursor, and paint scenes that show faintly behind the pages, each
+for its part of the story.
 
 ---
 
@@ -31,6 +32,7 @@ PageSetup (paper, margins,     ├─ Doc::chapters() ─▶ contents pages  │
 images (bytes, width,          └──────────────────────────▶ layout_page(i, zoom) ─▶ drawing
   rotation)                                                 (PageLayout: galleys,     (render, book,
 notes (char ranges + text)                                   hit-testing, caret)       editor, notes)
+scenes (a char + drawings)   ──scene_at(caret) / page_scene(i)──▶ the drawing behind a page
                              export::to_docx(&Doc) ─▶ .docx (Word lays it out again itself)
 ```
 
@@ -38,7 +40,7 @@ notes (char ranges + text)                                   hit-testing, caret)
   image id, paragraph attributes). Paragraph formatting sits on the paragraph's **terminator** char.
 - **Pages are not stored.** `Doc::spans` is a cache: per page, a char/byte range of the flow, whether
   a hard break ends it, and, for a contents page, which part of the contents it shows.
-- **Notes** are char ranges kept beside the text, not in it.
+- **Notes** are char ranges kept beside the text, not in it; **scenes** are chars likewise.
 - **Everything shown is recomputed** from these each frame (egui is immediate mode). Caches that do
   exist key on `Doc::version` (search matches, the scene's "read at").
 
@@ -66,7 +68,7 @@ notes (char ranges + text)                                   hit-testing, caret)
 | `fileio.rs` | `.caprice` format (`DocFile`), open/save/export commands, unsaved-changes detection |
 | `export.rs` | Hand-written Office Open XML for `.docx` |
 | `claude.rs` | Pen loop or cursor selection → passage → `claude -p` → streamed answer panel |
-| `backdrop.rs` | Scenes Claude paints (SVG) faintly behind the pages; not part of the document |
+| `backdrop.rs` | Scenes Claude paints (SVG), pinned to the story, faintly behind the pages; the Scene menu and list |
 | `fonts.rs`, `theme.rs` | Installed fonts loaded on demand; colours and egui visuals |
 
 ---
@@ -138,10 +140,13 @@ none of it** (empty span at the story's start, `Span::contents = Some(part)`). `
 returns them, so the caret is always in the story.
 
 - **To show a page, use `turn_to(i)`** (or `go_to_page`), never `set_caret(spans[i].start)`: the
-  start of a contents page is on another page. Swipes, the scrollbar, Page Up/Down and contents
-  links all use `turn_to`.
-- **`set_caret` shows the caret's page.** The shown page (`target`) differs from the caret's page
-  only while a contents page is shown.
+  start of a contents page is on another page. Swipes, the scrollbar and Page Up/Down use
+  `turn_to`; a contents link moves the caret to its chapter's page (a story page), like a link.
+- **Turning pages leaves the caret where it is**, as scrolling does in other word processors: the
+  shown page (`target`) and the caret's page often differ. Only Shift+Page Down/Up (extending the
+  selection) takes the caret along. Anything that acts at the caret must not assume it is on the
+  page shown; what shows on the page shown without the caret (the scene, R14) comes from the page.
+- **`set_caret` shows the caret's page**, so typing, arrow keys and edits bring it back.
 - **A click only places the caret if the spot it hits is on the clicked page** (`editor_surface`).
 - Anything per page that uses `spans[i].start` (selection, notes, the pen) must cope with a page
   that holds no text.
@@ -157,6 +162,7 @@ returns them, so the caret is always in the story.
   `the_scrollbar_reaches_every_page_of_long_contents`,
   `clicks_on_a_later_page_of_the_contents_stay_there_or_follow_a_line`,
   `the_caret_stays_in_the_story_around_long_contents`,
+  `turning_pages_leaves_the_caret_where_it_is_until_typing_or_a_click`,
   `an_empty_page_between_two_breaks_exists_and_can_hold_the_caret`,
   `dragging_a_selection_past_the_bottom_of_the_page_goes_on_to_the_next_pages`,
   `dragging_a_selection_past_the_top_of_the_page_goes_back_to_the_pages_before`,
@@ -174,15 +180,19 @@ paginating).
 - Tests: `long_contents_go_on_over_as_many_pages_as_they_take`,
   `the_contents_list_each_chapter_and_lead_to_its_page`.
 
-### R7 — Notes are char positions outside the text
+### R7 — Notes and scenes are char positions outside the text
 
-- `rebase_notes` moves them with every `Edit`. A rewrite of the text that bypasses `Doc::apply`
+- `rebase_notes` and `rebase_scenes` move them with every `Edit`. A scene pin is a point: text
+  typed right at it goes after it (it still starts its paragraph), and deleted around, it stays
+  where the text was. A rewrite of the text that bypasses `Doc::apply`
   (file migration) must move them too (`take_out_contents_chars` returns what it removed, so
   `into_doc` can).
-- Notes never change where pages break.
+- Neither changes where pages break.
+- **Anything new pinned to the text** goes the same way: moved in `apply_raw`, and in `into_doc`.
 - Tests: `notes_follow_edits`, `replacing_across_a_notes_edges`,
   `deleting_a_notes_text_leaves_a_point_note`, `post_its_do_not_change_where_pages_break`,
-  `files_with_the_old_contents_char_open_with_the_setting_and_post_its_in_place`.
+  `scenes_stay_with_their_paragraph_through_edits_and_saving`,
+  `files_with_the_old_contents_char_open_with_the_setting_and_post_its_and_scenes_in_place`.
 
 ### R8 — Special characters in the flow
 
@@ -204,11 +214,15 @@ paginating).
 - **New fields get `#[serde(default)]`** (`PageSetup` has it on the whole struct), so older files
   load and older versions of Caprice ignore what they don't know.
 - **Never save derived data** (pages, contents, drop caps).
-- Converting old formats happens in `DocFile::into_doc`, and must move notes (R7).
+- Converting old formats happens in `DocFile::into_doc`, and must move notes and scenes (R7).
+  The one exception is the scene of older files (`DocFile::scene.svg`), which needs the app: it
+  becomes a scene pinned at 0 in `App::open_scene`. `scene` now only holds the description and
+  whether pictures show.
 - Unsaved changes = a hash of the serialized `DocFile`, so anything saved counts automatically.
 - Tests: `roundtrip_keeps_text_styles_breaks_and_setup`, `version_1_files_still_load_as_separate_pages`,
   `chapter_titles_are_saved_and_older_files_have_none`,
-  `the_contents_setting_is_saved_opened_and_exported_through_the_app`.
+  `the_contents_setting_is_saved_opened_and_exported_through_the_app`,
+  `an_older_files_one_scene_opens_pinned_to_the_start_of_the_story`.
 
 ### R10 — Word export maps the model, not the pixels
 
@@ -219,6 +233,7 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
 - **A new formatting feature needs its Word mapping**, or a decision that it has none, in the same
   change. Check the output with LibreOffice (`CAPRICE_SAMPLE_OUT=out.docx cargo test sample_docx`,
   then `soffice --headless --convert-to pdf out.docx`). Not yet checked in Microsoft Word itself.
+- Scenes are not exported (decided: they are a writing aid, too faint to print).
 - Tests: in `export.rs`, plus `notes_become_comments_over_the_same_text`.
 
 ### R11 — egui workarounds depend on egui internals
@@ -255,6 +270,35 @@ Claude menu:
   `circling_with_the_pen_takes_drags_away_from_the_cursor`,
   `asking_claude_by_cursor_offers_the_commands_for_a_selection_over_two_pages`.
 
+### R14 — Scenes: one per paragraph, each covering the story up to the next; the caret's shows
+
+`Doc::scenes` are kept with the story (saved, R9), each pinned to the start of the paragraph it
+was painted for (`start_scene`: the selection's or caret's paragraph, or the passage's).
+
+- **A scene covers the story from its pin up to the next scene's** (`Doc::scene_at(c)`: the last
+  shown, painted scene pinned at or before `c`).
+- **The page shown follows the caret** (`App::scene_here`): moving it into another scene's part
+  fades to that scene, on the same page. Every other page (piles, a page turning, a contents page
+  with the caret elsewhere) shows the scene at its top (`Doc::page_scene(i)`), which is what the
+  page shows when turned to with the caret at its start. Every look (`render.rs`, `book.rs`, the
+  settled page in `main.rs`) passes its page to `backdrop_shapes`.
+- **Painting a paragraph again adds a version** to its scene (`pin_painting` finds it by `at`)
+  rather than another scene; `shown` picks one. Moving a scene onto a paragraph with one already
+  (Pin here) takes the other's place.
+- **A scene is made when painting starts**, with no versions, so its pin follows edits made while
+  Claude paints. It is not saved (`from_doc` skips it), never shows, and is dropped once its
+  painting ends without a picture (`drop_unpainted_scenes`).
+- **Drawings are rendered on threads, when needed:** those of pages within `NEAR` of the page
+  shown, and of scenes that begin on them (for the caret to reach), and small ones while the list
+  is open. Textures beyond those are let go. Turned to, a page first shows its top's scene, as it
+  did while turning, then fades to the caret's if that differs; a change on the page shown
+  (caret, painted, another version, hidden) fades.
+- Moving, hiding, deleting and stepping versions change `Doc::scenes` directly: like page
+  settings, they are not undoable (R1) and do not paginate.
+- Tests: `the_picture_follows_the_caret_from_one_part_of_the_story_to_the_next`,
+  `painting_a_paragraph_again_adds_a_version_and_keeps_the_others`,
+  `a_scene_still_being_painted_is_not_saved_and_goes_if_stopped`, and those of R7 and R9.
+
 ---
 
 ## 5. Checklists for common changes
@@ -273,7 +317,10 @@ hit-testing and caret (`PageLayout`).
 **Page navigation or a new way to move between pages:** use `turn_to` / `go_to_page` (R5); test it
 on the contents pages with `Harness::long_contents`.
 
-**The file format:** `serde(default)`, a migration in `into_doc` that moves notes, an old-file test.
+**The file format:** `serde(default)`, a migration in `into_doc` that moves notes and scenes, an old-file test.
+
+**Something new pinned to the text** (like notes and scenes): move it in `apply_raw` and in
+`into_doc` (R7), save it (R9), decide its Word mapping (R10).
 
 ---
 
@@ -298,5 +345,14 @@ on the contents pages with `Harness::long_contents`.
   ("a real page in the story"). With contents running over several pages, all of them shared that
   one char and every page/caret mapping needed special cases. Now `PageSetup::contents` and empty
   `Span`s before the story (R5, R6).
+- **2026-10-07 — Scenes are part of the story, not one picture.** A new scene used to replace the
+  one before, and it was saved beside the document. Now every scene is kept, pinned to the
+  paragraph it was painted for like a note, and covers the story up to the next; the page
+  shown shows the caret's (R14). Pinned to a char,
+  not a page (pages reflow) or a chapter (too coarse, and not every story has them).
+- **2026-10-07 — Turning pages leaves the caret.** Swipes, the scrollbar and Page Up/Down used to
+  put the caret at the turned-to page's start. With scenes following the caret (R14), that changed
+  the picture on every page turn, and it lost the writer's place. Now only a click, typing or
+  moving the caret moves it (R5).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

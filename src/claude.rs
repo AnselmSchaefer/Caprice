@@ -440,7 +440,7 @@ impl App {
     fn lasso_menu(&mut self, ctx: &egui::Context) {
         let Some(l) = &mut self.lasso else { return };
         let Some((a, b, at)) = l.caught else { return };
-        let mut chosen = None;
+        let (mut chosen, mut paint) = (None, false);
         let area = egui::Area::new(Id::new("lasso_menu")).order(egui::Order::Foreground).fixed_pos(at + vec2(10.0, 10.0)).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(230.0);
@@ -453,6 +453,10 @@ impl App {
                     if ui.add(egui::Button::new(label).frame(false).min_size(vec2(220.0, 24.0))).clicked() {
                         chosen = Some(c);
                     }
+                }
+                let paint_tip = "Claude paints the scene this passage describes, behind its part of the story";
+                if ui.add(egui::Button::new("Paint this scene").frame(false).min_size(vec2(220.0, 24.0))).on_hover_text(paint_tip).clicked() {
+                    paint = true;
                 }
                 ui.separator();
                 let field = ui.add(egui::TextEdit::singleline(&mut l.question).hint_text("Ask something else…").desired_width(220.0));
@@ -471,6 +475,9 @@ impl App {
         if let Some(command) = chosen {
             self.lasso = None;
             self.ask_claude(ctx, a, b, command, at);
+        } else if paint {
+            self.lasso = None;
+            self.paint_passage(ctx, a, b);
         } else if dismissed {
             self.lasso = None;
         }

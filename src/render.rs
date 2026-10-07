@@ -151,7 +151,7 @@ impl App {
 
     pub fn static_page(&self, ui: &egui::Ui, rect: Rect, i: usize) {
         Self::paper(ui.painter(), rect);
-        ui.painter().extend(self.backdrop_shapes(ui.ctx(), rect, &|p| p, 1.0, 1.0));
+        ui.painter().extend(self.backdrop_shapes(ui.ctx(), i, rect, &|p| p, 1.0, 1.0));
         let sc = self.scale_of(rect);
         let layout = self.page_layout(ui.ctx(), i, sc);
         self.paint_layout(ui.painter(), &layout, rect.min + self.doc.setup.margin_origin() * sc);
@@ -325,7 +325,7 @@ impl App {
         Self::paper(ui.painter(), sheet);
         let sc = self.scale_of(sheet);
         if text {
-            ui.painter().extend(self.backdrop_shapes(ctx, sheet, &|p| p, 1.0, 1.0));
+            ui.painter().extend(self.backdrop_shapes(ctx, i, sheet, &|p| p, 1.0, 1.0));
             let layout = self.page_layout(ctx, i, sc);
             self.paint_layout(ui.painter(), &layout, sheet.min + self.doc.setup.margin_origin() * sc);
             self.draw_footer(ui, sheet, i);

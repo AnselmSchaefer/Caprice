@@ -73,14 +73,16 @@ impl App {
         self.doc.flow.text[ba..bb].replace(PAGE_BREAK, "\n")
     }
 
-    /// Flip to page `to`, the caret going to its start. The contents' pages hold no text, so on
-    /// them the caret stays where it is in the story.
+    /// Flip to page `to`. The caret stays where it is in the text, as when scrolling in other word
+    /// processors: typing or moving it brings its page back, and a click puts it on this one. Only
+    /// extending the selection (Shift+Page Down) takes it along, to the page's start, if the page
+    /// holds text.
     pub fn turn_to(&mut self, ctx: &egui::Context, to: usize, extend: bool) {
-        if self.doc.spans[to].contents.is_some() {
+        if extend && self.doc.spans[to].contents.is_none() {
+            self.set_caret(ctx, self.doc.spans[to].start, true);
+        } else {
             self.target = to;
             ctx.request_repaint();
-        } else {
-            self.set_caret(ctx, self.doc.spans[to].start, extend);
         }
     }
 
@@ -841,8 +843,8 @@ impl App {
                 self.pic_drag = None;
                 self.sel_drag = None;
                 if let Some(page) = layout.link_at(p - content.min).filter(|_| !shift) {
-                    // A line of the contents leads to its chapter.
-                    self.go_to_page(&ctx, page);
+                    // A line of the contents leads to its chapter, the caret too, like a link.
+                    self.set_caret(&ctx, self.doc.spans[page].start, false);
                 } else if let Some(pic) = layout.image_at(p - content.min) {
                     // Clicking a picture selects it; dragging it moves it.
                     let (s, e) = (start + pic.start, start + pic.end);
