@@ -24,6 +24,23 @@ fn char_class(c: char) -> u8 {
     }
 }
 
+/// How long a dragged selection held past the page's edge waits before turning another page.
+const EDGE_REPEAT: f64 = 0.6;
+/// How far past the writing area (in page points) a dragged selection must go to turn a page, so
+/// that dragging to the last line does not turn it by overshooting a little.
+const EDGE_PAST: f32 = 48.0;
+
+/// A selection being dragged out with the mouse. Taken past the top or bottom of the writing
+/// area, it turns to the page before or after: at once the first time, then again each time it
+/// has been held there a while on the new page.
+#[derive(Default)]
+pub struct SelDrag {
+    /// When the pointer went past the edge of the page shown now.
+    beyond_since: Option<f64>,
+    /// Whether it has turned a page since it last was inside the writing area.
+    turned: bool,
+}
+
 /// What was last copied, with its formatting. The system clipboard only holds plain text, so
 /// pasting that same text back in brings the formatting (and any pictures) along.
 pub struct Clip {
@@ -789,11 +806,18 @@ impl App {
         // Where a point puts the caret, if on this page: the contents' later pages have no text
         // of their own, and their spots before and after the contents are on other pages.
         let at = |doc: &crate::model::Doc, p: egui::Pos2| Some(start + layout.hit(p - content.min)).filter(|&c| doc.page_of(c) == i);
-        let (pressed, secondary, released, shift, pos) = ctx.input(|inp| {
+        // A drag past the last line ends the selection at the page's end, not at the next page's start.
+        let within = |doc: &crate::model::Doc, p: egui::Pos2| {
+            let c = start + layout.hit(p - content.min);
+            let c = if c > start && doc.page_of(c) != i { c - 1 } else { c };
+            Some(c).filter(|&c| doc.page_of(c) == i)
+        };
+        let (pressed, secondary, released, down, shift, pos) = ctx.input(|inp| {
             (
                 inp.pointer.primary_pressed(),
                 inp.pointer.secondary_pressed(),
                 inp.pointer.primary_released(),
+                inp.pointer.primary_down(),
                 inp.modifiers.shift,
                 inp.pointer.latest_pos(),
             )
@@ -815,6 +839,7 @@ impl App {
         if pressed && resp.contains_pointer() {
             if let Some(p) = resp.interact_pointer_pos().or(pos) {
                 self.pic_drag = None;
+                self.sel_drag = None;
                 if let Some(page) = layout.link_at(p - content.min).filter(|_| !shift) {
                     // A line of the contents leads to its chapter.
                     self.go_to_page(&ctx, page);
@@ -824,22 +849,33 @@ impl App {
                     self.anchor = s;
                     self.set_caret(&ctx, e, true);
                     self.pic_drag = Some(PicDrag { from: s, press: p, drop: None });
-                } else if let Some(c) = at(&self.doc, p) {
-                    self.set_caret(&ctx, c, shift);
+                } else {
+                    if let Some(c) = at(&self.doc, p) {
+                        self.set_caret(&ctx, c, shift);
+                    }
+                    self.sel_drag = Some(SelDrag::default());
                 }
                 self.want_x = None;
             }
-        } else if resp.dragged() {
-            if let Some(p) = resp.interact_pointer_pos() {
+        } else if resp.dragged() || (down && self.sel_drag.is_some()) {
+            // The drag goes on after a page turned under it, where egui may have lost it.
+            if let Some(p) = resp.interact_pointer_pos().or(pos) {
                 if let Some(d) = &mut self.pic_drag {
                     if (p - d.press).length() > 5.0 {
                         d.drop = layout.drop_boundary(p.y - content.min.y).map(|(local, y)| (start + local, y));
                         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grabbing);
                     }
-                } else if let Some(c) = at(&self.doc, p) {
-                    self.set_caret(&ctx, c, true);
+                } else if self.sel_drag.is_some() && !self.drag_past_edge(&ctx, i, content, sc, p) {
+                    if let Some(c) = within(&self.doc, p) {
+                        self.set_caret(&ctx, c, true);
+                    }
                 }
             }
+        }
+        // Asking Claude by cursor, letting go of a selection offers the commands for it.
+        let offer = released && self.sel_drag.is_some() && self.pen && self.picking == crate::claude::Picking::Cursor;
+        if !down {
+            self.sel_drag = None;
         }
         if released {
             if let Some(d) = self.pic_drag.take() {
@@ -862,6 +898,41 @@ impl App {
                 self.set_caret(&ctx, (end + 1).min(self.max_caret()), true);
             }
         }
+        if let (true, true, Some(p)) = (offer, self.has_selection(), pos) {
+            self.offer_commands(p);
+        }
+    }
+
+    /// Turn to the page before or after `i` if a dragged selection is well past the top or bottom
+    /// of the writing area, the selection reaching onto it. Not onto the contents: they hold no text.
+    fn drag_past_edge(&mut self, ctx: &egui::Context, i: usize, content: Rect, sc: f32, p: egui::Pos2) -> bool {
+        if content.y_range().contains(p.y) {
+            if let Some(d) = &mut self.sel_drag {
+                *d = SelDrag::default();
+            }
+            return false;
+        }
+        let to = if p.y > content.bottom() + EDGE_PAST * sc {
+            Some(i + 1).filter(|&to| to <= self.last())
+        } else if p.y < content.top() - EDGE_PAST * sc {
+            i.checked_sub(1)
+        } else {
+            return false; // in the margin: the selection goes to the first or last line
+        };
+        let story = |j: usize| self.doc.spans[j].contents.is_none();
+        let Some(to) = to.filter(|&to| story(i) && story(to)) else { return false };
+        let Some(d) = &mut self.sel_drag else { return false };
+        let now = ctx.input(|inp| inp.time);
+        let since = *d.beyond_since.get_or_insert(now);
+        if d.turned && now - since < EDGE_REPEAT {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(EDGE_REPEAT - (now - since)));
+            return false;
+        }
+        *d = SelDrag { beyond_since: None, turned: true };
+        // Forwards, the caret goes to the next page's start; backwards, to the last spot of the page before.
+        let c = if to > i { self.doc.spans[to].start } else { self.doc.spans[i].start - 1 };
+        self.set_caret(ctx, c, true);
+        true
     }
 
     pub fn paint_layout(&self, painter: &egui::Painter, layout: &PageLayout, origin: egui::Pos2) {

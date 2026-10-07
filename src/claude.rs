@@ -1,5 +1,5 @@
 //! Asking Claude about a passage. With the pen on, drawing a loop around text selects it and
-//! opens a menu of commands (review, fix, grammar, summary, or a question of one's own). The answer
+//! opens a menu of commands; picking by cursor instead, letting go of a selection opens it (review, fix, grammar, summary, or a question of one's own). The answer
 //! streams into a floating panel, from where a corrected passage can be put in place of the old one.
 //!
 //! The request goes through the installed Claude Code CLI (`claude -p`) on a background thread.
@@ -63,6 +63,16 @@ impl Command {
     fn rewrites(&self) -> bool {
         matches!(self, Command::Fix | Command::Grammar)
     }
+}
+
+/// How passages are picked while asking Claude is on.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum Picking {
+    /// Drawing a loop around them with the pen. The page takes no other clicks.
+    #[default]
+    Circle,
+    /// Selecting them as always, with the cursor, which can go on over several pages.
+    Cursor,
 }
 
 /// The loop being drawn (or drawn) around text, in page points of page `page`.
@@ -313,12 +323,58 @@ impl App {
         self.lasso = None;
     }
 
+    /// Turn asking Claude on, picking passages by `picking`.
+    pub fn pick_by(&mut self, picking: Picking) {
+        (self.pen, self.picking) = (true, picking);
+        self.lasso = None;
+    }
+
+    /// The toolbar's Claude menu: ask by circling passages with the pen, or by selecting them.
+    pub fn claude_menu(&mut self, ui: &mut egui::Ui) {
+        let mut chosen = None;
+        let tip = "Ask Claude about a passage: circle it, or select it with the cursor (Ctrl+Shift+P, Esc to stop)";
+        egui::containers::menu::MenuButton::from_button(egui::Button::new("Claude").selected(self.pen)).ui(ui, |ui| {
+            ui.set_min_width(230.0);
+            let choices = [
+                (Some(Picking::Circle), "Circle text with the pen"),
+                (Some(Picking::Cursor), "Select text with the cursor"),
+                (None, "Off"),
+            ];
+            for (picking, label) in choices {
+                let on = if let Some(p) = picking { self.pen && self.picking == p } else { !self.pen };
+                if ui.selectable_label(on, label).clicked() {
+                    chosen = Some(picking);
+                    ui.close();
+                }
+            }
+        })
+        .0
+        .on_hover_text(tip);
+        match chosen {
+            Some(Some(picking)) => self.pick_by(picking),
+            Some(None) => (self.pen, self.lasso) = (false, None),
+            None => {}
+        }
+    }
+
+    /// Loops are drawn on the page, which then takes no clicks for the text.
+    pub fn circling(&self) -> bool {
+        self.pen && self.picking == Picking::Circle
+    }
+
+    /// Picking by cursor, the selection was let go of at `at`: offer the commands for it.
+    pub fn offer_commands(&mut self, at: Pos2) {
+        let (a, b) = self.selection();
+        let page = self.target;
+        self.lasso = Some(Lasso { page, points: Vec::new(), caught: Some((a, b, at)), question: String::new(), menu_shown: false });
+    }
+
     /// With the pen on, page `i` at `page_rect` takes drags as loops drawn around text.
     pub fn pen_surface(&mut self, ui: &mut egui::Ui, page_rect: Rect, i: usize) {
         if self.lasso.as_ref().is_some_and(|l| l.page != i) {
             self.lasso = None;
         }
-        if self.pen && !self.ctrl_down {
+        if self.circling() && !self.ctrl_down {
             let ctx = ui.ctx().clone();
             let sc = self.scale_of(page_rect);
             let resp = ui.interact(page_rect.expand(40.0), Id::new("pen"), Sense::drag());
@@ -369,7 +425,7 @@ impl App {
     }
 
     fn paint_lasso(&self, painter: &egui::Painter, page_rect: Rect) {
-        let Some(l) = &self.lasso else { return };
+        let Some(l) = self.lasso.as_ref().filter(|l| l.points.len() > 1) else { return }; // none by cursor
         let sc = self.scale_of(page_rect);
         let pts: Vec<Pos2> = l.points.iter().map(|&p| page_rect.min + p.to_vec2() * sc).collect();
         let stroke = Stroke::new(2.2, ACCENT.gamma_multiply(0.85));

@@ -147,11 +147,15 @@ pub struct App {
     /// The menu opened this very frame (so the click that opened it is not a click outside).
     pub pic_menu_fresh: bool,
     pub pic_drag: Option<images::PicDrag>,
+    /// A selection being dragged out with the mouse, which can carry on over other pages.
+    pub sel_drag: Option<editor::SelDrag>,
     pub resize: Option<images::ResizeDrag>,
     pub status_at: f64,
     pub title: String,
     /// The pen is on: dragging on the page draws a loop around text to ask Claude about.
     pub pen: bool,
+    /// How passages are picked with it on: circled with the pen, or selected with the cursor.
+    pub picking: claude::Picking,
     pub lasso: Option<claude::Lasso>,
     /// Claude's answer being shown, if any.
     pub answer: Option<claude::Answer>,
@@ -223,10 +227,12 @@ impl App {
             pic_menu: None,
             pic_menu_fresh: false,
             pic_drag: None,
+            sel_drag: None,
             resize: None,
             status_at: f64::NEG_INFINITY,
             title: String::new(),
             pen: false,
+            picking: claude::Picking::Circle,
             lasso: None,
             answer: None,
             backdrop: backdrop::Backdrop::default(),
@@ -503,7 +509,7 @@ impl App {
                 Self::paper(ui.painter(), page_rect);
                 ui.painter().extend(self.backdrop_shapes(&ctx, page_rect, &|p| p, 1.0, 1.0));
                 self.draw_footer(ui, page_rect, i);
-                self.editor_surface(ui, page_rect, i, !self.pen);
+                self.editor_surface(ui, page_rect, i, !self.circling());
                 self.draw_notes(ui, page_rect, i);
                 self.pen_surface(ui, page_rect, i);
                 if let Some(s) = self.slide_out {
@@ -1396,6 +1402,103 @@ mod tests {
             self.frames(1, vec![button(false)], Modifiers::NONE);
             self.frames(2, vec![], Modifiers::NONE);
         }
+
+        /// Where a point of the writing area (in page points) is on screen.
+        fn in_page(&self, rel: egui::Vec2) -> egui::Pos2 {
+            let rect = self.app.last_page_rect;
+            rect.min + (self.app.doc.setup.margin_origin() + rel) * self.app.scale_of(rect)
+        }
+
+        fn press_at(&mut self, pos: egui::Pos2, pressed: bool) {
+            let e = egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+            self.frames(1, vec![egui::Event::PointerMoved(pos), e], Modifiers::NONE);
+        }
+    }
+
+    /// Three pages and more of text, the caret on the first.
+    fn pages_of_text(h: &mut Harness) {
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text(&"It was nearly midnight and the Prime Minister sat alone in his office. ".repeat(220));
+        assert!(h.app.doc.pages() >= 4, "pages: {}", h.app.doc.pages());
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, 0, false);
+        h.frames(120, vec![], Modifiers::NONE);
+    }
+
+    #[test]
+    fn dragging_a_selection_past_the_bottom_of_the_page_goes_on_to_the_next_pages() {
+        let mut h = Harness::new();
+        pages_of_text(&mut h);
+        assert_eq!(h.shown(), 0);
+        let height = h.app.doc.setup.content_size().y;
+        h.press_at(h.in_page(egui::vec2(100.0, 40.0)), true);
+        let anchor = h.app.caret;
+        h.frames(1, vec![egui::Event::PointerMoved(h.in_page(egui::vec2(100.0, height / 2.0)))], Modifiers::NONE);
+        // Into the bottom margin, the selection goes to the page's end without turning it.
+        h.frames(1, vec![egui::Event::PointerMoved(h.in_page(egui::vec2(100.0, height + 30.0)))], Modifiers::NONE);
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!(h.app.target, 0, "a little past the last line, the page stays");
+        assert!(h.app.caret + 80 > h.app.doc.spans[1].start, "the selection reaches the last line");
+        h.frames(1, vec![egui::Event::PointerMoved(h.in_page(egui::vec2(100.0, height + 60.0)))], Modifiers::NONE);
+        h.frames(40, vec![], Modifiers::NONE);
+        assert_eq!(h.app.target, 1, "the next page comes up");
+        assert_eq!(h.app.anchor, anchor, "the selection still starts where the drag began");
+        assert!(h.app.caret >= h.app.doc.spans[1].start, "the selection reaches onto it");
+        // Held there, the pages go on turning, one at a time.
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!(h.app.target, 2);
+        // Back up into the page, the selection ends where the pointer is.
+        let at = h.in_page(egui::vec2(100.0, height / 2.0));
+        h.frames(1, vec![egui::Event::PointerMoved(at)], Modifiers::NONE);
+        h.press_at(at, false);
+        h.frames(120, vec![], Modifiers::NONE);
+        assert_eq!(h.shown(), 2, "no more pages turn");
+        assert_eq!(h.app.anchor, anchor);
+        let (a, b) = h.app.selection();
+        assert!(a == anchor && b > h.app.doc.spans[2].start && b < h.app.doc.spans[2].end, "{a}..{b}");
+    }
+
+    #[test]
+    fn dragging_a_selection_past_the_top_of_the_story_does_not_turn_onto_the_contents() {
+        let mut h = Harness::new();
+        let n = h.long_contents(120);
+        let ctx = h.ctx.clone();
+        h.app.go_to_page(&ctx, n);
+        assert_eq!(h.shown(), n);
+        h.press_at(h.in_page(egui::vec2(100.0, 60.0)), true);
+        h.frames(1, vec![egui::Event::PointerMoved(h.in_page(egui::vec2(100.0, -60.0)))], Modifiers::NONE);
+        h.frames(100, vec![], Modifiers::NONE);
+        assert_eq!(h.app.target, n);
+        h.press_at(h.in_page(egui::vec2(100.0, -60.0)), false);
+        assert_eq!((h.shown(), h.app.selection()), (n, (0, h.app.anchor)), "selected back to the story's start");
+    }
+
+    #[test]
+    fn dragging_a_selection_past_the_top_of_the_page_goes_back_to_the_pages_before() {
+        let mut h = Harness::new();
+        pages_of_text(&mut h);
+        let ctx = h.ctx.clone();
+        h.app.go_to_page(&ctx, 2);
+        assert_eq!(h.shown(), 2);
+        let height = h.app.doc.setup.content_size().y;
+        h.press_at(h.in_page(egui::vec2(100.0, height / 2.0)), true);
+        let anchor = h.app.caret;
+        h.frames(1, vec![egui::Event::PointerMoved(h.in_page(egui::vec2(100.0, 40.0)))], Modifiers::NONE);
+        h.frames(1, vec![egui::Event::PointerMoved(h.in_page(egui::vec2(100.0, -30.0)))], Modifiers::NONE);
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!(h.app.target, 2, "a little above the first line, the page stays");
+        h.frames(1, vec![egui::Event::PointerMoved(h.in_page(egui::vec2(100.0, -60.0)))], Modifiers::NONE);
+        h.frames(40, vec![], Modifiers::NONE);
+        assert_eq!(h.app.target, 1, "the page before comes up");
+        assert!(h.app.caret < h.app.doc.spans[2].start, "the selection reaches back onto it");
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!(h.app.target, 0);
+        let at = h.in_page(egui::vec2(100.0, height / 2.0));
+        h.frames(1, vec![egui::Event::PointerMoved(at)], Modifiers::NONE);
+        h.press_at(at, false);
+        assert_eq!(h.shown(), 0, "no more pages turn");
+        let (a, b) = h.app.selection();
+        assert!(b == anchor && a > 0 && a < h.app.doc.spans[0].end, "{a}..{b}");
     }
 
     #[test]
@@ -1444,6 +1547,47 @@ mod tests {
         h.click_in_page(egui::vec2(l.left() + 0.5, l.center().y));
         h.type_text("my ");
         assert!(!h.app.apply_answer(&ctx));
+    }
+
+    #[test]
+    fn asking_claude_by_cursor_offers_the_commands_for_a_selection_over_two_pages() {
+        let mut h = Harness::new();
+        pages_of_text(&mut h);
+        h.app.pick_by(claude::Picking::Cursor);
+        let height = h.app.doc.setup.content_size().y;
+
+        // A click alone selects nothing and asks nothing.
+        h.press_at(h.in_page(egui::vec2(100.0, height - 40.0)), true);
+        h.press_at(h.in_page(egui::vec2(100.0, height - 40.0)), false);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert!(h.app.lasso.is_none() && !h.app.has_selection());
+
+        // Selected from near the end of the first page into the second, as without Claude.
+        h.press_at(h.in_page(egui::vec2(100.0, height - 40.0)), true);
+        let from = h.app.caret;
+        h.frames(1, vec![egui::Event::PointerMoved(h.in_page(egui::vec2(100.0, height + 60.0)))], Modifiers::NONE);
+        h.frames(40, vec![], Modifiers::NONE);
+        let at = h.in_page(egui::vec2(100.0, 100.0));
+        h.frames(1, vec![egui::Event::PointerMoved(at)], Modifiers::NONE);
+        assert!(h.app.lasso.is_none(), "no commands while still selecting");
+        h.press_at(at, false);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(h.shown(), 1);
+        let (a, b) = h.app.selection();
+        assert!(a == from && b > h.app.doc.spans[1].start, "{a}..{b}");
+        let caught = h.app.lasso.as_ref().and_then(|l| l.caught).map(|(a, b, _)| (a, b));
+        assert_eq!(caught, Some((a, b)), "the commands are offered for the whole selection");
+    }
+
+    #[test]
+    fn circling_with_the_pen_takes_drags_away_from_the_cursor() {
+        let mut h = Harness::new();
+        pages_of_text(&mut h);
+        h.app.pick_by(claude::Picking::Circle);
+        h.press_at(h.in_page(egui::vec2(100.0, 40.0)), true);
+        h.frames(1, vec![egui::Event::PointerMoved(h.in_page(egui::vec2(300.0, 200.0)))], Modifiers::NONE);
+        h.press_at(h.in_page(egui::vec2(300.0, 200.0)), false);
+        assert!(!h.app.has_selection(), "a stroke that is no loop selects nothing");
     }
 
     #[test]

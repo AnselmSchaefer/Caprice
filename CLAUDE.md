@@ -13,7 +13,7 @@ behaviour**: its rules (§4) say what depends on what, and which tests guard eac
 
 ## Done means
 
-- `cargo test` passes, and clippy has no warnings beyond the ones already there (17 today).
+- `cargo test` passes, and clippy has no warnings beyond the ones already there (15 today).
 - Behaviour you can see in the app has an app-level test (`Harness` in `main.rs`). A bug fix has a
   test that fails without the fix: check that it does.
 - If a change alters a rule in `ARCHITECTURE.md`, or adds one, update the file in the same commit.

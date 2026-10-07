@@ -14,7 +14,7 @@ A desktop word processor in Rust on egui/eframe 0.36. It shows one page at a tim
 the pages before and after it as piles, and turns pages with an animation ("Book": hinged like a
 book; "Paperstack": sliding into the pile). Post-its stick out of the page's edge. Chapters get
 titles, drop caps and contents pages. It saves `.caprice` (JSON) and exports `.docx`. Claude Code
-(the CLI) can review a passage drawn around with the pen, and paint a scene behind the pages.
+(the CLI) can review a passage drawn around with the pen or selected with the cursor, and paint a scene behind the pages.
 
 ---
 
@@ -65,7 +65,7 @@ notes (char ranges + text)                                   hit-testing, caret)
 | `ui.rs` | Top toolbar (formatting, Page menu), bottom page bar and scrollbar |
 | `fileio.rs` | `.caprice` format (`DocFile`), open/save/export commands, unsaved-changes detection |
 | `export.rs` | Hand-written Office Open XML for `.docx` |
-| `claude.rs` | Pen loop → passage → `claude -p` → streamed answer panel |
+| `claude.rs` | Pen loop or cursor selection → passage → `claude -p` → streamed answer panel |
 | `backdrop.rs` | Scenes Claude paints (SVG) faintly behind the pages; not part of the document |
 | `fonts.rs`, `theme.rs` | Installed fonts loaded on demand; colours and egui visuals |
 
@@ -145,12 +145,22 @@ returns them, so the caret is always in the story.
 - **A click only places the caret if the spot it hits is on the clicked page** (`editor_surface`).
 - Anything per page that uses `spans[i].start` (selection, notes, the pen) must cope with a page
   that holds no text.
+- **A selection dragged well past the top or bottom of the writing area turns the page**
+  (`drag_past_edge`: `EDGE_PAST` page points into the margin, times the zoom; nearer, it only
+  selects to the first or last line),
+  the caret going to a story position on the next or previous page, so `set_caret` shows it. It
+  never turns onto or from the contents. The drag is the app's own (`App::sel_drag`) and survives
+  the turn, when the editor surface is not drawn and egui may drop its own. Held there, it turns
+  again after `EDGE_REPEAT` on the settled page, not every frame.
 - Tests: `page_keys_go_through_every_page_of_long_contents`,
   `swiping_goes_through_every_page_of_long_contents`,
   `the_scrollbar_reaches_every_page_of_long_contents`,
   `clicks_on_a_later_page_of_the_contents_stay_there_or_follow_a_line`,
   `the_caret_stays_in_the_story_around_long_contents`,
-  `an_empty_page_between_two_breaks_exists_and_can_hold_the_caret`.
+  `an_empty_page_between_two_breaks_exists_and_can_hold_the_caret`,
+  `dragging_a_selection_past_the_bottom_of_the_page_goes_on_to_the_next_pages`,
+  `dragging_a_selection_past_the_top_of_the_page_goes_back_to_the_pages_before`,
+  `dragging_a_selection_past_the_top_of_the_story_does_not_turn_onto_the_contents`.
 
 ### R6 — Derived things must not depend on their own results
 
@@ -229,6 +239,21 @@ Re-check every one after upgrading egui.
 `claude::run_claude` refuses under `cfg(test)` unless a test calls `allow_live()`; those tests are
 `#[ignore]` (`live_*`). Calls run `claude -p` with no tools, user settings only, no MCP, no saved
 session, in the temp dir.
+
+### R13 — Asking Claude: circling with the pen, or selecting with the cursor
+
+With Claude on (`App::pen`), `App::picking` says how a passage is picked, chosen in the toolbar's
+Claude menu:
+
+- **Circle:** `pen_surface` takes the drags and draws loops; the editor surface is drawn but not
+  interactive (`circling()`), so drags never select. A loop stays on one page.
+- **Cursor:** the editor works as always, so a selection can be dragged over several pages (R5).
+  Letting go of a drag that left a selection (`sel_drag`, a double or triple click too) offers the
+  commands for it (`offer_commands`), a `Lasso` with no points, only `caught`.
+- Either way the commands come from the one `Lasso` menu; anything new there must work for both.
+- Tests: `a_loop_drawn_with_the_pen_selects_the_text_inside_it`,
+  `circling_with_the_pen_takes_drags_away_from_the_cursor`,
+  `asking_claude_by_cursor_offers_the_commands_for_a_selection_over_two_pages`.
 
 ---
 

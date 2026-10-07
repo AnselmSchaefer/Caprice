@@ -340,8 +340,7 @@ impl App {
         });
         let add_note = ui.button("Note").on_hover_text("Attach a note to the selection or line (Ctrl+Alt+N)").clicked();
         let find = ui.button("Find").on_hover_text("Search (Ctrl+F)").clicked();
-        let pen_tip = "Draw a loop around text to ask Claude about it (Ctrl+Shift+P, Esc to stop)";
-        let pen = ui.add(egui::Button::new("Claude").selected(self.pen)).on_hover_text(pen_tip).clicked();
+        self.claude_menu(ui);
         self.scene_menu(ui);
 
         if let Some(f) = font_pick {
@@ -377,9 +376,6 @@ impl App {
         }
         if find {
             self.open_search();
-        }
-        if pen {
-            self.toggle_pen();
         }
         match image_action {
             Some(ImageAction::Insert) => {
