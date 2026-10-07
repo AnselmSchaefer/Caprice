@@ -2,8 +2,8 @@
 //! kept with the story, pinned to the start of the paragraph it was painted for, like a note. It
 //! covers the story up to the next scene, and the page shown shows the one the caret is in, faintly
 //! behind its text, so the pictures change as the caret moves on through the story. A scene is one
-//! the writer describes, a passage they select, or follows the writing: each finished sentence
-//! brings a picture of the newest one. Painting again for the same paragraph adds a version to its
+//! the writer describes, a passage they select, or follows the writing: each finished paragraph
+//! brings a picture of what it describes. Painting again for the same paragraph adds a version to its
 //! scene rather than replacing it. The list of scenes shows them all, to go to, show again, step
 //! through versions, hide or delete.
 //!
@@ -24,9 +24,7 @@ use crate::theme::TEXT_DIM;
 
 /// How strongly a scene shows through the paper.
 pub const OPACITY: f32 = 0.2;
-/// How many of the last finished sentences a scene following the writing is drawn from.
-const SENTENCES: usize = 3;
-/// Seconds to wait after a sentence is finished before drawing, in case another follows.
+/// Seconds to wait after a paragraph is finished before drawing, in case the writer goes back to it.
 const PAUSE: f64 = 1.5;
 /// Seconds one scene takes to fade into the next.
 const FADE: f64 = 2.5;
@@ -77,23 +75,21 @@ pub enum Mode {
     /// The writer's description, drawn when they ask.
     #[default]
     Described,
-    /// The newest finished sentence, drawn after each one.
+    /// Each finished paragraph, drawn after it is finished.
     Writing,
 }
 
 /// What a picture is to show.
 enum Subject {
     Description(String),
-    /// A passage the writer selected.
+    /// A passage: one the writer selected, or the paragraph they finished.
     Passage(String),
-    /// The last few finished sentences, one per line, the newest last.
-    Sentences(String),
 }
 
 impl Subject {
     fn text(&self) -> &str {
         match self {
-            Subject::Description(t) | Subject::Passage(t) | Subject::Sentences(t) => t,
+            Subject::Description(t) | Subject::Passage(t) => t,
         }
     }
 }
@@ -121,11 +117,11 @@ pub struct Backdrop {
     job: Option<Job>,
     /// Put the keyboard on the description when the dialog opens.
     focus_field: bool,
-    /// Following the writing: the sentences drawn (or being drawn) last, the newest ones waiting
-    /// and when they were seen, and the document version they were read at (only edits count,
-    /// not moving the caret).
+    /// Following the writing: the paragraph drawn (or being drawn) last, the one finished since,
+    /// where it starts and when it was seen, and the document version they were read at (only
+    /// edits count, not moving the caret).
     drawn_for: String,
-    pending: Option<(String, f64)>,
+    pending: Option<(String, usize, f64)>,
     read_at: Option<u64>,
 }
 
@@ -150,31 +146,6 @@ impl Default for Backdrop {
             read_at: None,
         }
     }
-}
-
-/// The last `n` finished sentences of `text`, one per line, the newest last. A sentence is finished
-/// by `.`, `!`, `?` or `…` followed by a space or line break, or by the end of its paragraph.
-pub fn last_sentences(text: &str, n: usize) -> String {
-    let chars: Vec<char> = text.chars().filter(|&c| c != IMAGE_CHAR).map(|c| if c == PAGE_BREAK { '\n' } else { c }).collect();
-    let mut done: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for (k, &c) in chars.iter().enumerate() {
-        if c == '\n' {
-            if !current.trim().is_empty() {
-                done.push(current.trim().to_owned());
-            }
-            current.clear();
-            continue;
-        }
-        current.push(c);
-        let next_is_space = chars.get(k + 1).is_some_and(|n| n.is_whitespace());
-        if matches!(c, '.' | '!' | '?' | '…') && next_is_space && !current.trim().is_empty() {
-            done.push(current.trim().to_owned());
-            current.clear();
-        }
-    }
-    let from = done.len().saturating_sub(n);
-    done[from..].join("\n")
 }
 
 /// The SVG in Claude's reply (it may wrap it in a code fence).
@@ -202,23 +173,6 @@ fn draw_scene(subject: &Subject, size: egui::Vec2, cancel: &AtomicBool) -> Resul
     let what = match subject {
         Subject::Description(d) => format!("<scene>\n{d}\n</scene>\n\nPaint one illustration of this scene"),
         Subject::Passage(p) => format!("<passage>\n{p}\n</passage>\n\nPaint one illustration of the scene this passage of a story describes"),
-        Subject::Sentences(sentences) => {
-            let (earlier, latest) = sentences.rsplit_once('\n').unwrap_or(("", sentences));
-            let context = if earlier.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "<earlier_sentences>\n{earlier}\n</earlier_sentences>\n\n\
-                    The earlier sentences come just before it. Use them only where they describe the \
-                    same scene (the same place and moment), to add details to it. If they describe \
-                    another place or moment, ignore them completely.\n\n"
-                )
-            };
-            format!(
-                "<latest_sentence>\n{latest}\n</latest_sentence>\n\n{context}\
-                Paint one illustration of the scene the latest sentence of this story describes"
-            )
-        }
     };
     let prompt = format!(
         "{what}, to be shown faintly behind the text of a page.\n\
@@ -298,15 +252,24 @@ impl Doc {
 }
 
 impl App {
-    /// The scene behind the page shown: the one of the part of the story the caret is in, so
-    /// moving the caret into the next part brings its picture. On a page without the caret (the
-    /// contents), the one at its top.
+    /// The scene behind the page shown: see `scene_of_page`.
     pub fn scene_here(&self) -> Option<&Scene> {
-        if self.doc.page_of(self.caret) == self.target {
+        self.scene_of_page(self.target)
+    }
+
+    /// The scene behind page `i`: on the caret's page, the one of the part of the story the caret
+    /// is in, so moving the caret into the next part brings its picture, and turning back to the
+    /// page finds it as it was left. On any other page, the one at its top.
+    pub fn scene_of_page(&self, i: usize) -> Option<&Scene> {
+        if self.doc.page_of(self.caret) == i {
             self.doc.scene_at(self.caret)
         } else {
-            self.doc.page_scene(self.target)
+            self.doc.page_scene(i)
         }
+    }
+
+    fn scene_key_of_page(&self, i: usize) -> Option<DrawingKey> {
+        self.scene_of_page(i).map(|s| (s.id, s.shown))
     }
 }
 
@@ -320,10 +283,10 @@ impl Backdrop {
         (!self.description.trim().is_empty() || !self.visible).then(|| SceneFile { svg: None, description: self.description.clone(), hidden: !self.visible })
     }
 
-    /// Following the writing: the sentences waiting to be drawn.
+    /// Following the writing: the paragraph waiting to be drawn.
     #[cfg(test)]
     pub fn pending(&self) -> Option<&str> {
-        self.pending.as_ref().map(|(p, _)| p.as_str())
+        self.pending.as_ref().map(|(p, _, _)| p.as_str())
     }
 
     /// Render the drawing `svg` of `key` on a background thread, unless it is or has been already.
@@ -414,6 +377,12 @@ impl App {
         self.pin_painting("a test", c).0
     }
 
+    /// A drawing is fading in on the page shown.
+    #[cfg(test)]
+    pub fn scene_fading(&self) -> bool {
+        self.backdrop.fade.is_some()
+    }
+
     /// The list of scenes has the small picture of drawing `key`.
     #[cfg(test)]
     pub fn has_thumb_of(&self, key: DrawingKey) -> bool {
@@ -432,15 +401,24 @@ impl App {
         self.doc.scenes.retain(|s| !s.versions.is_empty() || Some(s.id) == painting);
     }
 
-    /// The sentences written last, before the caret.
-    fn sentences_now(&self) -> String {
-        let upto = self.doc.char_to_byte(self.caret);
-        last_sentences(&self.doc.flow.text[..upto], SENTENCES)
+    /// Following the writing, the paragraph finished last: the last one with text before the
+    /// caret's paragraph, where it starts and its text. None if it has a scene already.
+    fn finished_paragraph(&self) -> Option<(usize, String)> {
+        let mut end = self.doc.para_start(self.caret).0;
+        while end > 0 {
+            let start = self.doc.para_start(end - 1).0;
+            let text = self.selected_passage(start, end - 1).trim().to_owned();
+            if !text.is_empty() {
+                return (!self.doc.scenes.iter().any(|s| s.at == start)).then_some((start, text));
+            }
+            end = start;
+        }
+        None
     }
 
     /// Take in the scene settings of a document just opened (its scenes came with the `Doc`). An
     /// older file's one drawing becomes a scene pinned to the story's start. Following the
-    /// writing, what is already written counts as drawn, so only new sentences bring a picture.
+    /// writing, what is already written counts as drawn, so only new paragraphs bring a picture.
     pub fn open_scene(&mut self, file: Option<SceneFile>) {
         let file = file.unwrap_or_default();
         self.backdrop = Backdrop { mode: self.backdrop.mode, description: file.description, visible: !file.hidden, ..Backdrop::default() };
@@ -450,32 +428,36 @@ impl App {
             self.doc.scenes.push(Scene { id, at: 0, versions: vec![svg], shown: 0, subject: String::new(), hidden: false });
         }
         if !self.doc.scenes.is_empty() {
-            self.backdrop.drawn_for = self.sentences_now();
+            self.backdrop.drawn_for = self.finished_paragraph().map(|(_, t)| t).unwrap_or_default();
             self.backdrop.read_at = Some(self.doc.version);
         }
     }
 
-    /// Following the writing: notice finished sentences and draw the newest after a pause.
+    /// Following the writing: notice a finished paragraph and draw it after a pause, pinned to it.
+    /// A paragraph gets one picture; painting it again is up to the writer.
     fn follow_writing(&mut self, ctx: &egui::Context, now: f64) {
         if self.backdrop.read_at != Some(self.doc.version) {
             self.backdrop.read_at = Some(self.doc.version);
-            let latest = self.sentences_now();
+            let latest = self.finished_paragraph();
             let b = &mut self.backdrop;
-            if latest.is_empty() || latest == b.drawn_for {
-                b.pending = None;
-            } else if b.pending.as_ref().is_none_or(|(p, _)| *p != latest) {
-                b.pending = Some((latest, now));
+            match latest {
+                Some((at, text)) if text != b.drawn_for => {
+                    // The same text (moved by an edit elsewhere) keeps its time.
+                    let seen = b.pending.as_ref().filter(|(p, _, _)| *p == text).map_or(now, |&(_, _, seen)| seen);
+                    b.pending = Some((text, at, seen));
+                }
+                _ => b.pending = None,
             }
         }
         let b = &mut self.backdrop;
-        let (Some((sentences, seen)), true) = (b.pending.clone(), b.job.is_none()) else { return };
+        let (Some((text, at, seen)), true) = (b.pending.clone(), b.job.is_none()) else { return };
         let wait = seen + PAUSE - now;
         if wait > 0.0 {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
         } else {
             b.pending = None;
-            b.drawn_for = sentences.clone();
-            self.start_scene(ctx, Subject::Sentences(sentences), self.caret);
+            b.drawn_for = text.clone();
+            self.start_scene(ctx, Subject::Passage(text), at);
         }
     }
 
@@ -518,7 +500,9 @@ impl App {
         // Those at the pages' tops, and those that begin on them, for the caret to come to.
         let (from, to) = (self.doc.spans[lo].start, self.doc.spans[hi].end);
         let begin_on = self.doc.scenes.iter().filter(|s| (from..=to).contains(&s.at) && s.svg().is_some()).map(|s| (s.id, s.shown));
-        let near: Vec<DrawingKey> = (lo..=hi).filter_map(|i| self.doc.page_scene_key(i)).chain(begin_on).collect();
+        // The caret's is kept too, wherever the pages are turned, to be there on coming back.
+        let caret = self.doc.scene_at(self.caret).map(|s| (s.id, s.shown));
+        let near: Vec<DrawingKey> = (lo..=hi).filter_map(|i| self.scene_key_of_page(i)).chain(begin_on).chain(caret).collect();
         for &key in &near {
             if let Some(svg) = self.doc.scenes.iter().find(|s| s.id == key.0).and_then(|s| s.versions.get(key.1)).cloned() {
                 self.backdrop.render(ctx, key, &svg, false);
@@ -532,10 +516,9 @@ impl App {
         }
 
         // On the page shown, a new drawing (the caret moved into another scene's part, painted,
-        // another version, hidden) fades in. Turned to, a page first shows what it showed while
-        // turning, the scene at its top, and fades from there to the caret's.
+        // another version, hidden) fades in. Turned to, a page shows at once what it showed while
+        // turning, which is the same.
         let wanted = self.scene_here().map(|s| (s.id, s.shown));
-        let top = self.doc.page_scene_key(self.target);
         let b = &mut self.backdrop;
         let ready = wanted.filter(|k| b.textures.contains_key(k));
         match b.on_target {
@@ -546,7 +529,7 @@ impl App {
                 }
             }
             _ => {
-                b.on_target = Some((self.target, top.filter(|k| b.textures.contains_key(k))));
+                b.on_target = Some((self.target, ready));
                 b.fade = None;
             }
         }
@@ -601,7 +584,7 @@ impl App {
         egui::containers::menu::MenuButton::new(title).ui(ui, |ui| {
             ui.set_min_width(230.0);
             let mut follow = mode == Mode::Writing;
-            let follow_tip = "Each time you finish a sentence, Claude paints what the newest one describes";
+            let follow_tip = "Each time you finish a paragraph, Claude paints the scene it describes";
             if ui.checkbox(&mut follow, "Follow my writing").on_hover_text(follow_tip).changed() {
                 mode = if follow { Mode::Writing } else { Mode::Described };
             }
@@ -851,7 +834,7 @@ impl App {
                 let t = t * t * (3.0 - 2.0 * t);
                 mesh(from, 1.0 - t).into_iter().chain(mesh(shown, t)).collect()
             }
-            _ => mesh(self.doc.page_scene_key(i), 1.0).into_iter().collect(),
+            _ => mesh(self.scene_key_of_page(i), 1.0).into_iter().collect(),
         }
     }
 }
@@ -859,15 +842,6 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_finished_sentences_count() {
-        assert_eq!(last_sentences("One. Two! Three? Four", 3), "One.\nTwo!\nThree?");
-        assert_eq!(last_sentences("One. Two. Three. Four. ", 2), "Three.\nFour.");
-        assert_eq!(last_sentences("A heading\nThe story begins", 3), "A heading", "a paragraph's end finishes it");
-        assert_eq!(last_sentences("Dr.Who is here", 3), "", "no space after the point: not an end");
-        assert_eq!(last_sentences("", 3), "");
-    }
 
     #[test]
     fn the_drawing_is_found_and_rendered() {
@@ -887,9 +861,8 @@ mod tests {
     #[ignore]
     fn live_scene() {
         crate::claude::allow_live();
-        // Two unrelated sentences: only the newest, the storm at sea, should be drawn.
-        let sentences = "The village lay quiet in the valley, smoke rising from its chimneys.\nFar away, a lone ship fought its way through a storm on the open sea.";
-        let (_, image) = draw_scene(&Subject::Sentences(sentences.into()), egui::vec2(595.0, 842.0), &AtomicBool::new(false)).unwrap().unwrap();
+        let passage = "Far away, a lone ship fought its way through a storm on the open sea.";
+        let (_, image) = draw_scene(&Subject::Passage(passage.into()), egui::vec2(595.0, 842.0), &AtomicBool::new(false)).unwrap().unwrap();
         let path = std::env::temp_dir().join("caprice-live-scene.png");
         let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
         image::save_buffer(&path, &rgba, image.size[0] as u32, image.size[1] as u32, image::ColorType::Rgba8).unwrap();

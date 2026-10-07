@@ -1599,17 +1599,25 @@ mod tests {
     }
 
     #[test]
-    fn following_the_writing_queues_finished_sentences_only() {
+    fn following_the_writing_paints_each_paragraph_once_it_is_finished() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.app.set_scene_mode(backdrop::Mode::Writing);
-        h.type_text("The valley lies between the mountains and the sea");
-        assert_eq!(h.app.backdrop.pending(), None, "a sentence still being written is not drawn");
-        h.type_text(". Above it");
-        assert_eq!(h.app.backdrop.pending(), Some("The valley lies between the mountains and the sea."));
-        // Moving the caret is no edit, so the queued scene stays as it was.
+        h.type_text("The valley lies between the mountains. Above it");
+        assert_eq!(h.app.backdrop.pending(), None, "finished sentences alone are not painted");
+        h.type_text(" the clouds gather.\nThe");
+        assert_eq!(h.app.backdrop.pending(), Some("The valley lies between the mountains. Above it the clouds gather."));
+        // Moving the caret is no edit, so the queued paragraph stays as it was.
         h.key(Key::Home, Modifiers::COMMAND);
-        assert_eq!(h.app.backdrop.pending(), Some("The valley lies between the mountains and the sea."));
+        assert_eq!(h.app.backdrop.pending(), Some("The valley lies between the mountains. Above it the clouds gather."));
+        // Painted (here as if Claude had), it is pinned to its paragraph, and not painted again.
+        h.key(Key::End, Modifiers::COMMAND);
+        h.app.fake_painting(0, BLUE);
+        h.frames(2, vec![], Modifiers::NONE);
+        h.type_text(" ship sails on.");
+        assert_eq!(h.app.backdrop.pending(), None, "the finished paragraph has its scene");
+        h.type_text("\nA storm");
+        assert_eq!(h.app.backdrop.pending(), Some("The ship sails on."), "the next finished one is painted");
         // Back to describing: nothing is queued or drawn any more.
         h.app.set_scene_mode(backdrop::Mode::Described);
         assert_eq!(h.app.backdrop.pending(), None);
@@ -1703,6 +1711,35 @@ mod tests {
         // Hidden, the scene before shows in its place.
         h.app.doc.scenes[1].hidden = true;
         assert_eq!(h.scene_shown(), Some((blue, 0)));
+    }
+
+    #[test]
+    fn turning_back_to_the_caret_finds_its_picture_as_it_was_left() {
+        let mut h = Harness::new();
+        paragraphs_over_pages(&mut h);
+        let ctx = h.ctx.clone();
+        // The only scene begins partway down a page, so the page's top has none.
+        let k = (2..12).find(|&k| {
+            let p = para_at(&h, k);
+            p > h.app.doc.spans[h.app.doc.page_of(p)].start + 200 && h.app.doc.page_of(p) + 2 <= h.app.last()
+        });
+        let late = para_at(&h, k.unwrap());
+        let page = h.app.doc.page_of(late);
+        h.app.fake_painting(late, RED);
+        h.frames(2, vec![], Modifiers::NONE);
+        let red = h.app.doc.scenes[0].id;
+        h.app.set_caret(&ctx, late + 5, false);
+        assert_eq!((h.scene_shown(), h.app.target), (Some((red, 0)), page));
+        h.frames(200, vec![], Modifiers::NONE);
+
+        h.key(Key::PageDown, Modifiers::NONE);
+        h.key(Key::PageDown, Modifiers::NONE);
+        assert_eq!(h.shown(), page + 2);
+        h.key(Key::PageUp, Modifiers::NONE);
+        h.key(Key::PageUp, Modifiers::NONE);
+        assert_eq!(h.shown(), page);
+        assert_eq!(h.app.shown_scene(), Some((red, 0)));
+        assert!(!h.app.scene_fading(), "the picture is there at once, not fading in from blank paper");
     }
 
     #[test]

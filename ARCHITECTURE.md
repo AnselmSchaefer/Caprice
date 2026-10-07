@@ -277,11 +277,15 @@ was painted for (`start_scene`: the selection's or caret's paragraph, or the pas
 
 - **A scene covers the story from its pin up to the next scene's** (`Doc::scene_at(c)`: the last
   shown, painted scene pinned at or before `c`).
-- **The page shown follows the caret** (`App::scene_here`): moving it into another scene's part
-  fades to that scene, on the same page. Every other page (piles, a page turning, a contents page
-  with the caret elsewhere) shows the scene at its top (`Doc::page_scene(i)`), which is what the
-  page shows when turned to with the caret at its start. Every look (`render.rs`, `book.rs`, the
+- **The caret's page follows the caret** (`App::scene_of_page`): it shows the scene of the part
+  the caret is in, wherever it is drawn (shown, in a pile, turning), and moving the caret into
+  another scene's part fades to that scene. Every other page shows the scene at its top
+  (`Doc::page_scene(i)`). So a page looks the same while turning as once turned to, and turning
+  back to the caret finds its picture as it was left. Every look (`render.rs`, `book.rs`, the
   settled page in `main.rs`) passes its page to `backdrop_shapes`.
+- **Following the writing paints each finished paragraph once** (`finished_paragraph`: the last
+  one with text before the caret's paragraph, if it has no scene yet), after `PAUSE`, pinned to
+  it. Finished sentences alone paint nothing.
 - **Painting a paragraph again adds a version** to its scene (`pin_painting` finds it by `at`)
   rather than another scene; `shown` picks one. Moving a scene onto a paragraph with one already
   (Pin here) takes the other's place.
@@ -289,15 +293,17 @@ was painted for (`start_scene`: the selection's or caret's paragraph, or the pas
   Claude paints. It is not saved (`from_doc` skips it), never shows, and is dropped once its
   painting ends without a picture (`drop_unpainted_scenes`).
 - **Drawings are rendered on threads, when needed:** those of pages within `NEAR` of the page
-  shown, and of scenes that begin on them (for the caret to reach), and small ones while the list
-  is open. Textures beyond those are let go. Turned to, a page first shows its top's scene, as it
-  did while turning, then fades to the caret's if that differs; a change on the page shown
-  (caret, painted, another version, hidden) fades.
+  shown, of scenes that begin on them (for the caret to reach), and of the caret's scene wherever
+  the pages are, and small ones while the list is open. Textures beyond those are let go. Turned
+  to, a page shows its drawing at once; a change on the page shown (caret, painted, another
+  version, hidden) fades.
 - Moving, hiding, deleting and stepping versions change `Doc::scenes` directly: like page
   settings, they are not undoable (R1) and do not paginate.
 - Tests: `the_picture_follows_the_caret_from_one_part_of_the_story_to_the_next`,
+  `turning_back_to_the_caret_finds_its_picture_as_it_was_left`,
   `painting_a_paragraph_again_adds_a_version_and_keeps_the_others`,
-  `a_scene_still_being_painted_is_not_saved_and_goes_if_stopped`, and those of R7 and R9.
+  `a_scene_still_being_painted_is_not_saved_and_goes_if_stopped`,
+  `following_the_writing_paints_each_paragraph_once_it_is_finished`, and those of R7 and R9.
 
 ---
 
