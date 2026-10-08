@@ -79,6 +79,12 @@ fn sheets(ctx: &egui::Context, text: &str, sc: f32) -> Sheets {
     Sheets { starts }
 }
 
+/// How many sheets a note's text takes at scale `sc`.
+#[cfg(test)]
+pub fn sheet_count(ctx: &egui::Context, text: &str, sc: f32) -> usize {
+    sheets(ctx, text, sc).count()
+}
+
 /// The text written on sheet `k`, laid out on its own.
 fn sheet_galley(ctx: &egui::Context, text: &str, s: &Sheets, k: usize, sc: f32) -> Arc<Galley> {
     let from = s.starts[k].0;
@@ -103,6 +109,16 @@ fn note_areas(r: Rect, sc: f32) -> (Rect, Rect) {
     let text = Rect::from_min_max(inner.min, pos2(inner.right(), inner.bottom() - NOTE_FOOTER * sc));
     let footer = Rect::from_min_max(pos2(inner.left(), text.bottom()), inner.max);
     (text, footer)
+}
+
+/// The sheet counter ("‹  2/3  ›") of a post-it at `r` on sheet `k` of `n`, and where it is drawn:
+/// at the right of the footer. Clicking left of its middle turns back, right of it forward.
+pub fn sheet_counter(ctx: &egui::Context, r: Rect, sc: f32, k: usize, n: usize) -> (Arc<Galley>, Rect) {
+    let (_, footer) = note_areas(r, sc);
+    let label = format!("\u{2039}  {}/{}  \u{203a}", k + 1, n);
+    let g = ctx.fonts_mut(|f| f.layout_no_wrap(label, FontId::proportional(NOTE_FONT * 0.8 * sc), INK.gamma_multiply(0.55)));
+    let at = Rect::from_min_size(pos2(footer.right() - g.size().x, footer.bottom() - g.size().y), g.size());
+    (g, at)
 }
 
 /// A flat quad through `map`, in strips so it can bend with a turning page.
@@ -284,7 +300,7 @@ impl App {
             out.push(Shape::mesh(quad_mesh(e, shaded(color, look.shade * (0.94 - 0.03 * j as f32), look.alpha), map)));
         }
 
-        let (text_area, footer) = note_areas(r, sc);
+        let (text_area, _) = note_areas(r, sc);
         let sheet = |k: usize, with_text: bool, map: &dyn Fn(Pos2) -> Pos2, shade: f32, out: &mut Vec<Shape>| {
             out.push(Shape::mesh(quad_mesh(r, shaded(color, shade, look.alpha), map)));
             // A faint band where the glue is.
@@ -295,9 +311,8 @@ impl App {
                 galleys.push((text_area.min, sheet_galley(ctx, &note.text, &s, k, sc)));
             }
             if n > 1 {
-                let label = format!("\u{2039}  {}/{}  \u{203a}", k + 1, n);
-                let g = ctx.fonts_mut(|f| f.layout_no_wrap(label, FontId::proportional(NOTE_FONT * 0.8 * sc), INK.gamma_multiply(0.55)));
-                galleys.push((pos2(footer.right() - g.size().x, footer.bottom() - g.size().y), g));
+                let (g, at) = sheet_counter(ctx, r, sc, k, n);
+                galleys.push((at.min, g));
             }
             out.push(Shape::mesh(text_mesh(ctx, &galleys, map, shade, look.alpha)));
         };
@@ -377,7 +392,9 @@ impl App {
                 }
             }
             if s.count() > 1 {
-                let (prev, next) = footer.split_left_right_at_fraction(0.5);
+                // Split where the arrows are, not in the footer's middle: the counter is at its right.
+                let (_, counter) = sheet_counter(&ctx, r, sc, pad.sheet, s.count());
+                let (prev, next) = footer.split_left_right_at_x(counter.center().x);
                 if ui.interact(prev, Id::new(("note_prev", id)), Sense::click()).clicked() {
                     pad.sheet = pad.sheet.saturating_sub(1);
                 }

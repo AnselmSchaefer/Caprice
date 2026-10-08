@@ -476,7 +476,8 @@ impl App {
             FontId::proportional(13.0),
             TEXT_DIM,
         );
-        let fit_btn = Rect::from_center_size(pos2(r.right() - 24.0, cy), vec2(48.0, 30.0));
+        let scratch_btn = Rect::from_center_size(pos2(r.right() - 50.0, cy), vec2(100.0, 30.0));
+        let fit_btn = Rect::from_center_size(pos2(scratch_btn.left() - 8.0 - 24.0, cy), vec2(48.0, 30.0));
         let btn = Rect::from_center_size(pos2(fit_btn.left() - 56.0 - 12.0 - 52.0, cy), vec2(104.0, 30.0));
         if ui.put(btn, egui::Button::new("+ New page")).clicked() {
             let cur = self.target;
@@ -484,7 +485,6 @@ impl App {
             self.insert_page_after(&ctx, cur);
         }
         // With the view's other controls: it is beside the pages, not on them.
-        let scratch_btn = Rect::from_center_size(pos2(btn.left() - 8.0 - 50.0, cy), vec2(100.0, 30.0));
         let scratch_tip = "Plain notes on the right, beside the pages, saved with the document";
         let scratch = egui::Button::new("Scratchpad").selected(self.scratchpad_open);
         if ui.put(scratch_btn, scratch).on_hover_text(scratch_tip).clicked() {
@@ -504,7 +504,7 @@ impl App {
             TEXT_DIM,
         );
 
-        let track = Rect::from_min_max(pos2(r.left() + label_w + 8.0, cy - 4.0), pos2(scratch_btn.left() - 20.0, cy + 4.0));
+        let track = Rect::from_min_max(pos2(r.left() + label_w + 8.0, cy - 4.0), pos2(btn.left() - 20.0, cy + 4.0));
         if track.width() < 60.0 {
             return;
         }

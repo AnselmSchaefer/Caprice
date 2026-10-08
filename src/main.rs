@@ -526,9 +526,10 @@ impl App {
                     ui.painter().extend(self.backdrop_shapes(&ctx, i, r, &|p| p, 1.0, 1.0));
                 }
             }
-        } else if self.slides_in(base) {
+        } else if self.slides_in(base) && self.appearance == Appearance::Paperstack {
             // A new page comes in from beyond the right edge of the window, over the old one,
-            // while the pile behind grows by a sheet from the back.
+            // while the pile behind grows by a sheet from the back. (In a book the old page turns
+            // over instead, revealing the new one, so its post-its go over with it.)
             let ease = |s: f32| s * s * (3.0 - 2.0 * s);
             self.sheet_to_pile(ui, page_rect, base, egui::Vec2::ZERO, ease(t));
             self.stack(ui.painter(), page_rect, base, n - 1 - base - 1);
@@ -1631,6 +1632,92 @@ mod tests {
             }
         }
         rows
+    }
+
+    impl Harness {
+        /// Click the "‹" (`back`) or "›" of the sheet counter of the first post-it on the page shown,
+        /// where it is drawn.
+        fn turn_post_it(&mut self, back: bool) {
+            let (rect, ctx) = (self.app.last_page_rect, self.ctx.clone());
+            let sc = self.app.scale_of(rect);
+            let (k, y) = self.app.note_places(&ctx)[&self.app.target][0];
+            let note = &self.app.doc.notes[k];
+            let n = notes::sheet_count(&ctx, &note.text, sc);
+            let (_, r) = notes::sheet_counter(&ctx, notes::note_rect(rect, sc, y), sc, self.app.pad(note.id).sheet, n);
+            let at = if back { r.left_center() + egui::vec2(2.0, 0.0) } else { r.right_center() - egui::vec2(2.0, 0.0) };
+            self.press_at(at, true);
+            self.press_at(at, false);
+            self.frames(30, vec![], Modifiers::NONE);
+        }
+    }
+
+    /// The middle, across, of everything painted in a green post-it's colour (the only green on screen).
+    fn green_post_it_x(h: &Harness) -> Option<f32> {
+        let green = |c: egui::Color32| c.a() > 100 && c.g() as i32 > c.r() as i32 + 40 && c.g() as i32 > c.b() as i32 + 40;
+        let mut xs = Vec::new();
+        for cs in &h.painted {
+            match &cs.shape {
+                egui::Shape::Mesh(m) => xs.extend(m.vertices.iter().filter(|v| green(v.color)).map(|v| v.pos.x)),
+                egui::Shape::Rect(r) if green(r.fill) => xs.extend([r.rect.left(), r.rect.right()]),
+                _ => {}
+            }
+        }
+        (!xs.is_empty()).then(|| (xs.iter().fold(f32::MAX, |a, &b| a.min(b)) + xs.iter().fold(f32::MIN, |a, &b| a.max(b))) / 2.0)
+    }
+
+    #[test]
+    fn in_a_book_a_new_page_turns_the_page_over_with_its_post_it() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        assert_eq!(h.app.appearance, Appearance::Book);
+        h.type_text("A page with a post-it.");
+        h.app.doc.notes.push(model::Note { id: 50, start: 0, end: 6, text: "Green.".into(), color: 2 });
+        h.frames(3, vec![], Modifiers::NONE);
+        let page = h.app.last_page_rect;
+        let start = green_post_it_x(&h).unwrap();
+        assert!(start > page.right(), "it sticks out on the right");
+
+        h.click_widget("+ New page");
+        let mut xs = vec![start];
+        for _ in 0..90 {
+            h.frames(1, vec![], Modifiers::NONE);
+            xs.extend(green_post_it_x(&h));
+        }
+        assert_eq!((h.app.doc.pages(), h.app.target), (2, 1), "on the new page");
+        let end = *xs.last().unwrap();
+        assert!(end < page.left(), "its page lies turned over on the left, the post-it's back showing: {end}");
+        let jump = xs.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
+        assert!(jump < page.width() / 3.0, "it goes over with its page, not in one jump of {jump}: {xs:?}");
+    }
+
+    #[test]
+    fn a_post_its_sheets_turn_back_as_well_as_forward() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text(TWO_SCENES);
+        let text = "Idea one: the roofs. Edwin climbs through the hatch and finds something. ".repeat(6);
+        h.app.doc.notes.push(model::Note { id: 50, start: 0, end: 4, text, color: 0 });
+        h.frames(3, vec![], Modifiers::NONE);
+        h.turn_post_it(false);
+        h.turn_post_it(false);
+        assert_eq!(h.app.pad(50).sheet, 2, "on the third sheet");
+        h.turn_post_it(true);
+        assert_eq!(h.app.pad(50).sheet, 1, "back to the second");
+        h.turn_post_it(true);
+        assert_eq!(h.app.pad(50).sheet, 0, "and the first");
+
+        // Also after writing on the third sheet.
+        h.turn_post_it(false);
+        h.turn_post_it(false);
+        let ctx = h.ctx.clone();
+        let y = h.app.note_places(&ctx)[&0][0].1;
+        let r = notes::note_rect(h.app.last_page_rect, h.app.scale_of(h.app.last_page_rect), y);
+        h.press_at(r.center(), true);
+        h.press_at(r.center(), false);
+        h.frames(5, vec![], Modifiers::NONE);
+        assert_eq!(h.app.pad(50).sheet, 2);
+        h.turn_post_it(true);
+        assert_eq!(h.app.pad(50).sheet, 1, "back to the second after writing on the third");
     }
 
     #[test]

@@ -351,8 +351,17 @@ many as fit the text area above the counter), and two drawings must agree with i
 - **Painted** (`note_shapes`: other pages, turning, the pad flipping) each sheet is laid out on
   its own (`sheet_galley`).
 - A change to the font, padding, footer or row breaking goes through `sheets`, and both follow.
+- **The sheet counter ("‹ 2/3 ›") is placed in one place, `sheet_counter`,** used both to draw it
+  and to split the footer into back and forward at its middle. It sits at the footer's right, so
+  split at the footer's own middle, both arrows turned forward.
+- **A post-it goes wherever its page goes.** In a book, pages in the pile lie turned over and show
+  their post-its' backs mirrored on the left (`stack`), so a page may only get there by turning
+  over (`book_turn`, which carries its post-its). Adding a page in a book therefore turns the
+  page over to reveal the new one; only the paperstack slides a new page in (`slides_in`).
+  Anything new that moves pages in a book must turn them, or post-its jump sides.
 - Tests: `a_post_it_shows_whole_rows_and_the_rest_on_its_next_sheet` (checks what is painted,
-  through `Harness::painted`).
+  through `Harness::painted`), `a_post_its_sheets_turn_back_as_well_as_forward`,
+  `in_a_book_a_new_page_turns_the_page_over_with_its_post_it` (follows the post-it's colour).
 
 ### R16 — Windows float over the pages, and what happens over them is theirs
 
