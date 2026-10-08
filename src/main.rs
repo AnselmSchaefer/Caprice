@@ -526,10 +526,14 @@ impl App {
                     ui.painter().extend(self.backdrop_shapes(&ctx, i, r, &|p| p, 1.0, 1.0));
                 }
             }
-        } else if self.slides_in(base) && self.appearance == Appearance::Paperstack {
+        } else if self.slides_in(base) && self.appearance == Appearance::Book {
+            // A new page comes in from beyond the right edge of the window while the old one turns
+            // over onto the pile, taking its post-its with it.
+            let from_right = area.right() + 40.0 - page_rect.left();
+            self.book_slide_in(ui, page_rect, base, t, from_right);
+        } else if self.slides_in(base) {
             // A new page comes in from beyond the right edge of the window, over the old one,
-            // while the pile behind grows by a sheet from the back. (In a book the old page turns
-            // over instead, revealing the new one, so its post-its go over with it.)
+            // while the pile behind grows by a sheet from the back.
             let ease = |s: f32| s * s * (3.0 - 2.0 * s);
             self.sheet_to_pile(ui, page_rect, base, egui::Vec2::ZERO, ease(t));
             self.stack(ui.painter(), page_rect, base, n - 1 - base - 1);
@@ -1666,7 +1670,7 @@ mod tests {
     }
 
     #[test]
-    fn in_a_book_a_new_page_turns_the_page_over_with_its_post_it() {
+    fn in_a_book_a_new_page_slides_in_as_the_old_one_turns_over_with_its_post_it() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         assert_eq!(h.app.appearance, Appearance::Book);
@@ -1678,11 +1682,19 @@ mod tests {
         assert!(start > page.right(), "it sticks out on the right");
 
         h.click_widget("+ New page");
-        let mut xs = vec![start];
+        let (mut xs, mut new_page_lefts) = (vec![start], Vec::new());
         for _ in 0..90 {
             h.frames(1, vec![], Modifiers::NONE);
             xs.extend(green_post_it_x(&h));
+            // Flat paper right of the page's place: the new page, still on its way in.
+            let flat = h.painted.iter().filter_map(|cs| match &cs.shape {
+                egui::Shape::Rect(r) if r.fill == theme::PAPER && r.rect.width() > page.width() * 0.9 => Some(r.rect.left()),
+                _ => None,
+            });
+            new_page_lefts.extend(flat.filter(|&x| x > page.left() + 1.0));
         }
+        assert!(new_page_lefts.iter().any(|&x| x > page.center().x), "the new page slides in from the right: {new_page_lefts:?}");
+        assert!(new_page_lefts.windows(2).all(|w| w[1] <= w[0]), "coming in steadily: {new_page_lefts:?}");
         assert_eq!((h.app.doc.pages(), h.app.target), (2, 1), "on the new page");
         let end = *xs.last().unwrap();
         assert!(end < page.left(), "its page lies turned over on the left, the post-it's back showing: {end}");

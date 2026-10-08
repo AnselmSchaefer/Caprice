@@ -33,6 +33,21 @@ impl App {
         }
     }
 
+    /// A new page `base + 1` comes in from `from_right` points to the right while page `base` turns
+    /// over onto the pile, its post-its going with it; the new page arrives as the old one lies down.
+    pub fn book_slide_in(&self, ui: &egui::Ui, rect: Rect, base: usize, t: f32, from_right: f32) {
+        let ease = |s: f32| s * s * (3.0 - 2.0 * s);
+        let ahead = self.last() - base - 1;
+        if t < TURN {
+            let incoming = rect.translate(vec2(from_right * (1.0 - ease(t / TURN)), 0.0));
+            self.stack(ui.painter(), rect, base, ahead);
+            self.static_page(ui, incoming, base + 1);
+            self.flipping_page(ui, rect, base, ease(t / TURN) * std::f32::consts::PI);
+        } else {
+            self.book_turn(ui, rect, base, t);
+        }
+    }
+
     /// Draw page `i` turned over, sliding by `s` from `from` (an offset from `rect`) into its place
     /// at the back of the pile behind it. Drawn before the pile and the page at `rect`, so it passes
     /// under them.
