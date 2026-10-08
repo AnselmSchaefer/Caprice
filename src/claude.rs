@@ -2,6 +2,12 @@
 //! opens a menu of commands; picking by cursor instead, letting go of a selection opens it (review, fix, grammar, summary, or a question of one's own). The answer
 //! streams into a floating panel, from where a corrected passage can be put in place of the old one.
 //!
+//! Connecting scenes: the passage holds the end of one scene and the start of a later one, and
+//! Claude finds the gap between them and suggests ways across. From there it is a conversation:
+//! the writer replies, asks for a draft (the passage again with the gap filled), or pins an idea
+//! as a post-it. Claude only ever sees the passage, what the writer types for it, and the story
+//! notes, kept with the document, which say what the writer always wants it to know.
+//!
 //! The request goes through the installed Claude Code CLI (`claude -p`) on a background thread.
 //! The CLI uses its own sign-in, which Caprice never sees, and streams the answer as it is written.
 
@@ -22,17 +28,29 @@ const MODEL: &str = "claude-opus-5-5";
 const NO_CLI: &str = "Caprice could not find Claude Code. Install it and sign in by running `claude` once \
     in a terminal, then try again.";
 
+pub const FOLLOW_UP: &str = "Answer the writer's last reply. Keep what has been settled in the conversation and build \
+    on it. Be concise, and do not repeat what you already said.";
+
+pub const DRAFT: &str = "Now fill the gap: write what happens there, so that the first scene leads into the \
+    second, following what the writer settled in the conversation (if nothing was settled, the idea that fits \
+    best). If you already wrote a draft, revise it as the writer asks. Match the story's language, voice, tense \
+    and style, and how it sets out dialogue. Reply with the whole passage, word for word as it is, except that \
+    your text stands in the gap and whatever marked the gap (a separator line, a note) is gone. Nothing before \
+    or after it.";
+
 const SYSTEM: &str = "You help a writer working in a word processor. They circled a passage of their \
     document and picked a command. Answer in the language of the passage. Write plain text only: no \
     Markdown, no headings, no bullet symbols other than simple dashes.";
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Review,
     Fix,
     Grammar,
     Summarize,
     Ask(String),
+    /// Ideas for the gap between the two scenes in the passage, with the writer's note.
+    Bridge(String),
 }
 
 impl Command {
@@ -43,6 +61,7 @@ impl Command {
             Command::Grammar => "Grammar check",
             Command::Summarize => "Summary",
             Command::Ask(_) => "Answer",
+            Command::Bridge(_) => "Connecting the scenes",
         }
     }
 
@@ -56,6 +75,13 @@ impl Command {
                 correcting, reply with the passage unchanged.",
             Command::Summarize => "Summarize this passage in a few sentences.",
             Command::Ask(q) => q,
+            Command::Bridge(_) => "This passage holds the end of one scene and the start of a later one. Between them \
+                is a gap: the writer does not yet know how to get from one to the other. It may be marked by a \
+                separator line or a note, or not at all. Find the gap, then suggest three or four ways to connect \
+                the two scenes that really differ from each other. For each, give a short name, then in a few \
+                dashed lines what happens, and what it needs set up earlier or sets up for later. Keep to the \
+                characters, facts and tone of the passage and to the writer's notes. Do not write the scene \
+                itself. End with one or two questions whose answers would help the writer choose.",
         }
     }
 
@@ -63,6 +89,19 @@ impl Command {
     fn rewrites(&self) -> bool {
         matches!(self, Command::Fix | Command::Grammar)
     }
+
+    /// Is the answer about the story, so that the story notes help? Corrections need only the passage.
+    fn knows_story(&self) -> bool {
+        !self.rewrites()
+    }
+}
+
+/// One exchange of a conversation with Claude: its answer, and what the writer replied.
+struct Turn {
+    answer: String,
+    reply: String,
+    /// The reply asked for a draft of the passage that fills the gap.
+    draft: bool,
 }
 
 /// How passages are picked while asking Claude is on.
@@ -76,6 +115,7 @@ pub enum Picking {
 }
 
 /// The loop being drawn (or drawn) around text, in page points of page `page`.
+#[derive(Default)]
 pub struct Lasso {
     pub page: usize,
     pub points: Vec<Pos2>,
@@ -84,6 +124,9 @@ pub struct Lasso {
     /// What the user types into the menu's "Ask" field, and whether the menu has been shown yet.
     pub question: String,
     pub menu_shown: bool,
+    /// Connecting the scenes was picked: the menu asks what Claude should know (`note`) first.
+    pub bridging: bool,
+    pub note: String,
 }
 
 enum Msg {
@@ -105,14 +148,59 @@ enum State {
 /// A question to Claude and its answer, as shown in the panel.
 pub struct Answer {
     command: Command,
+    /// What was sent first with the system prompt: the passage, any story around it, the command.
+    first: String,
+    /// The exchanges before the answer being written now; each reply sends them all again.
+    turns: Vec<Turn>,
     /// The flow range asked about and its text then, to check it is unchanged before replacing it.
     range: (usize, usize),
     original: String,
     text: String,
+    /// Being written in the reply field.
+    reply: String,
+    /// `text` is a draft of the passage, which can take its place.
+    draft: bool,
+    /// `text` has been pinned as a post-it.
+    pinned: bool,
     state: State,
     rx: Receiver<Msg>,
     cancel: Arc<AtomicBool>,
     at: Pos2,
+}
+
+impl Answer {
+    /// What is sent to Claude for the answer being written: the first prompt, then the conversation.
+    fn sent(&self) -> String {
+        let Some(last) = self.turns.last() else { return self.first.clone() };
+        let mut s = format!("{}\n\n<conversation_so_far>\n", self.first);
+        for t in &self.turns {
+            s += &format!("<your_answer>\n{}\n</your_answer>\n", t.answer.trim());
+            if !t.reply.trim().is_empty() {
+                s += &format!("<writers_reply>\n{}\n</writers_reply>\n", t.reply.trim());
+            }
+        }
+        s += "</conversation_so_far>\n\n";
+        if !last.draft {
+            return s + FOLLOW_UP;
+        }
+        // Named, the passage's ends are kept far more reliably than when only asked for in general.
+        let (head, tail) = ends(&self.original);
+        s + DRAFT + &format!(" Begin your reply with \"{head}\" and end it with \"{tail}\".")
+    }
+
+    /// Does `text` still hold the whole passage around what it adds? Claude sometimes answers a
+    /// draft with only the new part, which would replace both scenes.
+    fn keeps_ends(&self, text: &str) -> bool {
+        let words = |s: &str| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+        let (head, tail) = ends(&self.original);
+        let text = words(text);
+        text.starts_with(&words(&head)) && text.ends_with(&words(&tail))
+    }
+
+    /// Can the answer take the passage's place?
+    fn rewrites(&self) -> bool {
+        self.command.rewrites() || self.draft
+    }
 }
 
 impl Drop for Answer {
@@ -142,14 +230,34 @@ pub enum Outcome {
     Cancelled,
 }
 
-/// Stream Claude's answer to `passage` and `command` into `tx`, until done or `cancel` is set.
-fn ask(passage: &str, command: &Command, tx: &Sender<Msg>, ctx: &egui::Context, cancel: &AtomicBool) -> Result<(), String> {
-    let prompt = format!("<passage>\n{passage}\n</passage>\n\n{}", command.instruction());
+/// The first and last few words of `passage`.
+fn ends(passage: &str) -> (String, String) {
+    let words: Vec<&str> = passage.split_whitespace().collect();
+    let n = words.len().min(5);
+    (words[..n].join(" "), words[words.len() - n..].join(" "))
+}
+
+/// Ask Claude `prompt` on a thread: the answer comes in on the receiver, and setting the flag stops it.
+fn start(ctx: &egui::Context, prompt: String) -> (Receiver<Msg>, Arc<AtomicBool>) {
+    let (tx, rx) = channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (ctx, stop) = (ctx.clone(), cancel.clone());
+    std::thread::spawn(move || {
+        if let Err(e) = ask(&prompt, &tx, &ctx, &stop) {
+            let _ = tx.send(Msg::Failed(e));
+        }
+        ctx.request_repaint();
+    });
+    (rx, cancel)
+}
+
+/// Stream Claude's answer to `prompt` into `tx`, until done or `cancel` is set.
+fn ask(prompt: &str, tx: &Sender<Msg>, ctx: &egui::Context, cancel: &AtomicBool) -> Result<(), String> {
     let mut on_text = |t: &str| {
         let _ = tx.send(Msg::Text(t.to_owned()));
         ctx.request_repaint();
     };
-    match run_claude(MODEL, SYSTEM, &prompt, "medium", cancel, &mut on_text)? {
+    match run_claude(MODEL, SYSTEM, prompt, "medium", cancel, &mut on_text)? {
         Outcome::Finished => {
             let _ = tx.send(Msg::Done);
         }
@@ -318,6 +426,21 @@ impl App {
         self.doc.flow.text[ba..bb].chars().filter(|&c| c != IMAGE_CHAR).map(|c| if c == PAGE_BREAK { '\n' } else { c }).collect()
     }
 
+    /// What is sent to Claude for `command` about the passage `a..b`: the passage and nothing else
+    /// of the document, but the story notes if the command is about the story, and the writer's note.
+    fn prompt(&self, a: usize, b: usize, command: &Command) -> String {
+        let passage = self.passage(a, b);
+        let story_notes = match self.doc.story_notes.trim() {
+            n if n.is_empty() || !command.knows_story() => String::new(),
+            n => format!("<story_notes>\n{n}\n</story_notes>\n\n"),
+        };
+        let note = match command {
+            Command::Bridge(n) if !n.trim().is_empty() => format!("<writers_note>\n{}\n</writers_note>\n\n", n.trim()),
+            _ => String::new(),
+        };
+        format!("{story_notes}<passage>\n{passage}\n</passage>\n\n{note}{}", command.instruction())
+    }
+
     pub fn toggle_pen(&mut self) {
         self.pen = !self.pen;
         self.lasso = None;
@@ -331,7 +454,7 @@ impl App {
 
     /// The toolbar's Claude menu: ask by circling passages with the pen, or by selecting them.
     pub fn claude_menu(&mut self, ui: &mut egui::Ui) {
-        let mut chosen = None;
+        let (mut chosen, mut notes) = (None, false);
         let tip = "Ask Claude about a passage: circle it, or select it with the cursor (Ctrl+Shift+P, Esc to stop)";
         egui::containers::menu::MenuButton::from_button(egui::Button::new("Claude").selected(self.pen)).ui(ui, |ui| {
             ui.set_min_width(230.0);
@@ -347,14 +470,34 @@ impl App {
                     ui.close();
                 }
             }
+            ui.separator();
+            let tip = "What Claude should always know about the story when asked about it";
+            if ui.selectable_label(self.story_notes_open, "Story notes…").on_hover_text(tip).clicked() {
+                notes = true;
+                ui.close();
+            }
         })
         .0
         .on_hover_text(tip);
         match chosen {
+            _ if notes => self.story_notes_open = true,
             Some(Some(picking)) => self.pick_by(picking),
             Some(None) => (self.pen, self.lasso) = (false, None),
             None => {}
         }
+    }
+
+    /// The story notes, kept with the document and sent with every question about the story.
+    pub fn story_notes_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.story_notes_open;
+        egui::Window::new("Story notes").id(Id::new("story_notes")).open(&mut open).default_width(420.0).show(ctx, |ui| {
+            let about = "Claude reads these whenever it reviews, answers about or connects parts of the story.";
+            ui.label(egui::RichText::new(about).size(12.0).color(TEXT_DIM));
+            let hint = "Who is who, what has happened so far, what the reader must not learn yet…";
+            let field = egui::TextEdit::multiline(&mut self.doc.story_notes).hint_text(hint).desired_width(f32::INFINITY);
+            ui.add(field.desired_rows(14));
+        });
+        self.story_notes_open = open;
     }
 
     /// Loops are drawn on the page, which then takes no clicks for the text.
@@ -366,7 +509,7 @@ impl App {
     pub fn offer_commands(&mut self, at: Pos2) {
         let (a, b) = self.selection();
         let page = self.target;
-        self.lasso = Some(Lasso { page, points: Vec::new(), caught: Some((a, b, at)), question: String::new(), menu_shown: false });
+        self.lasso = Some(Lasso { page, caught: Some((a, b, at)), ..Default::default() });
     }
 
     /// With the pen on, page `i` at `page_rect` takes drags as loops drawn around text.
@@ -383,7 +526,7 @@ impl App {
             }
             let to_page = |p: Pos2| ((p - page_rect.min) / sc).to_pos2();
             if resp.drag_started() {
-                self.lasso = Some(Lasso { page: i, points: Vec::new(), caught: None, question: String::new(), menu_shown: false });
+                self.lasso = Some(Lasso { page: i, ..Default::default() });
             }
             let drawing = resp.dragged() || resp.drag_started();
             if let (Some(l), Some(p), true) = (&mut self.lasso, resp.interact_pointer_pos(), drawing) {
@@ -444,6 +587,22 @@ impl App {
         let area = egui::Area::new(Id::new("lasso_menu")).order(egui::Order::Foreground).fixed_pos(at + vec2(10.0, 10.0)).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(230.0);
+                if l.bridging {
+                    let title = "Connect the story before this with the story after it";
+                    ui.label(egui::RichText::new(title).size(12.0).color(TEXT_DIM));
+                    let hint = "What should Claude know? Who the people are, what has happened in between… (optional)";
+                    let note = egui::TextEdit::multiline(&mut l.note).hint_text(hint).desired_width(220.0).desired_rows(5);
+                    let field = ui.add(note);
+                    if !l.menu_shown {
+                        field.request_focus();
+                        l.menu_shown = true;
+                    }
+                    let go = ui.add(egui::Button::new("Get ideas").min_size(vec2(220.0, 24.0))).on_hover_text("Ctrl+Enter");
+                    if go.clicked() || (field.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && i.modifiers.command)) {
+                        chosen = Some(Command::Bridge(l.note.trim().to_owned()));
+                    }
+                    return;
+                }
                 ui.label(egui::RichText::new("Ask Claude about this passage").size(12.0).color(TEXT_DIM));
                 for c in [Command::Review, Command::Fix, Command::Grammar, Command::Summarize] {
                     let label = match c {
@@ -457,6 +616,14 @@ impl App {
                 let paint_tip = "Claude paints the scene this passage describes, behind its part of the story";
                 if ui.add(egui::Button::new("Paint this scene").frame(false).min_size(vec2(220.0, 24.0))).on_hover_text(paint_tip).clicked() {
                     paint = true;
+                }
+                let bridge_tip = "This passage is a gap between two scenes: Claude suggests ways from the story before \
+                    it to the story after it";
+                let bridge = ui.add(egui::Button::new("Connect the scenes…").frame(false).min_size(vec2(220.0, 24.0)));
+                if bridge.on_hover_text(bridge_tip).clicked() {
+                    // The note field takes the typing next frame; the question field must not take it now.
+                    (l.bridging, l.menu_shown) = (true, false);
+                    return;
                 }
                 ui.separator();
                 let field = ui.add(egui::TextEdit::singleline(&mut l.question).hint_text("Ask something else…").desired_width(220.0));
@@ -485,20 +652,58 @@ impl App {
 
     /// Send the passage `a..b` with `command`; the answer shows in the panel next to `at`.
     pub fn ask_claude(&mut self, ctx: &egui::Context, a: usize, b: usize, command: Command, at: Pos2) {
-        let passage = self.passage(a, b);
-        let (tx, rx) = channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        {
-            let (ctx, cancel, command, passage) = (ctx.clone(), cancel.clone(), command.clone(), passage.clone());
-            std::thread::spawn(move || {
-                if let Err(e) = ask(&passage, &command, &tx, &ctx, &cancel) {
-                    let _ = tx.send(Msg::Failed(e));
-                }
-                ctx.request_repaint();
-            });
-        }
+        let mut answer = self.new_answer(a, b, command, at);
+        (answer.rx, answer.cancel) = start(ctx, answer.sent());
+        self.answer = Some(answer);
+    }
+
+    /// An answer to `command` about `a..b` that is still to come.
+    fn new_answer(&self, a: usize, b: usize, command: Command, at: Pos2) -> Answer {
+        let first = self.prompt(a, b, &command);
         let original = self.doc.flow.text[self.doc.char_to_byte(a)..self.doc.char_to_byte(b)].to_owned();
-        self.answer = Some(Answer { command, range: (a, b), original, text: String::new(), state: State::Waiting, rx, cancel, at });
+        let (rx, cancel) = (channel().1, Arc::new(AtomicBool::new(false)));
+        let (text, reply, state) = (String::new(), String::new(), State::Waiting);
+        let (turns, range, draft, pinned) = (Vec::new(), (a, b), false, false);
+        Answer { command, first, turns, range, original, text, reply, draft, pinned, state, rx, cancel, at }
+    }
+
+    /// Send the writer's reply to the answer shown, or ask for a draft of the gap (`draft`), with
+    /// the conversation so far. A reply to a draft asks for it again, revised.
+    pub fn follow_up(&mut self, ctx: &egui::Context, draft: bool) {
+        let Some(ans) = &mut self.answer else { return };
+        if ans.state != State::Done {
+            return;
+        }
+        let draft = draft || ans.draft;
+        let (answer, reply) = (std::mem::take(&mut ans.text), std::mem::take(&mut ans.reply).trim().to_owned());
+        ans.turns.push(Turn { answer, reply, draft });
+        (ans.draft, ans.pinned, ans.state) = (draft, false, State::Waiting);
+        ans.cancel.store(true, Ordering::Relaxed);
+        (ans.rx, ans.cancel) = start(ctx, ans.sent());
+    }
+
+    /// Put the answer shown on a post-it over the passage it is about.
+    pub fn pin_answer(&mut self) -> bool {
+        if self.unchanged().is_err() {
+            return false;
+        }
+        let Some(ans) = &mut self.answer else { return false };
+        if ans.state != State::Done || ans.text.trim().is_empty() || ans.pinned {
+            return false;
+        }
+        let ((start, end), text) = (ans.range, ans.text.trim().to_owned());
+        ans.pinned = true;
+        let id = self.doc.next_note_id;
+        self.doc.next_note_id += 1;
+        self.doc.notes.push(crate::model::Note { id, start, end, text, color: 0 });
+        self.status = "- pinned as a post-it".into();
+        true
+    }
+
+    /// What the answer showing was asked with, as sent to Claude.
+    #[cfg(test)]
+    pub fn asked(&self) -> Option<(&Command, String)> {
+        self.answer.as_ref().map(|a| (&a.command, a.sent()))
     }
 
     /// The floating panel with Claude's answer.
@@ -517,64 +722,106 @@ impl App {
             }
         }
         let applicable = self.applicable();
+        let unchanged = self.unchanged();
         let Some(ans) = &mut self.answer else { return };
         let mut open = true;
-        let mut apply = false;
+        let (mut apply, mut pin, mut follow) = (false, false, None);
         let title = format!("Claude · {}", ans.command.title());
         egui::Window::new(title)
             .id(Id::new("claude_answer"))
             .open(&mut open)
             .default_pos(ans.at + vec2(16.0, 16.0))
-            .default_width(380.0)
+            .default_width(400.0)
             .resizable(true)
             .collapsible(false)
             .show(ctx, |ui| {
-                match &ans.state {
-                    State::Waiting => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label("Claude is thinking…");
-                        });
+                let font = FontId::proportional(14.0);
+                let ink = ui.visuals().text_color();
+                egui::ScrollArea::vertical().max_height(420.0).stick_to_bottom(true).show(ui, |ui| {
+                    // The conversation so far, then the answer being written.
+                    for t in &ans.turns {
+                        let job = LayoutJob::simple(t.answer.trim().to_owned(), font.clone(), TEXT_DIM, f32::INFINITY);
+                        ui.add(egui::Label::new(job).wrap().selectable(true));
+                        ui.add_space(6.0);
+                        let said = match (t.reply.as_str(), t.draft) {
+                            ("", true) => "Draft it".to_owned(),
+                            (r, true) => format!("Draft it: {r}"),
+                            (r, false) => r.to_owned(),
+                        };
+                        ui.label(egui::RichText::new(format!("You: {said}")).color(ACCENT));
+                        ui.add_space(6.0);
                     }
-                    State::Failed(e) => {
-                        ui.colored_label(Color32::from_rgb(235, 110, 110), e);
+                    match &ans.state {
+                        State::Waiting => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Claude is thinking…");
+                            });
+                        }
+                        State::Failed(e) => {
+                            ui.colored_label(Color32::from_rgb(235, 110, 110), e);
+                        }
+                        State::Refused => {
+                            ui.colored_label(Color32::from_rgb(235, 110, 110), "Claude declined to answer this request.");
+                        }
+                        State::Streaming | State::Done => {}
                     }
-                    State::Refused => {
-                        ui.colored_label(Color32::from_rgb(235, 110, 110), "Claude declined to answer this request.");
-                    }
-                    State::Streaming | State::Done => {}
-                }
-                if !ans.text.is_empty() && ans.state != State::Refused {
-                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                        let font = FontId::proportional(14.0);
-                        let ink = ui.visuals().text_color();
-                        let job = (ans.command.rewrites() && ans.state == State::Done)
+                    if !ans.text.is_empty() && ans.state != State::Refused {
+                        let job = (ans.rewrites() && ans.state == State::Done)
                             .then(|| diff_job(&ans.original, ans.text.trim(), font.clone(), ink))
                             .flatten()
-                            .unwrap_or_else(|| LayoutJob::simple(ans.text.clone(), font, ink, f32::INFINITY));
+                            .unwrap_or_else(|| LayoutJob::simple(ans.text.clone(), font.clone(), ink, f32::INFINITY));
                         ui.add(egui::Label::new(job).wrap().selectable(true));
-                    });
-                }
-                if ans.state == State::Streaming {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(egui::RichText::new("writing…").color(TEXT_DIM));
-                    });
-                }
+                    }
+                    if ans.state == State::Streaming {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(egui::RichText::new("writing…").color(TEXT_DIM));
+                        });
+                    }
+                });
                 ui.add_space(4.0);
+                let done = ans.state == State::Done && !ans.text.trim().is_empty();
                 ui.horizontal(|ui| {
-                    if ans.command.rewrites() {
-                        let why = applicable.err().unwrap_or("Put this text in place of the circled passage (Ctrl+Z undoes it)");
+                    if ans.rewrites() {
+                        let why = applicable.err().unwrap_or("Put this text in place of the marked passage (Ctrl+Z undoes it)");
                         let button = ui.add_enabled(applicable.is_ok(), egui::Button::new("Apply"));
                         apply = button.on_hover_text(why).on_disabled_hover_text(why).clicked();
                     }
                     if ui.add_enabled(!ans.text.is_empty(), egui::Button::new("Copy")).clicked() {
                         ui.ctx().copy_text(ans.text.trim().to_owned());
                     }
+                    if ans.command.knows_story() {
+                        let why = match unchanged {
+                            _ if ans.pinned => "Pinned",
+                            Err(e) => e,
+                            Ok(()) => "Keep this on a post-it over the passage",
+                        };
+                        let button = ui.add_enabled(done && !ans.pinned && unchanged.is_ok(), egui::Button::new("Pin as note"));
+                        pin = button.on_hover_text(why).on_disabled_hover_text(why).clicked();
+                    }
+                    if matches!(ans.command, Command::Bridge(_)) && !ans.draft {
+                        let why = "Claude fills the gap in the passage, from what you settled; say how in the reply field \
+                            first if you like";
+                        if ui.add_enabled(done, egui::Button::new("Draft it")).on_hover_text(why).clicked() {
+                            follow = Some(true);
+                        }
+                    }
                 });
+                if ans.command.knows_story() && ans.state == State::Done {
+                    let hint = if ans.draft { "Ask for changes to the draft…" } else { "Reply to Claude…" };
+                    let field = ui.add(egui::TextEdit::singleline(&mut ans.reply).hint_text(hint).desired_width(f32::INFINITY));
+                    if field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !ans.reply.trim().is_empty() {
+                        follow = Some(false);
+                    }
+                }
             });
         if apply {
             self.apply_answer(ctx);
+        } else if pin {
+            self.pin_answer();
+        } else if let Some(draft) = follow {
+            self.follow_up(ctx, draft);
         } else if !open {
             self.answer = None;
         }
@@ -583,16 +830,25 @@ impl App {
     /// Can the answer replace the passage it is about? If not, why not.
     fn applicable(&self) -> Result<(), &'static str> {
         let Some(ans) = &self.answer else { return Err("No answer") };
-        let (a, b) = ans.range;
-        if !ans.command.rewrites() || ans.state != State::Done || ans.text.trim().is_empty() {
+        if !ans.rewrites() || ans.state != State::Done || ans.text.trim().is_empty() {
             return Err("Claude has not finished a new version of the passage yet");
         }
         if ans.original.contains([IMAGE_CHAR, PAGE_BREAK]) {
             return Err("The passage holds a picture or page break; copy the text instead");
         }
+        if ans.draft && !ans.keeps_ends(&ans.text) {
+            return Err("Claude's draft leaves out part of the marked scenes; copy it instead");
+        }
+        self.unchanged().map_err(|_| "The passage has been edited since; copy the text instead")
+    }
+
+    /// Is the passage asked about still where it was, as it was? The answer belongs to it only then.
+    fn unchanged(&self) -> Result<(), &'static str> {
+        let Some(ans) = &self.answer else { return Err("No answer") };
+        let (a, b) = ans.range;
         let now = (b <= self.doc.total_chars()).then(|| &self.doc.flow.text[self.doc.char_to_byte(a)..self.doc.char_to_byte(b)]);
         if now != Some(ans.original.as_str()) {
-            return Err("The passage has been edited since; copy the text instead");
+            return Err("The passage has been edited since");
         }
         Ok(())
     }
@@ -612,12 +868,19 @@ impl App {
     /// An answer that has already arrived in full, as if from Claude.
     #[cfg(test)]
     pub fn fake_answer(&mut self, a: usize, b: usize, command: Command, text: &str) {
+        self.answer = Some(self.new_answer(a, b, command, Pos2::ZERO));
+        self.fake_text(text);
+    }
+
+    /// The answer being written arrives in full, as if from Claude, instead of whatever Claude
+    /// would say (in tests, that it may not be called).
+    #[cfg(test)]
+    pub fn fake_text(&mut self, text: &str) {
+        let Some(ans) = &mut self.answer else { return };
         let (tx, rx) = channel();
         tx.send(Msg::Text(text.to_owned())).unwrap();
         tx.send(Msg::Done).unwrap();
-        let original = self.doc.flow.text[self.doc.char_to_byte(a)..self.doc.char_to_byte(b)].to_owned();
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.answer = Some(Answer { command, range: (a, b), original, text: String::new(), state: State::Waiting, rx, cancel, at: Pos2::ZERO });
+        (ans.rx, ans.text, ans.state) = (rx, String::new(), State::Waiting);
     }
 }
 
@@ -633,10 +896,45 @@ mod tests {
         allow_live();
         let (tx, rx) = channel();
         let ctx = egui::Context::default();
-        ask("Their is a dog in the gardn.", &Command::Grammar, &tx, &ctx, &AtomicBool::new(false)).unwrap();
+        let prompt = format!("<passage>\nTheir is a dog in the gardn.\n</passage>\n\n{}", Command::Grammar.instruction());
+        ask(&prompt, &tx, &ctx, &AtomicBool::new(false)).unwrap();
         let text: String = rx.try_iter().filter_map(|m| if let Msg::Text(t) = m { Some(t) } else { None }).collect();
         println!("answer: {text}");
         assert!(text.contains("There") && text.contains("garden"));
+    }
+
+    #[test]
+    #[ignore]
+    fn live_bridge_ideas() {
+        allow_live();
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        let (before, after) = ("fanden im Obergeschoss die Dachluke geöffnet.\n- Bist du noch da? fragte Edwin nach oben.\n\
+            Doch keine Antwort.\n- Vielleicht ist er weg!\n- Aber wohin? wollte Mia wissen.\n", "\nNach dem Gottesdienst saßen \
+            die beiden auf der niedrigen Mauer hinter der Kirche. Edwin sprach leise.\n- Er hat immer wieder dasselbe \
+            gesagt: Em kalma rus. Keine Ahnung, was das bedeuten soll.\n- Em kalma rus, wiederholte ihr Großvater \
+            langsam. Es bedeutet: Kein Weg zurück.");
+        app.doc.flow.text = format!("{before}-----{after}\n"); // only the text is read to build the prompt
+        let end = app.doc.flow.text.chars().count() - 1;
+        let note = "Edwin und Mia verstecken einen Jungen aus einem fernen Land auf dem Dachboden; er wird gesucht.";
+        let note = Command::Bridge(note.into());
+        let said = |prompt: &str| {
+            let (tx, rx) = channel();
+            ask(prompt, &tx, &ctx, &AtomicBool::new(false)).unwrap();
+            rx.try_iter().filter_map(|m| if let Msg::Text(t) = m { Some(t) } else { None }).collect::<String>()
+        };
+        let mut answer = app.new_answer(0, end, note, Pos2::ZERO);
+        assert!(answer.first.contains("Dachluke") && answer.first.contains("Kein Weg zurück"));
+        let ideas = said(&answer.sent());
+        println!("ideas: {ideas}\n");
+        assert!(ideas.contains("Großvater") || ideas.contains("Junge"));
+
+        // Drafting the one the writer likes.
+        let reply = "Die mit dem Zeitsprung, aber kurz: zwei, drei Absätze.".to_owned();
+        answer.turns.push(Turn { answer: ideas, reply, draft: true });
+        let draft = said(&answer.sent());
+        println!("draft: {draft}");
+        assert!(answer.keeps_ends(&draft), "the draft keeps both scenes around the gap");
     }
 
     #[test]

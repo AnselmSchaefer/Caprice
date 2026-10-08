@@ -67,8 +67,9 @@ scenes (a char + drawings)   ──scene_at(caret) / page_scene(i)──▶ the 
 | `ui.rs` | Top toolbar (formatting, Page menu), bottom page bar and scrollbar |
 | `fileio.rs` | `.caprice` format (`DocFile`), open/save/export commands, unsaved-changes detection |
 | `export.rs` | Hand-written Office Open XML for `.docx` |
-| `claude.rs` | Pen loop or cursor selection → passage → `claude -p` → streamed answer panel |
+| `claude.rs` | Pen loop or cursor selection → passage → `claude -p` → streamed answer panel, a conversation; story notes |
 | `backdrop.rs` | Scenes Claude paints (SVG), pinned to the story, faintly behind the pages; the Scene menu and list |
+| `scratchpad.rs` | The scratchpad: plain text saved with the document, in a window on the right |
 | `fonts.rs`, `theme.rs` | Installed fonts loaded on demand; colours and egui visuals |
 
 ---
@@ -222,7 +223,9 @@ paginating).
 - Tests: `roundtrip_keeps_text_styles_breaks_and_setup`, `version_1_files_still_load_as_separate_pages`,
   `chapter_titles_are_saved_and_older_files_have_none`,
   `the_contents_setting_is_saved_opened_and_exported_through_the_app`,
-  `an_older_files_one_scene_opens_pinned_to_the_start_of_the_story`.
+  `an_older_files_one_scene_opens_pinned_to_the_start_of_the_story`,
+  `story_notes_are_saved_and_sent_with_questions_about_the_story_but_not_corrections`,
+  `the_scratchpad_stays_on_the_right_as_it_is_while_pages_turn_and_is_saved`.
 
 ### R10 — Word export maps the model, not the pixels
 
@@ -234,6 +237,8 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
   change. Check the output with LibreOffice (`CAPRICE_SAMPLE_OUT=out.docx cargo test sample_docx`,
   then `soffice --headless --convert-to pdf out.docx`). Not yet checked in Microsoft Word itself.
 - Scenes are not exported (decided: they are a writing aid, too faint to print).
+- Story notes and the scratchpad are not exported (decided: notes to Claude and to oneself, not
+  part of the book).
 - Tests: in `export.rs`, plus `notes_become_comments_over_the_same_text`.
 
 ### R11 — egui workarounds depend on egui internals
@@ -266,9 +271,39 @@ Claude menu:
   Letting go of a drag that left a selection (`sel_drag`, a double or triple click too) offers the
   commands for it (`offer_commands`), a `Lasso` with no points, only `caught`.
 - Either way the commands come from the one `Lasso` menu; anything new there must work for both.
-- Tests: `a_loop_drawn_with_the_pen_selects_the_text_inside_it`,
+- **The menu's text fields take the typing, never the passage.** The passage is still selected
+  while the menu is open, so a keystroke that reaches the editor replaces it. Whichever field the
+  menu shows takes focus the first frame it shows (`menu_shown`). A button that swaps the menu for
+  another step (Connect the scenes → `bridging`) must stop drawing the menu that frame (`return`),
+  or a field further down takes the focus and is gone the next frame.
+- **Claude is sent only the marked passage**, never other text of the document: the writer
+  decides what Claude sees by what they circle or select. Added to it are only what the writer
+  wrote for Claude: the note typed for Connect the scenes, and the story notes (`Doc::story_notes`)
+  with every command about the story (`knows_story`), not with corrections (Fix, Grammar). It is
+  built in one place, `App::prompt`, and kept in `Answer::first`. Connecting the scenes
+  (`Command::Bridge`) expects the passage to hold both scenes, and Claude finds the gap in it.
+  (It once also sent 12,000 chars of story on each side, which for most stories was all of it.)
+- **An answer is a conversation.** `claude -p` keeps nothing between calls (we pass
+  `--no-session-persistence`), so every reply sends `Answer::sent()`: the first prompt again,
+  then each earlier answer and reply. A new kind of follow-up adds its instruction there.
+  `follow_up` stops the answer being written before starting the next.
+- **An answer that can take the passage's place** is `Answer::rewrites()`: Fix and Grammar, or a
+  draft (`draft`, from Draft it: the passage again with the gap filled, shown as a diff; a reply
+  to a draft asks for it revised). Claude sometimes answers a draft with only the new part, which
+  would replace both scenes: the request names the passage's first and last words, and Apply is
+  off unless the draft keeps them (`keeps_ends`). Apply and
+  Pin as note both need the passage unchanged since it was asked about (`unchanged`): the range
+  is not moved with edits. A pinned answer is a post-it like any other (R7, saved, a Word comment).
+- Tests: `claude_is_sent_only_the_marked_text_whatever_it_is_asked` (a new command or follow-up
+  goes into it), `a_loop_drawn_with_the_pen_selects_the_text_inside_it`,
   `circling_with_the_pen_takes_drags_away_from_the_cursor`,
-  `asking_claude_by_cursor_offers_the_commands_for_a_selection_over_two_pages`.
+  `asking_claude_by_cursor_offers_the_commands_for_a_selection_over_two_pages`,
+  `connecting_two_scenes_sends_the_marked_scenes_with_the_writers_note`,
+  `replying_to_claude_sends_the_conversation_so_far`,
+  `a_draft_fills_the_gap_in_the_marked_scenes_in_one_undo_step`,
+  `a_reply_to_a_draft_asks_for_it_revised`,
+  `pinning_an_answer_puts_it_on_a_post_it_over_the_passage_once`,
+  `story_notes_are_saved_and_sent_with_questions_about_the_story_but_not_corrections`.
 
 ### R14 — Scenes: one per paragraph, each covering the story up to the next; the caret's shows
 
@@ -305,6 +340,36 @@ was painted for (`start_scene`: the selection's or caret's paragraph, or the pas
   `a_scene_still_being_painted_is_not_saved_and_goes_if_stopped`,
   `following_the_writing_paints_each_paragraph_once_it_is_finished`, and those of R7 and R9.
 
+### R15 — Post-its: one size, the text in sheets; a sheet shows its own rows and no more
+
+A post-it is always `NOTE_SIZE` square. `sheets` breaks its text into sheets of whole rows (as
+many as fit the text area above the counter), and two drawings must agree with it:
+
+- **At rest** (`draw_notes`) the whole text is one `TextEdit`, shifted up to the sheet on top and
+  clipped to that sheet's rows, not to the whole text area. The area has room for part of one
+  more row, which would show cut in half and look like text that cannot be read.
+- **Painted** (`note_shapes`: other pages, turning, the pad flipping) each sheet is laid out on
+  its own (`sheet_galley`).
+- A change to the font, padding, footer or row breaking goes through `sheets`, and both follow.
+- Tests: `a_post_it_shows_whole_rows_and_the_rest_on_its_next_sheet` (checks what is painted,
+  through `Harness::painted`).
+
+### R16 — Windows float over the pages, and what happens over them is theirs
+
+The scratchpad, Claude's answer, the story notes and the scene panels are egui windows over the
+pages. They belong to the window, not to a page, so turning pages leaves them as they are. The
+scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it shows is the app's.
+
+- **Input over a window is the window's.** The view acts on the wheel and touchpad only over the
+  pages (`ctx.layer_id_at` is a `Background` layer): `swipe_pages` for sideways swipes, and
+  `page_rect` for panning up and down. Anything new the view does with the pointer checks the same.
+- Keys typed into a window's field never reach the story: the editor yields while
+  `egui_wants_keyboard_input()`.
+- The toolbar is full at about 1100 points wide: a new toggle goes in the page bar (like Fit and
+  Scratchpad) or into a menu, or the last toolbar menus run off the window.
+- Tests: `the_scratchpad_stays_on_the_right_as_it_is_while_pages_turn_and_is_saved`,
+  `scrolling_over_the_scratchpad_scrolls_it_and_not_the_page`.
+
 ---
 
 ## 5. Checklists for common changes
@@ -325,6 +390,9 @@ on the contents pages with `Harness::long_contents`.
 
 **The file format:** `serde(default)`, a migration in `into_doc` that moves notes and scenes, an old-file test.
 
+**A new window over the pages:** a toggle in the page bar or a menu, not the toolbar (R16); its
+scrolling must not move the pages (R16); its stored text in `Doc` and `DocFile` (R9).
+
 **Something new pinned to the text** (like notes and scenes): move it in `apply_raw` and in
 `into_doc` (R7), save it (R9), decide its Word mapping (R10).
 
@@ -335,7 +403,9 @@ on the contents pages with `Harness::long_contents`.
 - `cargo test` runs everything headlessly (about 130 tests, ~6 s). They drive the real `App`
   through an egui `Context`: `layout::with_ctx` for model/layout tests, `Harness` (in `main.rs`)
   for app-level ones (`frames`, `key`, `type_text`, `click_in_page`, `scrub_to`, `long_contents`,
-  `shown`).
+  `shown`, and `click_widget`, which finds a button by its label or a field by its hint through
+  egui's AccessKit tree; `painted` holds the last frame's shapes, to check what is drawn and
+  where it is clipped).
 - Prefer tests of what the user sees (page shown, caret, text) over internals, so they survive
   redesigns. Name them as sentences of the behaviour.
 - For anything incremental, compare with doing it from scratch.
@@ -360,5 +430,11 @@ on the contents pages with `Harness::long_contents`.
   put the caret at the turned-to page's start. With scenes following the caret (R14), that changed
   the picture on every page turn, and it lost the writer's place. Now only a click, typing or
   moving the caret moves it (R5).
+- **2026-10-08 — Brainstorming with Claude lives in the answer panel and on post-its.** Connecting
+  scenes, replies and drafts are one conversation in the panel, resent in full each time rather
+  than resumed (`--resume` would need Claude Code to keep sessions on disk). What is worth keeping
+  is pinned as a post-it on the passage, so ideas stay with the story without a store of their
+  own. What Claude should always know is the story notes, saved with the document (R13). Claude
+  sees only the passage marked, never more of the document: the writer decides what it reads.
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

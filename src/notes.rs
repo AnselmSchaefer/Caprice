@@ -347,7 +347,10 @@ impl App {
             let shift = s.starts[pad.sheet].1;
             let field_rect = Rect::from_min_size(area.min - vec2(0.0, shift), vec2(area.width(), shift + area.height()));
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field_rect));
-            child.set_clip_rect(area.intersect(ui.clip_rect()));
+            // Only this sheet's rows: the area has room for part of one more, which would show cut in half.
+            let next = s.starts.get(pad.sheet + 1).map_or(f32::INFINITY, |&(_, y)| y);
+            let rows = Rect::from_min_size(area.min, vec2(area.width(), (next - shift).min(area.height())));
+            child.set_clip_rect(rows.intersect(ui.clip_rect()));
             let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| ui.fonts_mut(|f| f.layout_job(note_job(buf.as_str(), sc)));
             let out = TextEdit::multiline(&mut self.doc.notes[k].text)
                 .id(Id::new(("note_text", id)))

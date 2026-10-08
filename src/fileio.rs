@@ -95,6 +95,10 @@ pub struct DocFile {
     pub scene: Option<crate::backdrop::SceneFile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     scenes: Vec<SceneEntry>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    story_notes: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    scratchpad: String,
 }
 
 fn to_runs(text: &str, styles: &[Style]) -> Vec<Run> {
@@ -150,6 +154,8 @@ impl DocFile {
             pages: Vec::new(),
             scene: None,
             scenes,
+            story_notes: doc.story_notes.clone(),
+            scratchpad: doc.scratchpad.clone(),
         }
     }
 
@@ -170,6 +176,8 @@ impl DocFile {
         doc.ensure_final_mark();
         doc.setup = self.setup;
         doc.setup.clamp_margins();
+        doc.story_notes = self.story_notes;
+        doc.scratchpad = self.scratchpad;
         let removed = doc.take_out_contents_chars();
         for img in self.images {
             let Ok(bytes) = BASE64.decode(img.data.as_bytes()) else { continue };

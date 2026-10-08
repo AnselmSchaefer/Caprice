@@ -14,6 +14,7 @@ mod model;
 mod notes;
 mod paginate;
 mod render;
+mod scratchpad;
 mod search;
 mod theme;
 mod ui;
@@ -159,6 +160,10 @@ pub struct App {
     pub lasso: Option<claude::Lasso>,
     /// Claude's answer being shown, if any.
     pub answer: Option<claude::Answer>,
+    /// The story notes window is open.
+    pub story_notes_open: bool,
+    /// The scratchpad shows, on the right.
+    pub scratchpad_open: bool,
     /// The scene Claude paints behind the pages, and the panel to describe it.
     pub backdrop: backdrop::Backdrop,
     /// A file dialog waiting for the user to choose.
@@ -235,6 +240,8 @@ impl App {
             picking: claude::Picking::Circle,
             lasso: None,
             answer: None,
+            story_notes_open: false,
+            scratchpad_open: false,
             backdrop: backdrop::Backdrop::default(),
             dialog: None,
             saved_hash: 0,
@@ -544,6 +551,8 @@ impl App {
         self.search_bar(ui, area);
         self.picture_menu(&ctx);
         self.answer_panel(&ctx);
+        self.story_notes_window(&ctx);
+        self.scratchpad(&ctx);
         self.scene_panel(&ctx);
         self.scene_list(&ctx);
         self.unsaved_prompt(&ctx);
@@ -559,6 +568,10 @@ mod tests {
         app: App,
         time: f64,
         mods: Modifiers,
+        /// The widgets of the last frame as a screen reader sees them, once `click_widget` asked for them.
+        access: Option<egui::accesskit::TreeUpdate>,
+        /// What the last frame painted.
+        painted: Vec<egui::epaint::ClippedShape>,
     }
 
     impl Harness {
@@ -566,7 +579,7 @@ mod tests {
             let ctx = egui::Context::default();
             apply_theme(&ctx);
             let app = App::new(&ctx);
-            Self { ctx, app, time: 0.0, mods: Modifiers::NONE }
+            Self { ctx, app, time: 0.0, mods: Modifiers::NONE, access: None, painted: Vec::new() }
         }
 
         fn frames(&mut self, n: usize, events: Vec<egui::Event>, modifiers: Modifiers) {
@@ -587,6 +600,8 @@ mod tests {
                 let app = &mut self.app;
                 let mut out = self.ctx.run_ui(input, |ui| app.frame(ui));
                 out.textures_delta.clear();
+                self.access = out.platform_output.accesskit_update.take().or(self.access.take());
+                self.painted = std::mem::take(&mut out.shapes);
             }
         }
 
@@ -741,7 +756,7 @@ mod tests {
         // Pointing here again lays them back; pointing back slides the page behind half out of the pile.
         h.frames(1, vec![egui::Event::PointerMoved(at(1.0))], Modifiers::NONE);
         h.frames(30, vec![], Modifiers::NONE);
-        assert_eq!(h.app.held, 0.0);
+        assert!(near(h.app.held, 0.0), "{}", h.app.held);
         h.frames(1, vec![egui::Event::PointerMoved(at(0.0))], Modifiers::NONE);
         h.frames(30, vec![], Modifiers::NONE);
         assert!(near(h.app.held, -1.0), "{}", h.app.held);
@@ -1410,6 +1425,28 @@ mod tests {
             let e = egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
             self.frames(1, vec![egui::Event::PointerMoved(pos), e], Modifiers::NONE);
         }
+
+        /// Click the button labelled `label`, or the text field with that hint, found as a screen
+        /// reader finds it.
+        fn click_widget(&mut self, label: &str) {
+            self.ctx.enable_accesskit();
+            self.frames(1, vec![], Modifiers::NONE);
+            let nodes = self.access.as_ref().map_or(&[][..], |t| &t.nodes[..]);
+            let r = find_widget(nodes, label).unwrap_or_else(|| panic!("no button {label:?}"));
+            let at = egui::pos2(((r.x0 + r.x1) / 2.0) as f32, ((r.y0 + r.y1) / 2.0) as f32);
+            self.press_at(at, true);
+            self.press_at(at, false);
+            self.frames(2, vec![], Modifiers::NONE);
+        }
+    }
+
+    /// Where the button labelled `label`, or the field with that hint, is. A window titled the same
+    /// is not it.
+    fn find_widget(nodes: &[(egui::accesskit::NodeId, egui::accesskit::Node)], label: &str) -> Option<egui::accesskit::Rect> {
+        use egui::accesskit::Role;
+        let named = |n: &egui::accesskit::Node| n.label() == Some(label) || n.placeholder() == Some(label);
+        let takes_input = |n: &egui::accesskit::Node| !matches!(n.role(), Role::Label | Role::Window | Role::GenericContainer);
+        nodes.iter().find(|(_, n)| named(n) && takes_input(n)).and_then(|(_, n)| n.bounds())
     }
 
     /// Three pages and more of text, the caret on the first.
@@ -1574,6 +1611,311 @@ mod tests {
         assert!(a == from && b > h.app.doc.spans[1].start, "{a}..{b}");
         let caught = h.app.lasso.as_ref().and_then(|l| l.caught).map(|(a, b, _)| (a, b));
         assert_eq!(caught, Some((a, b)), "the commands are offered for the whole selection");
+    }
+
+    /// The rows of `text` painted this frame, each with whether its height shows in full
+    /// (`Some(true)`), not at all (`Some(false)`), or cut by the clip (`None`).
+    fn rows_shown(h: &Harness, text: &str) -> Vec<(String, Option<bool>)> {
+        let mut rows = Vec::new();
+        for cs in &h.painted {
+            let egui::Shape::Text(t) = &cs.shape else { continue };
+            if t.galley.text() != text {
+                continue;
+            }
+            for row in &t.galley.rows {
+                // Rows are cut from below or above; a tenth of a point either way is rounding.
+                let (r, clip) = (row.rect().translate(t.pos.to_vec2()).y_range(), cs.clip_rect.y_range());
+                let overlap = r.max.min(clip.max) - r.min.max(clip.min);
+                let shown = if overlap >= r.span() - 0.1 { Some(true) } else if overlap <= 0.1 { Some(false) } else { None };
+                rows.push((row.text(), shown));
+            }
+        }
+        rows
+    }
+
+    #[test]
+    fn a_post_it_shows_whole_rows_and_the_rest_on_its_next_sheet() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text(TWO_SCENES);
+        let text = "Idea one: the roofs. Edwin climbs through the hatch and finds something on the roof that the boy \
+            left behind.\n\nIdea two: the church. They search all night and go to church in the morning as if \
+            nothing had happened, and the grandfather is waiting.";
+        h.app.doc.notes.push(model::Note { id: 50, start: 0, end: 4, text: text.into(), color: 0 });
+        h.frames(3, vec![], Modifiers::NONE);
+
+        let rows = rows_shown(&h, text);
+        assert!(rows.len() > 10, "the note is drawn as one text: {rows:?}");
+        let cut: Vec<_> = rows.iter().filter(|(_, s)| s.is_none()).collect();
+        assert!(cut.is_empty(), "rows cut in half: {cut:?}");
+        let first: Vec<_> = rows.iter().filter(|(_, s)| *s == Some(true)).map(|(t, _)| t.clone()).collect();
+        assert!(first[0].starts_with("Idea one") && first.len() < rows.len(), "{rows:?}");
+
+        // The counter's right half turns to the next sheet, which goes on with the next row.
+        let rect = h.app.last_page_rect;
+        let sc = h.app.scale_of(rect);
+        let ctx = h.ctx.clone();
+        let y = h.app.note_places(&ctx)[&0][0].1;
+        let r = notes::note_rect(rect, sc, y);
+        h.press_at(r.right_bottom() - egui::vec2(14.0, 12.0) * sc, true);
+        h.press_at(r.right_bottom() - egui::vec2(14.0, 12.0) * sc, false);
+        h.frames(30, vec![], Modifiers::NONE);
+        let rows = rows_shown(&h, text);
+        assert!(rows.iter().all(|(_, s)| s.is_some()), "{rows:?}");
+        let second: Vec<_> = rows.iter().filter(|(_, s)| *s == Some(true)).map(|(t, _)| t.clone()).collect();
+        let at = rows.iter().position(|(t, _)| *t == second[0]).unwrap();
+        assert_eq!(rows[at - 1].0, first[first.len() - 1], "no row is skipped between the sheets");
+    }
+
+    impl Harness {
+        /// Where the widget labelled `label` (or the field with that hint) was last drawn, if it was.
+        fn widget_rect(&mut self, label: &str) -> Option<egui::Rect> {
+            self.ctx.enable_accesskit();
+            self.frames(1, vec![], Modifiers::NONE);
+            let nodes = self.access.as_ref().map_or(&[][..], |t| &t.nodes[..]);
+            let r = find_widget(nodes, label)?;
+            Some(egui::Rect::from_min_max(egui::pos2(r.x0 as f32, r.y0 as f32), egui::pos2(r.x1 as f32, r.y1 as f32)))
+        }
+    }
+
+    const SCRATCHPAD_HINT: &str = "Notes, lists, lines not yet placed… Plain text, saved with the document.";
+
+    #[test]
+    fn the_scratchpad_stays_on_the_right_as_it_is_while_pages_turn_and_is_saved() {
+        let mut h = Harness::new();
+        pages_of_text(&mut h);
+        let story = h.app.doc.visible_text().to_owned();
+        assert!(h.widget_rect(SCRATCHPAD_HINT).is_none(), "off until asked for");
+        h.click_widget("Scratchpad");
+        h.click_widget(SCRATCHPAD_HINT);
+        h.type_text("Ask about the boy's name.\n- the hatch\n- the church");
+        assert_eq!(h.app.doc.scratchpad, "Ask about the boy's name.\n- the hatch\n- the church");
+        assert_eq!(h.app.doc.visible_text(), story, "nothing is typed into the story");
+        assert!(h.app.unsaved());
+        let at = h.widget_rect(SCRATCHPAD_HINT).expect("the scratchpad shows");
+        assert!(at.left() > 1100.0 / 2.0, "on the right: {at:?}");
+
+        // Turning pages leaves it where and as it was.
+        h.click_in_page(egui::vec2(100.0, 100.0));
+        for _ in 0..2 {
+            h.key(Key::PageDown, Modifiers::NONE);
+            h.frames(40, vec![], Modifiers::NONE);
+        }
+        assert_eq!(h.shown(), 2);
+        assert_eq!(h.widget_rect(SCRATCHPAD_HINT), Some(at));
+        assert_eq!(h.app.doc.scratchpad, "Ask about the boy's name.\n- the hatch\n- the church");
+
+        let other = h.reopened("scratchpad");
+        assert_eq!(other.app.doc.scratchpad, "Ask about the boy's name.\n- the hatch\n- the church");
+
+        // The same button puts it away; the text stays.
+        h.click_widget("Scratchpad");
+        assert!(h.widget_rect(SCRATCHPAD_HINT).is_none());
+        assert_eq!(h.app.doc.scratchpad, "Ask about the boy's name.\n- the hatch\n- the church");
+    }
+
+    #[test]
+    fn scrolling_over_the_scratchpad_scrolls_it_and_not_the_page() {
+        let mut h = Harness::new();
+        pages_of_text(&mut h);
+        h.app.doc.scratchpad = (1..=200).map(|n| format!("line {n}\n")).collect();
+        h.click_widget("Scratchpad");
+        // Zoomed in, so that scrolling over the page would move it.
+        h.key(Key::Plus, Modifiers::COMMAND);
+        h.frames(10, vec![], Modifiers::NONE);
+        let page = h.app.last_page_rect;
+        let over = h.widget_rect(SCRATCHPAD_HINT).unwrap().min + egui::vec2(60.0, 60.0); // the field runs on below the window
+        let (unit, delta, phase) = (egui::MouseWheelUnit::Point, egui::vec2(0.0, -200.0), egui::TouchPhase::Move);
+        let wheel = egui::Event::MouseWheel { unit, delta, modifiers: Modifiers::NONE, phase };
+        h.frames(1, vec![egui::Event::PointerMoved(over)], Modifiers::NONE);
+        h.frames(1, vec![wheel], Modifiers::NONE);
+        h.frames(30, vec![], Modifiers::NONE);
+        assert_eq!(h.app.last_page_rect, page, "the page stays put");
+        let field = h.widget_rect(SCRATCHPAD_HINT).unwrap();
+        assert!(field.top() < over.y - 60.0 - 150.0, "the scratchpad scrolled: {field:?}");
+    }
+
+    #[test]
+    fn claude_is_sent_only_the_marked_text_whatever_it_is_asked() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text(&format!("The zebra chapter.\n{TWO_SCENES}\nThe quokka chapter."));
+        h.app.doc.notes.push(model::Note { id: 50, start: 0, end: 7, text: "A platypus post-it.".into(), color: 0 });
+        let (a, b) = (19, 19 + TWO_SCENES.chars().count());
+        let ctx = h.ctx.clone();
+        let commands = [
+            claude::Command::Review,
+            claude::Command::Fix,
+            claude::Command::Grammar,
+            claude::Command::Summarize,
+            claude::Command::Ask("Why?".into()),
+            claude::Command::Bridge("They hide a boy.".into()),
+        ];
+        for command in commands {
+            h.app.ask_claude(&ctx, a, b, command.clone(), egui::Pos2::ZERO);
+            let (_, sent) = h.app.asked().unwrap();
+            assert!(sent.contains(TWO_SCENES), "{command:?}: {sent}");
+            for elsewhere in ["zebra", "quokka", "platypus"] {
+                assert!(!sent.contains(elsewhere), "{command:?} sent text from outside the marking: {sent}");
+            }
+        }
+
+        // Nor do replies and drafts add any.
+        h.app.fake_text("Idea one.");
+        h.frames(2, vec![], Modifiers::NONE);
+        h.click_widget("Draft it");
+        let (_, sent) = h.app.asked().unwrap();
+        assert!(!sent.contains("zebra") && !sent.contains("quokka"), "{sent}");
+    }
+
+    #[test]
+    fn connecting_two_scenes_sends_the_marked_scenes_with_the_writers_note() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text(TWO_SCENES);
+        h.app.pick_by(claude::Picking::Cursor);
+
+        // Both scenes and the gap between them, selected with the cursor.
+        let ctx = h.ctx.clone();
+        let end = TWO_SCENES.chars().count();
+        let layout = h.app.page_layout(&ctx, 0, 1.0);
+        let (from, to) = (layout.caret_rect(0, true).center(), layout.caret_rect(end, true).center());
+        h.drag_in_page(from.to_vec2(), to.to_vec2());
+        assert_eq!(h.app.selection(), (0, end));
+        h.click_widget("Connect the scenes…");
+        h.type_text("They hide a boy from far away in the attic.");
+        h.click_widget("Get ideas");
+
+        let (command, prompt) = h.app.asked().expect("Claude was asked");
+        assert_eq!(command, &claude::Command::Bridge("They hide a boy from far away in the attic.".into()));
+        assert!(prompt.contains(&format!("<passage>\n{TWO_SCENES}\n</passage>")), "{prompt}");
+        assert!(prompt.contains("<writers_note>\nThey hide a boy from far away in the attic.\n</writers_note>"), "{prompt}");
+        assert_eq!(h.app.doc.visible_text(), TWO_SCENES, "the note is not typed into the story");
+    }
+
+    /// Two scenes with a gap between them, marked, and Claude's ideas for connecting them showing.
+    fn ideas_for_a_gap(h: &mut Harness) {
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text(TWO_SCENES);
+        let end = TWO_SCENES.chars().count();
+        h.app.fake_answer(0, end, claude::Command::Bridge(String::new()), "Idea one: the roofs.\nIdea two: the church.");
+        h.frames(2, vec![], Modifiers::NONE);
+    }
+
+    const TWO_SCENES: &str = "They found the hatch open.\n-----\nAfter church they sat on the wall.";
+
+    #[test]
+    fn replying_to_claude_sends_the_conversation_so_far() {
+        let mut h = Harness::new();
+        ideas_for_a_gap(&mut h);
+        h.click_widget("Reply to Claude…");
+        h.type_text("Take the church, but the grandfather knows nothing yet.");
+        h.key(Key::Enter, Modifiers::NONE);
+
+        let (_, sent) = h.app.asked().unwrap();
+        let (first, conversation) = sent.split_once("<conversation_so_far>").expect("the conversation is sent");
+        assert!(first.contains(&format!("<passage>\n{TWO_SCENES}\n</passage>")), "the first question goes again: {first}");
+        let answered = "<your_answer>\nIdea one: the roofs.\nIdea two: the church.\n</your_answer>";
+        assert!(conversation.contains(answered), "{conversation}");
+        let replied = "<writers_reply>\nTake the church, but the grandfather knows nothing yet.\n</writers_reply>";
+        assert!(conversation.contains(replied), "{conversation}");
+        assert!(conversation.ends_with(claude::FOLLOW_UP));
+        assert_eq!(h.app.doc.visible_text(), TWO_SCENES, "the reply is not typed into the story");
+
+        // The next answer goes on from there.
+        h.app.fake_text("Then the grandfather only sees them.");
+        h.frames(2, vec![], Modifiers::NONE);
+        h.click_widget("Reply to Claude…");
+        h.type_text("Good.");
+        h.key(Key::Enter, Modifiers::NONE);
+        let (_, sent) = h.app.asked().unwrap();
+        assert_eq!(sent.matches("<your_answer>").count(), 2);
+        assert!(sent.contains("<your_answer>\nThen the grandfather only sees them.\n</your_answer>\n<writers_reply>\nGood."));
+    }
+
+    #[test]
+    fn a_draft_fills_the_gap_in_the_marked_scenes_in_one_undo_step() {
+        let mut h = Harness::new();
+        ideas_for_a_gap(&mut h);
+        h.click_widget("Draft it");
+        let (_, sent) = h.app.asked().unwrap();
+        assert!(sent.contains(claude::DRAFT), "{sent}");
+        let ends = "Begin your reply with \"They found the hatch open.\" and end it with \"they sat on the wall.\".";
+        assert!(sent.ends_with(ends), "the scenes' ends are named: {sent}");
+
+        // Only the new part would replace both scenes, so it cannot be applied.
+        h.app.fake_text("They ran across the square to the church.");
+        h.frames(2, vec![], Modifiers::NONE);
+        h.click_widget("Apply");
+        assert_eq!(h.app.doc.visible_text(), TWO_SCENES);
+        h.click_widget("Ask for changes to the draft…");
+        h.type_text("Keep the scenes around it.");
+        h.key(Key::Enter, Modifiers::NONE);
+
+        // The marked scenes again, the gap filled.
+        let drafted = "They found the hatch open.\nThey ran across the square to the church.\nAfter church they sat on the wall.";
+        h.app.fake_text(drafted);
+        h.frames(2, vec![], Modifiers::NONE);
+        h.click_widget("Apply");
+        assert_eq!(h.app.doc.visible_text(), drafted);
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert_eq!(h.app.doc.visible_text(), TWO_SCENES);
+    }
+
+    #[test]
+    fn a_reply_to_a_draft_asks_for_it_revised() {
+        let mut h = Harness::new();
+        ideas_for_a_gap(&mut h);
+        h.click_widget("Draft it");
+        h.app.fake_text("They ran to the church.");
+        h.frames(2, vec![], Modifiers::NONE);
+        h.click_widget("Ask for changes to the draft…");
+        h.type_text("Shorter.");
+        h.key(Key::Enter, Modifiers::NONE);
+        let (_, sent) = h.app.asked().unwrap();
+        assert!(sent.contains("<writers_reply>\nShorter.\n</writers_reply>") && sent.contains(claude::DRAFT), "{sent}");
+    }
+
+    #[test]
+    fn pinning_an_answer_puts_it_on_a_post_it_over_the_passage_once() {
+        let mut h = Harness::new();
+        ideas_for_a_gap(&mut h);
+        h.click_widget("Pin as note");
+        let pinned: Vec<_> = h.app.doc.notes.iter().map(|n| (n.start, n.end, n.text.as_str())).collect();
+        assert_eq!(pinned, [(0, TWO_SCENES.chars().count(), "Idea one: the roofs.\nIdea two: the church.")]);
+        h.click_widget("Pin as note");
+        assert_eq!(h.app.doc.notes.len(), 1, "the same answer is pinned only once");
+        assert_eq!(h.app.doc.visible_text(), TWO_SCENES);
+    }
+
+    #[test]
+    fn story_notes_are_saved_and_sent_with_questions_about_the_story_but_not_corrections() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text(TWO_SCENES);
+        h.click_widget("Claude");
+        h.click_widget("Story notes…");
+        h.click_widget("Who is who, what has happened so far, what the reader must not learn yet…");
+        h.type_text("Edwin and Mia hide a boy in the attic.");
+        assert_eq!(h.app.doc.story_notes, "Edwin and Mia hide a boy in the attic.");
+        assert_eq!(h.app.doc.visible_text(), TWO_SCENES, "the notes are not typed into the story");
+        assert!(h.app.unsaved());
+
+        let ctx = h.ctx.clone();
+        let notes = "<story_notes>\nEdwin and Mia hide a boy in the attic.\n</story_notes>";
+        for (command, sent) in [
+            (claude::Command::Bridge(String::new()), true),
+            (claude::Command::Review, true),
+            (claude::Command::Ask("Why?".into()), true),
+            (claude::Command::Grammar, false),
+            (claude::Command::Fix, false),
+        ] {
+            h.app.ask_claude(&ctx, 27, 32, command.clone(), egui::Pos2::ZERO);
+            assert_eq!(h.app.asked().unwrap().1.contains(notes), sent, "{command:?}");
+        }
+
+        let other = h.reopened("story-notes");
+        assert_eq!(other.app.doc.story_notes, "Edwin and Mia hide a boy in the attic.");
     }
 
     #[test]

@@ -147,7 +147,9 @@ impl App {
             self.fit_settling = false;
         }
         // Sideways swipes flip pages instead (see `swipe_pages`); Ctrl+drag still pans sideways.
-        if !self.fit && scroll.y.abs() >= scroll.x.abs() {
+        // Scrolling over a window (the scratchpad, Claude's answer) scrolls that, not the pages.
+        let over_pages = hover.is_some_and(|p| ctx.layer_id_at(p).is_none_or(|l| l.order == egui::Order::Background));
+        if !self.fit && over_pages && scroll.y.abs() >= scroll.x.abs() {
             self.origin.y += scroll.y;
         }
 

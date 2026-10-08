@@ -301,6 +301,10 @@ pub struct Doc {
     /// Scenes painted for the story, in no particular order.
     pub scenes: Vec<Scene>,
     pub next_scene_id: u64,
+    /// What the writer wants Claude to know about the story whenever it is asked about it.
+    pub story_notes: String,
+    /// The scratchpad's plain text, kept beside the story.
+    pub scratchpad: String,
 }
 
 impl Doc {
@@ -317,6 +321,8 @@ impl Doc {
             history: Default::default(),
             scenes: Vec::new(),
             next_scene_id: 1,
+            story_notes: String::new(),
+            scratchpad: String::new(),
         }
     }
 
