@@ -409,7 +409,10 @@ impl App {
         let dt = ui.input(|i| i.stable_dt).min(0.05);
         let mut speed = (diff.abs().ceil() * 2.75).clamp(2.2, 14.0);
         let base = self.pos.floor();
-        if self.pos - base >= book::TURN && !self.slides_in(base as usize) {
+        if self.slides_in(base as usize) {
+            // A new page is something to watch arrive; several added quickly still come in about as long.
+            speed = book::NEW_PAGE_PACE * diff.abs().ceil();
+        } else if self.pos - base >= book::TURN {
             speed /= 2.0; // a turned page slides onto the pile at half the pace
         }
         let step = speed * dt;
@@ -1682,9 +1685,10 @@ mod tests {
         assert!(start > page.right(), "it sticks out on the right");
 
         h.click_widget("+ New page");
-        let (mut xs, mut new_page_lefts) = (vec![start], Vec::new());
-        for _ in 0..90 {
+        let (mut xs, mut new_page_lefts, mut moving) = (vec![start], Vec::new(), 0);
+        for _ in 0..120 {
             h.frames(1, vec![], Modifiers::NONE);
+            moving += usize::from(h.app.pos != h.app.target as f32);
             xs.extend(green_post_it_x(&h));
             // Flat paper right of the page's place: the new page, still on its way in.
             let flat = h.painted.iter().filter_map(|cs| match &cs.shape {
@@ -1693,6 +1697,8 @@ mod tests {
             });
             new_page_lefts.extend(flat.filter(|&x| x > page.left() + 1.0));
         }
+        let seconds = moving as f32 / 60.0;
+        assert!((0.8..1.1).contains(&seconds), "slow enough to follow: {seconds} s");
         assert!(new_page_lefts.iter().any(|&x| x > page.center().x), "the new page slides in from the right: {new_page_lefts:?}");
         assert!(new_page_lefts.windows(2).all(|w| w[1] <= w[0]), "coming in steadily: {new_page_lefts:?}");
         assert_eq!((h.app.doc.pages(), h.app.target), (2, 1), "on the new page");
