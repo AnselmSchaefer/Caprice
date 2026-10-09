@@ -51,7 +51,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 
 | Module | Owns |
 |---|---|
-| `model.rs` | `Doc`, `Flow`, `Style`, `ParaAttrs`, `PageSetup`, `Span`, `Note`, `ImageData`, `Scene`, `Character`; special chars; char↔byte, `page_of`, `para_start`, `term_from` |
+| `model.rs` | `Doc`, `Flow`, `Style`, `ParaAttrs`, `PageSetup`, `Span`, `Note`, `ImageData`, `Scene`, `Character`, `Look`; special chars; char↔byte, `page_of`, `para_start`, `term_from` |
 | `edit.rs` | `Edit` (replace / restyle), `Doc::apply`, undo/redo `History`, moving notes with edits (`rebase_notes`) |
 | `paginate.rs` | `full_paginate`, `paginate_after` (incremental), `next_span`: where pages break, at page size |
 | `layout.rs` | One egui `LayoutJob` per paragraph piece; `layout_page`; `PageLayout` (hit, caret, rows, selection, links); `true_to_scale`, `tight_highlights` |
@@ -388,6 +388,11 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   `page_rect` for panning up and down. Anything new the view does with the pointer checks the same.
 - Keys typed into a window's field never reach the story: the editor yields while
   `egui_wants_keyboard_input()`.
+- **A window sizes itself to what it holds, so a row must not ask for more than it has.** A field
+  given `available_width()` less a guess for the button after it widens the window a little every
+  frame, without end. Lay such a row out right to left inside `horizontal` (the button first, then
+  the field at `f32::INFINITY`); `with_layout` alone takes all the height left and centres the row
+  in it. (Found in the Cast window, guarded by `someone_can_keep_several_looks_and_scenes_get_the_one_in_use`.)
 - The toolbar is full at about 1100 points wide: a new toggle goes in the page bar (like Fit and
   Scratchpad) or into a menu, or the last toolbar menus run off the window.
 - Tests: `the_scratchpad_stays_on_the_right_as_it_is_while_pages_turn_and_is_saved`,
@@ -395,8 +400,20 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
 
 ### R17 — The cast: people are found by name in what is painted, or just before it, and sent with that scene only
 
-`Doc::cast` holds the people of the story (`Character`: name, other names, look, model sheet),
-saved with the document (R9), never exported (R10), not undoable and not pinned to the text.
+`Doc::cast` holds the people of the story (`Character`: name, other names, and one or more
+`Look`s, each words and a model sheet), saved with the document (R9), never exported (R10), not
+undoable and not pinned to the text.
+
+- **One look is in use at a time** (`Character::active`, `look()`), chosen by hand in the Cast
+  window, and every painting from then on gets that one; others are kept, sheets and all, to switch
+  back to. Everything that sends or draws a look goes through `look()` or a look's id, never
+  `looks[0]`. A new look starts from the words of the one in use, and is not put in use. Deleting
+  the look in use puts the next one in use; the last look cannot be deleted. Scenes already
+  painted keep their pictures, and do not record which look they got.
+- **A model sheet belongs to a look** (`SheetJob` holds the person's and the look's id), so a
+  sheet arriving after its look was deleted is dropped, and one drawn for a look not in use waits
+  there. Older files hold one look as `look`/`sheet` on the person; `into_doc` makes it their only
+  look (`people_from_files_before_looks_open_with_their_one_look_in_use`).
 
 - **Who is in a scene comes from its subject** (`Doc::named_in`: the passage or the description
   painted), from the paragraphs just before a passage that names no one (below), or from the
@@ -428,7 +445,8 @@ saved with the document (R9), never exported (R10), not undoable and not pinned 
 - Tests: `a_scene_that_names_someone_in_the_cast_is_painted_with_their_look_and_model_sheet`,
   `a_model_sheet_is_drawn_from_the_look_and_the_example_opens_from_the_cast`,
   `a_passage_that_names_no_one_is_painted_with_those_named_just_before_it`,
-  `the_list_of_scenes_says_who_each_was_painted_with_and_paints_again_with_those_chosen`, and in `cast.rs`
+  `the_list_of_scenes_says_who_each_was_painted_with_and_paints_again_with_those_chosen`,
+  `someone_can_keep_several_looks_and_scenes_get_the_one_in_use`, and in `cast.rs`
   `people_are_found_by_any_of_their_names_as_whole_words`,
   `a_scene_tells_how_the_people_it_names_look_and_sends_the_first_sheets`,
   `a_model_sheet_is_asked_for_with_ids_from_the_name`.
@@ -509,5 +527,9 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
   she was someone else in every picture; with her look in words her clothes held but her build
   and drawing changed; with a model sheet Claude copied its shapes and colours and changed only
   the pose. So the cast holds a look in words and a sheet in SVG, found by name (R17).
+- **2026-10-09 — Someone's looks are switched by hand, not by place in the story.** A look could
+  instead start at a paragraph, like a scene, so repainting chapter 1 later still finds the girl.
+  Switching by hand came first as what the writer asked for, and is simpler; pinning a look to
+  where it starts can come on top (a look pinned is in use from there on).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

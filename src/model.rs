@@ -292,10 +292,34 @@ pub struct Character {
     pub name: String,
     /// Other names the story calls them by, separated by commas.
     pub aliases: String,
-    /// How they look, in words.
-    pub look: String,
-    /// Their model sheet (SVG), once drawn: the figures scenes copy them from.
+    /// How they look: one look, or several kept to switch between (as a girl, after the shipwreck).
+    /// Never empty.
+    pub looks: Vec<Look>,
+    /// The look scenes are painted with now.
+    pub active: usize,
+}
+
+/// One way someone looks: in words, and their model sheet once drawn.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Look {
+    pub id: u64,
+    /// What the writer calls it ("as a girl"), to tell looks apart.
+    pub label: String,
+    pub words: String,
+    /// The model sheet (SVG), once drawn: the figures scenes copy them from.
     pub sheet: Option<String>,
+}
+
+impl Character {
+    /// Someone new, with one look yet to be described.
+    pub fn new(id: u64, look_id: u64, name: &str) -> Self {
+        Self { id, name: name.into(), aliases: String::new(), looks: vec![Look { id: look_id, ..Look::default() }], active: 0 }
+    }
+
+    /// The look scenes are painted with now.
+    pub fn look(&self) -> &Look {
+        &self.looks[self.active.min(self.looks.len() - 1)]
+    }
 }
 
 pub const NOTE_COLORS: [(u8, u8, u8); 5] =
@@ -322,7 +346,8 @@ pub struct Doc {
     pub next_scene_id: u64,
     /// The people of the story, in the order the writer added them.
     pub cast: Vec<Character>,
-    pub next_character_id: u64,
+    /// The next id for someone of the cast or one of their looks.
+    pub next_cast_id: u64,
     /// What the writer wants Claude to know about the story whenever it is asked about it.
     pub story_notes: String,
     /// The scratchpad's plain text, kept beside the story.
@@ -344,7 +369,7 @@ impl Doc {
             scenes: Vec::new(),
             next_scene_id: 1,
             cast: Vec::new(),
-            next_character_id: 1,
+            next_cast_id: 1,
             story_notes: String::new(),
             scratchpad: String::new(),
         }

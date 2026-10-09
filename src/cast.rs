@@ -8,6 +8,9 @@
 //! carried on (`App::carried_people`), until a break in the story. The list of scenes says who each
 //! was painted with, and the writer can choose others and paint it again.
 //!
+//! Someone can have several looks (as a girl, after the shipwreck), each with its words and sheet.
+//! One is in use at a time, chosen by the writer, and scenes painted from then on get that one.
+//!
 //! The cast is kept with the document and never exported, like the story notes.
 
 use std::collections::{HashMap, HashSet};
@@ -21,7 +24,7 @@ use eframe::egui::{self, ColorImage, Id, TextureHandle, TextureOptions};
 use crate::App;
 use crate::backdrop::{MODEL, SYSTEM, extract_svg, rasterize};
 use crate::claude::{Outcome, run_claude};
-use crate::model::{Character, Doc, PAGE_BREAK, ParaKind};
+use crate::model::{Character, Doc, Look, PAGE_BREAK, ParaKind};
 use crate::theme::TEXT_DIM;
 
 /// How many model sheets go with one scene at most. Each is some 15 to 30 KB of SVG, and with more
@@ -29,8 +32,9 @@ use crate::theme::TEXT_DIM;
 const MOST_SHEETS: usize = 3;
 /// How many paragraphs back a passage that names no one looks for the people it is about.
 const CARRY_BACK: usize = 3;
-/// Width in pixels model sheets are rendered at, for the cast window.
+/// Width in pixels model sheets are rendered at, for the cast window, and the most they are shown high.
 const SHEET_WIDTH: f32 = 600.0;
+const SHEET_HEIGHT: f32 = 240.0;
 
 pub const LOOK_HINT: &str = "How they look: age, build, face, hair, the clothes they always wear, what they carry\u{2026}";
 /// The same passages painted with the passage alone, with a description, and with a model sheet.
@@ -67,6 +71,12 @@ fn find_word(text: &str, word: &str) -> Option<usize> {
 }
 
 impl Doc {
+    /// A new id for someone of the cast or one of their looks.
+    pub fn take_cast_id(&mut self) -> u64 {
+        self.next_cast_id += 1;
+        self.next_cast_id - 1
+    }
+
     /// The people of the cast that `text` names, in the order it first names them.
     pub fn named_in(&self, text: &str) -> Vec<&Character> {
         let mut named: Vec<(usize, &Character)> = self.cast.iter().filter_map(|c| Some((c.first_named(text)?, c))).collect();
@@ -110,7 +120,7 @@ impl App {
 /// What a scene's prompt says first about the people it names: how they look, and the model sheets
 /// of the first few, with how to use them. Empty if it names no one the writer described.
 pub fn cast_prompt(named: &[&Character]) -> String {
-    let described: Vec<&&Character> = named.iter().filter(|c| !c.look.trim().is_empty() || c.sheet.is_some()).collect();
+    let described: Vec<&&Character> = named.iter().filter(|c| !c.look().words.trim().is_empty() || c.look().sheet.is_some()).collect();
     if described.is_empty() {
         return String::new();
     }
@@ -118,12 +128,12 @@ pub fn cast_prompt(named: &[&Character]) -> String {
     for c in &described {
         let others: Vec<&str> = c.names().skip(1).collect();
         let also = if others.is_empty() { String::new() } else { format!(" (also called {})", others.join(", ")) };
-        out += &format!("{}{also}: {}\n", c.name.trim(), c.look.trim());
+        out += &format!("{}{also}: {}\n", c.name.trim(), c.look().words.trim());
     }
     out += "</cast>\n\n";
-    let sheets: Vec<&&Character> = described.iter().filter(|c| c.sheet.is_some()).take(MOST_SHEETS).copied().collect();
+    let sheets: Vec<&&Character> = described.iter().filter(|c| c.look().sheet.is_some()).take(MOST_SHEETS).copied().collect();
     for c in &sheets {
-        out += &format!("<model_sheet name=\"{}\">\n{}\n</model_sheet>\n\n", c.name.trim(), c.sheet.as_deref().unwrap_or_default());
+        out += &format!("<model_sheet name=\"{}\">\n{}\n</model_sheet>\n\n", c.name.trim(), c.look().sheet.as_deref().unwrap_or_default());
     }
     out += if sheets.is_empty() {
         "This is how these people look in every illustration of this book: draw them so.\n\n"
@@ -147,8 +157,8 @@ fn slug(name: &str) -> String {
     if s.is_empty() { "person".into() } else { s }
 }
 
-/// What Claude is asked to draw for `c`'s model sheet.
-fn sheet_prompt(c: &Character) -> String {
+/// What Claude is asked to draw for the model sheet of `c` as they look in `look`.
+fn sheet_prompt(c: &Character, look: &Look) -> String {
     let id = slug(&c.name);
     format!(
         "<character>\n{}: {}\n</character>\n\n\
@@ -164,7 +174,7 @@ fn sheet_prompt(c: &Character) -> String {
         - At most about 30 KB.\n\
         Reply with only the SVG code.",
         c.name.trim(),
-        c.look.trim()
+        look.words.trim()
     )
 }
 
@@ -182,6 +192,14 @@ fn draw_sheet(prompt: &str, cancel: &AtomicBool) -> Result<Option<String>, Strin
     }
 }
 
+/// What a look is called in the switch: its name, or its place among the person's looks.
+fn look_title(l: &Look, k: usize) -> String {
+    match l.label.trim() {
+        "" => format!("Look {}", k + 1),
+        label => label.to_owned(),
+    }
+}
+
 fn hash_of(svg: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     svg.hash(&mut h);
@@ -191,11 +209,12 @@ fn hash_of(svg: &str) -> u64 {
 /// A model sheet rendered, by the hash of its drawing.
 type Rendered = (u64, Result<ColorImage, String>);
 
-/// A model sheet being drawn, for the character with id `character`.
+/// A model sheet being drawn, for the look with id `look` of the character with id `character`.
 struct SheetJob {
     rx: Receiver<Result<String, String>>,
     cancel: Arc<AtomicBool>,
     character: u64,
+    look: u64,
 }
 
 impl Drop for SheetJob {
@@ -280,11 +299,13 @@ impl CastPanel {
 }
 
 impl App {
-    /// Start drawing the model sheet of the character with id `id` (stopping one under way).
-    fn start_sheet(&mut self, ctx: &egui::Context, id: u64) {
+    /// Start drawing the model sheet of look `look` of the character with id `id` (stopping one
+    /// under way).
+    fn start_sheet(&mut self, ctx: &egui::Context, id: u64, look: u64) {
         let Some(c) = self.doc.cast.iter().find(|c| c.id == id) else { return };
-        let prompt = sheet_prompt(c);
-        let (tx, cancel) = self.sheet_job(id);
+        let Some(l) = c.looks.iter().find(|l| l.id == look) else { return };
+        let prompt = sheet_prompt(c, l);
+        let (tx, cancel) = self.sheet_job(id, look);
         self.cast_panel.asked = prompt.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
@@ -295,30 +316,36 @@ impl App {
         });
     }
 
-    fn sheet_job(&mut self, id: u64) -> (Sender<Result<String, String>>, Arc<AtomicBool>) {
+    fn sheet_job(&mut self, id: u64, look: u64) -> (Sender<Result<String, String>>, Arc<AtomicBool>) {
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        self.cast_panel.job = Some(SheetJob { rx, cancel: cancel.clone(), character: id });
+        self.cast_panel.job = Some(SheetJob { rx, cancel: cancel.clone(), character: id, look });
         (tx, cancel)
     }
 
-    /// A model sheet `svg` for the character with id `id`, as if Claude had just drawn it.
+    /// A model sheet `svg` for the look in use of the character with id `id`, as if Claude had
+    /// just drawn it.
     #[cfg(test)]
     pub fn fake_sheet(&mut self, id: u64, svg: &str) {
-        self.sheet_job(id).0.send(Ok(svg.to_owned())).unwrap();
+        let look = self.doc.cast.iter().find(|c| c.id == id).unwrap().look().id;
+        self.sheet_job(id, look).0.send(Ok(svg.to_owned())).unwrap();
     }
 
     /// Take in a finished model sheet and the sheets rendered.
     fn update_cast(&mut self, ctx: &egui::Context) {
         if let Some(job) = &self.cast_panel.job {
-            let id = job.character;
+            let (id, look) = (job.character, job.look);
             match job.rx.try_recv() {
                 Ok(Ok(svg)) => {
                     self.cast_panel.job = None;
                     // Deleted meanwhile, they get none.
                     if let Some(c) = self.doc.cast.iter_mut().find(|c| c.id == id) {
-                        self.status = format!("- {} has a model sheet", c.name.trim());
-                        c.sheet = Some(svg);
+                        let several = c.looks.len() > 1;
+                        if let Some(l) = c.looks.iter_mut().find(|l| l.id == look) {
+                            let label = if several && !l.label.trim().is_empty() { format!(" ({})", l.label.trim()) } else { String::new() };
+                            self.status = format!("- {}{label} has a model sheet", c.name.trim());
+                            l.sheet = Some(svg);
+                        }
                     }
                 }
                 Ok(Err(e)) => {
@@ -345,7 +372,8 @@ impl App {
         self.cast_panel.job.is_some()
     }
 
-    /// The cast window: everyone in the story, each with their names, their look and their model sheet.
+    /// The cast window: everyone in the story, each with their names and their looks, each look with
+    /// its words and model sheet, and with several, which of them is in use.
     pub fn cast_window(&mut self, ctx: &egui::Context) {
         self.update_cast(ctx);
         self.cast_example(ctx);
@@ -354,18 +382,22 @@ impl App {
         }
         enum Do {
             Add,
-            Draw(u64),
+            Draw(u64, u64),
             Stop,
-            RemoveSheet(u64),
+            RemoveSheet(u64, u64),
+            AddLook(u64),
+            Use(u64, usize),
+            DeleteLook(u64, u64),
             Delete(u64),
             Example,
         }
         let mut action = None;
         let mut open = true;
-        for svg in self.doc.cast.iter().filter_map(|c| c.sheet.clone()).collect::<Vec<_>>() {
+        let sheets: Vec<String> = self.doc.cast.iter().flat_map(|c| c.looks.iter().filter_map(|l| l.sheet.clone())).collect();
+        for svg in sheets {
             self.cast_panel.render(ctx, &svg);
         }
-        let drawing = self.cast_panel.job.as_ref().map(|j| j.character);
+        let drawing = self.cast_panel.job.as_ref().map(|j| j.look);
         let panel = &self.cast_panel;
         egui::Window::new("Cast")
             .id(Id::new("cast"))
@@ -399,34 +431,72 @@ impl App {
                                     .hint_text("Also called (Grandma, the old woman)");
                                 ui.add(also.desired_width(f32::INFINITY));
                             });
-                            let look = egui::TextEdit::multiline(&mut c.look).id(Id::new(("cast_look", c.id))).hint_text(LOOK_HINT);
-                            ui.add(look.desired_rows(3).desired_width(f32::INFINITY));
-                            if let Some(t) = c.sheet.as_deref().and_then(|s| panel.sheets.get(&hash_of(s))) {
-                                let w = ui.available_width();
-                                let size = t.size_vec2() * (w / t.size_vec2().x);
-                                ui.add(egui::Image::new((t.id(), size)).bg_fill(egui::Color32::WHITE));
-                            }
-                            ui.horizontal(|ui| {
-                                if drawing == Some(c.id) {
-                                    ui.spinner();
-                                    ui.label(egui::RichText::new("Drawing the model sheet\u{2026}").color(TEXT_DIM));
-                                    if ui.small_button("Stop").clicked() {
-                                        action = Some(Do::Stop);
+                            let (several, can_draw) = (c.looks.len() > 1, !c.name.trim().is_empty());
+                            // Which look is in use, by the name, so it is switched without scrolling.
+                            if several {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(egui::RichText::new("In use:").color(TEXT_DIM));
+                                    for (k, l) in c.looks.iter().enumerate() {
+                                        let tip = "Scenes painted from now on show them so";
+                                        if ui.radio(k == c.active, look_title(l, k)).on_hover_text(tip).clicked() && k != c.active {
+                                            action = Some(Do::Use(c.id, k));
+                                        }
                                     }
-                                } else {
-                                    let can = !c.name.trim().is_empty() && !c.look.trim().is_empty();
-                                    let label = if c.sheet.is_some() { "Draw the model sheet again" } else { "Draw a model sheet" };
+                                });
+                            }
+                            for l in c.looks.iter_mut() {
+                                if several {
+                                    ui.add_space(2.0);
+                                    // The button first, from the right, and the name in the room left, so the
+                                    // row never asks for more than the window has (it would widen it each frame).
+                                    ui.horizontal(|ui| {
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui.small_button("Delete look").clicked() {
+                                                action = Some(Do::DeleteLook(c.id, l.id));
+                                            }
+                                            let hint = "Name this look (as a girl)";
+                                            let label = egui::TextEdit::singleline(&mut l.label).id(Id::new(("cast_label", l.id))).hint_text(hint);
+                                            ui.add(label.desired_width(f32::INFINITY));
+                                        });
+                                    });
+                                }
+                                let words = egui::TextEdit::multiline(&mut l.words).id(Id::new(("cast_look", l.id))).hint_text(LOOK_HINT);
+                                ui.add(words.desired_rows(3).desired_width(f32::INFINITY));
+                                if let Some(t) = l.sheet.as_deref().and_then(|s| panel.sheets.get(&hash_of(s))) {
+                                    // As wide as the window, unless a tall drawing would push the rest out of sight.
+                                    let s = t.size_vec2();
+                                    let size = s * (ui.available_width() / s.x).min(SHEET_HEIGHT / s.y);
+                                    ui.add(egui::Image::new((t.id(), size)).bg_fill(egui::Color32::WHITE));
+                                }
+                                ui.horizontal(|ui| {
+                                    if drawing == Some(l.id) {
+                                        ui.spinner();
+                                        ui.label(egui::RichText::new("Drawing the model sheet\u{2026}").color(TEXT_DIM));
+                                        if ui.small_button("Stop").clicked() {
+                                            action = Some(Do::Stop);
+                                        }
+                                        return;
+                                    }
+                                    let can = can_draw && !l.words.trim().is_empty();
+                                    let label = if l.sheet.is_some() { "Draw the model sheet again" } else { "Draw a model sheet" };
                                     let tip = if can {
                                         "Claude draws them from the front, the side, behind and sitting, for every scene to copy"
                                     } else {
                                         "Give a name and how they look first"
                                     };
                                     if ui.add_enabled(can, egui::Button::new(label).small()).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
-                                        action = Some(Do::Draw(c.id));
+                                        action = Some(Do::Draw(c.id, l.id));
                                     }
-                                    if c.sheet.is_some() && ui.small_button("Remove the sheet").clicked() {
-                                        action = Some(Do::RemoveSheet(c.id));
+                                    if l.sheet.is_some() && ui.small_button("Remove the sheet").clicked() {
+                                        action = Some(Do::RemoveSheet(c.id, l.id));
                                     }
+                                });
+                            }
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                let tip = "Keep another way they look (older, in disguise), to switch to later";
+                                if ui.small_button("Add a look").on_hover_text(tip).clicked() {
+                                    action = Some(Do::AddLook(c.id));
                                 }
                                 if ui.small_button("Delete").on_hover_text("Take them out of the cast").clicked() {
                                     action = Some(Do::Delete(c.id));
@@ -440,20 +510,49 @@ impl App {
         self.cast_panel.open = open;
         match action {
             Some(Do::Add) => {
-                let id = self.doc.next_character_id;
-                self.doc.next_character_id += 1;
-                self.doc.cast.push(Character { id, name: String::new(), aliases: String::new(), look: String::new(), sheet: None });
+                let (id, look) = (self.doc.take_cast_id(), self.doc.take_cast_id());
+                self.doc.cast.push(Character::new(id, look, ""));
                 ctx.memory_mut(|m| m.request_focus(Id::new(("cast_name", id))));
             }
-            Some(Do::Draw(id)) => self.start_sheet(ctx, id),
+            Some(Do::Draw(id, look)) => self.start_sheet(ctx, id, look),
             Some(Do::Stop) => self.cast_panel.job = None,
-            Some(Do::RemoveSheet(id)) => {
+            Some(Do::RemoveSheet(id, look)) => {
+                if let Some(l) = self.doc.cast.iter_mut().filter(|c| c.id == id).flat_map(|c| c.looks.iter_mut()).find(|l| l.id == look) {
+                    l.sheet = None;
+                }
+            }
+            Some(Do::AddLook(id)) => {
+                let look = self.doc.take_cast_id();
                 if let Some(c) = self.doc.cast.iter_mut().find(|c| c.id == id) {
-                    c.sheet = None;
+                    // It starts from the words of the look in use, to change what is different.
+                    let words = c.look().words.clone();
+                    c.looks.push(Look { id: look, label: String::new(), words, sheet: None });
+                    ctx.memory_mut(|m| m.request_focus(Id::new(("cast_label", look))));
+                }
+            }
+            Some(Do::Use(id, k)) => {
+                if let Some(c) = self.doc.cast.iter_mut().find(|c| c.id == id) {
+                    c.active = k.min(c.looks.len() - 1);
+                }
+            }
+            Some(Do::DeleteLook(id, look)) => {
+                if drawing == Some(look) {
+                    self.cast_panel.job = None;
+                }
+                if let Some(c) = self.doc.cast.iter_mut().find(|c| c.id == id && c.looks.len() > 1) {
+                    let k = c.looks.iter().position(|l| l.id == look).unwrap_or(c.looks.len());
+                    if k < c.looks.len() {
+                        c.looks.remove(k);
+                        // The look in use stays in use; if it was this one, the one after it (or before) is.
+                        if c.active > k {
+                            c.active -= 1;
+                        }
+                        c.active = c.active.min(c.looks.len() - 1);
+                    }
                 }
             }
             Some(Do::Delete(id)) => {
-                if drawing == Some(id) {
+                if self.cast_panel.job.as_ref().is_some_and(|j| j.character == id) {
                     self.cast_panel.job = None;
                 }
                 self.doc.cast.retain(|c| c.id != id);
@@ -502,7 +601,8 @@ mod tests {
     use super::*;
 
     fn character(name: &str, aliases: &str, look: &str, sheet: Option<&str>) -> Character {
-        Character { id: 1, name: name.into(), aliases: aliases.into(), look: look.into(), sheet: sheet.map(Into::into) }
+        let look = Look { id: 2, label: String::new(), words: look.into(), sheet: sheet.map(Into::into) };
+        Character { id: 1, name: name.into(), aliases: aliases.into(), looks: vec![look], active: 0 }
     }
 
     #[test]
@@ -541,7 +641,7 @@ mod tests {
     #[test]
     fn a_model_sheet_is_asked_for_with_ids_from_the_name() {
         let tom = character("Old Tom", "", "a fisherman in yellow oilskins", None);
-        let prompt = sheet_prompt(&tom);
+        let prompt = sheet_prompt(&tom, tom.look());
         assert!(prompt.starts_with("<character>\nOld Tom: a fisherman in yellow oilskins\n</character>"));
         assert!(prompt.contains("\"old-tom-sitting\""));
         assert_eq!(slug("  "), "person");
@@ -560,7 +660,7 @@ mod tests {
         crate::claude::allow_live();
         let mara = character("Mara", "", "a woman of about sixty, tall and wiry, long grey braid, red wool scarf, \
                                          long dark-green oilskin coat, black boots, carries a brass lantern", None);
-        let svg = draw_sheet(&sheet_prompt(&mara), &AtomicBool::new(false)).unwrap().unwrap();
+        let svg = draw_sheet(&sheet_prompt(&mara, mara.look()), &AtomicBool::new(false)).unwrap().unwrap();
         let path = std::env::temp_dir().join("caprice-live-sheet.svg");
         std::fs::write(&path, svg).unwrap();
         println!("model sheet saved to {}", path.display());

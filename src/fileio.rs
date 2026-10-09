@@ -14,7 +14,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::App;
-use crate::model::{Character, Doc, Flow, ImageData, Note, PAGE_BREAK, PageSetup, ParaAttrs, Scene, Style};
+use crate::model::{Character, Doc, Look, Flow, ImageData, Note, PAGE_BREAK, PageSetup, ParaAttrs, Scene, Style};
 
 #[derive(Serialize, Deserialize)]
 struct Run {
@@ -80,12 +80,27 @@ struct SceneEntry {
     chosen: bool,
 }
 
-/// Someone in the story: how they look, and their model sheet if drawn.
+/// Someone in the story: their names, and how they look. Files from before looks could be kept
+/// side by side hold one look in `look` and `sheet`.
 #[derive(Serialize, Deserialize)]
 struct CharacterEntry {
     name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     aliases: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    looks: Vec<LookEntry>,
+    #[serde(default)]
+    active: usize,
+    #[serde(default, skip_serializing)]
+    look: String,
+    #[serde(default, skip_serializing)]
+    sheet: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct LookEntry {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    label: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     look: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -183,7 +198,14 @@ impl DocFile {
             cast: doc
                 .cast
                 .iter()
-                .map(|c| CharacterEntry { name: c.name.clone(), aliases: c.aliases.clone(), look: c.look.clone(), sheet: c.sheet.clone() })
+                .map(|c| CharacterEntry {
+                    name: c.name.clone(),
+                    aliases: c.aliases.clone(),
+                    looks: c.looks.iter().map(|l| LookEntry { label: l.label.clone(), look: l.words.clone(), sheet: l.sheet.clone() }).collect(),
+                    active: c.active,
+                    look: String::new(),
+                    sheet: None,
+                })
                 .collect(),
             story_notes: doc.story_notes.clone(),
             scratchpad: doc.scratchpad.clone(),
@@ -209,10 +231,14 @@ impl DocFile {
         doc.setup.clamp_margins();
         doc.story_notes = self.story_notes;
         doc.scratchpad = self.scratchpad;
-        for c in self.cast {
-            let id = doc.next_character_id;
-            doc.next_character_id += 1;
-            doc.cast.push(Character { id, name: c.name, aliases: c.aliases, look: c.look, sheet: c.sheet });
+        for mut c in self.cast {
+            if c.looks.is_empty() {
+                c.looks.push(LookEntry { label: String::new(), look: c.look, sheet: c.sheet });
+            }
+            let id = doc.take_cast_id();
+            let looks = c.looks.into_iter().map(|l| Look { id: doc.take_cast_id(), label: l.label, words: l.look, sheet: l.sheet }).collect::<Vec<_>>();
+            let active = c.active.min(looks.len() - 1);
+            doc.cast.push(Character { id, name: c.name, aliases: c.aliases, looks, active });
         }
         let removed = doc.take_out_contents_chars();
         for img in self.images {
@@ -558,6 +584,18 @@ mod tests {
         let json = serde_json::to_string(&DocFile::from_doc(&back)).unwrap();
         let again = serde_json::from_str::<DocFile>(&json).unwrap().into_doc();
         assert_eq!((again.flow.text.as_str(), again.setup.contents), ("One\ntext\n", true));
+    }
+
+    #[test]
+    fn people_from_files_before_looks_open_with_their_one_look_in_use() {
+        let json = r#"{"version":2,"content":[{"text":"Mara\n","font":"F","size":12.0,"bold":false,"underline":false}],
+                       "cast":[{"name":"Mara","aliases":"Grandma","look":"grey braid","sheet":"<svg/>"}]}"#;
+        let doc = serde_json::from_str::<DocFile>(json).unwrap().into_doc();
+        let mara = &doc.cast[0];
+        assert_eq!((mara.name.as_str(), mara.aliases.as_str(), mara.looks.len()), ("Mara", "Grandma", 1));
+        assert_eq!((mara.look().words.as_str(), mara.look().sheet.as_deref()), ("grey braid", Some("<svg/>")));
+        let saved = serde_json::to_string(&DocFile::from_doc(&doc)).unwrap();
+        assert!(saved.contains(r#""looks":[{"look":"grey braid","sheet":"<svg/>"}],"active":0"#), "{saved}");
     }
 
     #[test]

@@ -2225,21 +2225,14 @@ mod tests {
         h.type_text("A tall woman of sixty, grey braid, red scarf.");
         let mara = &h.app.doc.cast[0];
         assert_eq!((mara.name.as_str(), mara.aliases.as_str()), ("Mara", "Grandma"));
-        assert_eq!(mara.look, "A tall woman of sixty, grey braid, red scarf.");
+        assert_eq!(mara.look().words, "A tall woman of sixty, grey braid, red scarf.");
         assert_eq!(h.app.doc.visible_text(), story, "nothing is typed into the story");
         assert!(h.app.unsaved());
 
         // Her model sheet, drawn (here as if by Claude), shows in the cast window.
         let id = mara.id;
         h.app.fake_sheet(id, BLUE);
-        for _ in 0..200 {
-            h.frames(1, vec![], Modifiers::NONE);
-            if h.app.cast_panel.has_sheet_shown(BLUE) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(h.app.cast_panel.has_sheet_shown(BLUE), "the model sheet shows");
+        h.sheet_shown(BLUE);
 
         // A scene that names her, by her name or another, is painted with her look and sheet.
         let ctx = h.ctx.clone();
@@ -2257,8 +2250,8 @@ mod tests {
 
         let other = h.reopened("cast");
         let mara = &other.app.doc.cast[0];
-        assert_eq!((mara.name.as_str(), mara.aliases.as_str(), mara.sheet.as_deref()), ("Mara", "Grandma", Some(BLUE)));
-        assert_eq!(mara.look, "A tall woman of sixty, grey braid, red scarf.");
+        assert_eq!((mara.name.as_str(), mara.aliases.as_str(), mara.look().sheet.as_deref()), ("Mara", "Grandma", Some(BLUE)));
+        assert_eq!(mara.look().words, "A tall woman of sixty, grey braid, red scarf.");
     }
 
     #[test]
@@ -2276,7 +2269,7 @@ mod tests {
         // Tests never call Claude, so the drawing fails; it is not kept, and the button comes back.
         h.frames(30, vec![], Modifiers::NONE);
         assert!(!h.app.drawing_sheet());
-        assert_eq!(h.app.doc.cast[0].sheet, None);
+        assert_eq!(h.app.doc.cast[0].look().sheet, None);
 
         h.click_widget("Delete");
         assert!(h.app.doc.cast.is_empty());
@@ -2287,10 +2280,22 @@ mod tests {
     impl Harness {
         /// Someone added to the cast.
         fn add_to_cast(&mut self, name: &str, look: &str) {
-            let id = self.app.doc.next_character_id;
-            self.app.doc.next_character_id += 1;
-            let c = model::Character { id, name: name.into(), aliases: String::new(), look: look.into(), sheet: None };
+            let (id, look_id) = (self.app.doc.take_cast_id(), self.app.doc.take_cast_id());
+            let mut c = model::Character::new(id, look_id, name);
+            c.looks[0].words = look.into();
             self.app.doc.cast.push(c);
+        }
+
+        /// Frames until the model sheet `svg` shows in the cast window (rendered on a thread).
+        fn sheet_shown(&mut self, svg: &str) {
+            for _ in 0..200 {
+                self.frames(1, vec![], Modifiers::NONE);
+                if self.app.cast_panel.has_sheet_shown(svg) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("the model sheet never showed");
         }
 
         /// Who of the cast a painting of the paragraph starting at char `at` is sent with.
@@ -2363,6 +2368,61 @@ mod tests {
         let other = h.reopened("scene-people");
         let scene = &other.app.doc.scenes[0];
         assert_eq!((scene.people.clone(), scene.chosen), (vec!["Lion Boy".to_owned(), "Mara".to_owned()], true));
+    }
+
+    #[test]
+    fn someone_can_keep_several_looks_and_scenes_get_the_one_in_use() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.add_to_cast("Mara", "A girl of ten in a blue smock.");
+        let id = h.app.doc.cast[0].id;
+        h.app.fake_sheet(id, BLUE);
+        h.type_text("Mara ran down to the harbour.");
+        let painted = |h: &mut Harness| {
+            let ctx = h.ctx.clone();
+            h.app.paint_passage(&ctx, 0, 29);
+            let asked = h.app.backdrop.asked().to_owned();
+            let words = h.app.doc.cast[0].looks.iter().position(|l| asked.contains(&format!("Mara: {}", l.words)));
+            (words, asked.contains(BLUE), asked.contains(RED))
+        };
+        assert_eq!(painted(&mut h), (Some(0), true, false));
+
+        // Another look, starting from the words of the one in use, kept beside it but not in use.
+        h.frames(30, vec![], Modifiers::NONE);
+        h.click_widget("Scene");
+        h.click_widget("Cast\u{2026}");
+        h.sheet_shown(BLUE);
+        h.click_widget("Add a look");
+        h.type_text("old");
+        let mara = &h.app.doc.cast[0];
+        assert_eq!((mara.looks.len(), mara.active, mara.looks[1].label.as_str()), (2, 0, "old"));
+        assert_eq!(mara.looks[1].words, "A girl of ten in a blue smock.");
+        h.frames(10, vec![], Modifiers::NONE);
+        let window = h.ctx.memory(|m| m.area_rect(egui::Id::new("cast"))).unwrap();
+        assert!(window.width() < 420.0, "the window keeps its width: {window:?}");
+        assert_eq!(painted(&mut h), (Some(0), true, false), "the look in use is still the girl");
+        h.app.doc.cast[0].looks[1].words = "A woman of sixty, grey braid, red scarf.".into();
+
+        // Put in use, scenes get its words, and no sheet until it has its own.
+        h.click_widget("old");
+        assert_eq!(h.app.doc.cast[0].active, 1);
+        assert_eq!(painted(&mut h), (Some(1), false, false));
+        h.app.fake_sheet(id, RED);
+        h.sheet_shown(RED);
+        assert_eq!(painted(&mut h), (Some(1), false, true));
+
+        // Switching back finds the girl as she was, sheet and all.
+        h.click_widget("Look 1");
+        assert_eq!(painted(&mut h), (Some(0), true, false));
+        let other = h.reopened("looks");
+        let mara = &other.app.doc.cast[0];
+        assert_eq!((mara.looks.len(), mara.active, mara.looks[1].label.as_str()), (2, 0, "old"));
+        assert_eq!((mara.looks[0].sheet.as_deref(), mara.looks[1].sheet.as_deref()), (Some(BLUE), Some(RED)));
+
+        // Deleting the look in use puts the next one in use.
+        h.click_widget("Delete look");
+        let mara = &h.app.doc.cast[0];
+        assert_eq!((mara.looks.len(), mara.look().label.as_str()), (1, "old"));
     }
 
     const BLUE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 60 85\"><circle cx=\"30\" cy=\"40\" r=\"20\" fill=\"#36c\"/></svg>";
