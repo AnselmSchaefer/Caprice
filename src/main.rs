@@ -361,7 +361,9 @@ impl App {
     fn animate_slide_out(&mut self, ui: &egui::Ui) {
         let Some(s) = self.slide_out else { return };
         let dt = ui.input(|i| i.stable_dt).min(0.05);
-        let s = s + ((1.0 - s) * 5.0).clamp(2.2, 14.0) * dt;
+        // In a book, as unhurried as a new page arriving, since a page turns back with it.
+        let speed = if self.appearance == Appearance::Book { book::NEW_PAGE_PACE } else { ((1.0 - s) * 5.0).clamp(2.2, 14.0) };
+        let s = s + speed * dt;
         self.slide_out = (s < 1.0).then_some(s);
         ui.ctx().request_repaint();
     }
@@ -501,6 +503,11 @@ impl App {
                 // Passing by: just the page.
                 self.stack(ui.painter(), page_rect, i, self.last() - i);
                 self.static_page(ui, page_rect, i);
+            } else if let (Some(s), Appearance::Book) = (self.slide_out, self.appearance) {
+                // In a book the page before lies turned over in the pile, so it turns back over the
+                // page that slides out, its post-its with it; it is editable once it lies flat.
+                let to_right = area.right() + 40.0 - page_rect.left();
+                self.book_slide_out(ui, page_rect, i, s, to_right);
             } else {
                 // Settled: this page is editable.
                 let ease = |s: f32| s * s * (3.0 - 2.0 * s);
@@ -1706,6 +1713,132 @@ mod tests {
         assert!(end < page.left(), "its page lies turned over on the left, the post-it's back showing: {end}");
         let jump = xs.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
         assert!(jump < page.width() / 3.0, "it goes over with its page, not in one jump of {jump}: {xs:?}");
+    }
+
+    /// What a backspace that takes a page away shows, frame by frame for two seconds: where the green
+    /// post-it is, where the page going out is (flat paper right of the page's place), and how long
+    /// the slide-out lasted.
+    struct SlideOut {
+        post_it_xs: Vec<f32>,
+        leaving_lefts: Vec<f32>,
+        seconds: f32,
+    }
+
+    fn backspace_and_watch(h: &mut Harness, during: impl Fn(&mut Harness, usize)) -> SlideOut {
+        let page = h.app.last_page_rect;
+        let e = egui::Event::Key { key: Key::Backspace, physical_key: Some(Key::Backspace), pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        h.frames(1, vec![e], Modifiers::NONE);
+        assert!(h.app.slide_out.is_some(), "the page slides out");
+        let mut out = SlideOut { post_it_xs: Vec::new(), leaving_lefts: Vec::new(), seconds: 0.0 };
+        for k in 0..120 {
+            during(h, k);
+            h.frames(1, vec![], Modifiers::NONE);
+            out.seconds += if h.app.slide_out.is_some() { 1.0 / 60.0 } else { 0.0 };
+            out.post_it_xs.extend(green_post_it_x(h));
+            let flat = h.painted.iter().filter_map(|cs| match &cs.shape {
+                egui::Shape::Rect(r) if r.fill == theme::PAPER && r.rect.width() > page.width() * 0.9 => Some(r.rect.left()),
+                _ => None,
+            });
+            out.leaving_lefts.extend(flat.filter(|&x| x > page.left() + 1.0));
+        }
+        assert_eq!(h.app.slide_out, None, "it is gone");
+        out
+    }
+
+    /// The post-it goes from the pile on the left back onto its page, turning with it, while the page
+    /// taken away goes out to the right as long as a new page takes to come in.
+    fn assert_turns_back(h: &Harness, start: f32, seen: &SlideOut) {
+        let page = h.app.last_page_rect;
+        let lefts = &seen.leaving_lefts;
+        assert!(lefts.iter().any(|&x| x > page.center().x), "the page slides out to the right: {lefts:?}");
+        assert!(lefts.windows(2).all(|w| w[1] >= w[0]), "going out steadily: {lefts:?}");
+        assert!((0.8..1.1).contains(&seen.seconds), "as unhurried as a new page coming in: {} s", seen.seconds);
+        let xs: Vec<f32> = std::iter::once(start).chain(seen.post_it_xs.iter().copied()).collect();
+        let end = *xs.last().unwrap();
+        assert!(end > page.right(), "the page before lies flat again, its post-it on the right: {end}");
+        let jump = xs.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
+        assert!(jump < page.width() / 3.0, "it turns back with its page, not in one jump of {jump}: {xs:?}");
+    }
+
+    #[test]
+    fn in_a_book_a_backspaced_page_slides_out_as_the_one_before_turns_back_with_its_post_it() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        assert_eq!(h.app.appearance, Appearance::Book);
+        h.type_text("A page with a post-it.");
+        h.app.doc.notes.push(model::Note { id: 50, start: 0, end: 6, text: "Green.".into(), color: 2 });
+        h.key(Key::Enter, Modifiers::COMMAND);
+        h.frames(120, vec![], Modifiers::NONE);
+        let start = green_post_it_x(&h).unwrap();
+        assert!(start < h.app.last_page_rect.left(), "its page lies turned over on the left: {start}");
+
+        let seen = backspace_and_watch(&mut h, |_, _| {});
+        assert_eq!((h.app.doc.pages(), h.app.target), (1, 0));
+        assert_turns_back(&h, start, &seen);
+    }
+
+    #[test]
+    fn in_a_book_a_page_backspaced_away_between_others_turns_the_one_before_back_too() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("One.");
+        h.key(Key::Enter, Modifiers::COMMAND);
+        h.type_text("Two, with a post-it.");
+        let two = h.app.doc.spans[1].start;
+        h.app.doc.notes.push(model::Note { id: 50, start: two, end: two + 3, text: "Green.".into(), color: 2 });
+        h.key(Key::Enter, Modifiers::COMMAND);
+        h.type_text("Three.");
+        h.key(Key::Enter, Modifiers::COMMAND);
+        h.type_text("Four.");
+        // To the start of page three, with page four still ahead in the book.
+        let ctx = h.ctx.clone();
+        let three = h.app.doc.spans[2].start;
+        h.app.set_caret(&ctx, three, false);
+        h.frames(120, vec![], Modifiers::NONE);
+        assert_eq!((h.app.doc.pages(), h.app.target), (4, 2));
+        let start = green_post_it_x(&h).unwrap();
+        assert!(start < h.app.last_page_rect.left(), "page two lies turned over on the left: {start}");
+
+        let seen = backspace_and_watch(&mut h, |_, _| {});
+        assert_eq!((h.app.doc.pages(), h.app.target), (3, 1));
+        assert!(h.app.doc.flow.text.contains("Two, with a post-it.Three."), "{:?}", h.app.doc.flow.text);
+        assert_turns_back(&h, start, &seen);
+    }
+
+    #[test]
+    fn typing_while_a_backspaced_page_slides_out_goes_into_the_page_turning_back() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Before");
+        h.key(Key::Enter, Modifiers::COMMAND);
+        h.frames(120, vec![], Modifiers::NONE);
+        // Typed while the page before is still turning back over the one going out.
+        backspace_and_watch(&mut h, |h, k| {
+            if k == 10 {
+                h.frames(1, vec![egui::Event::Text(" and after".into())], Modifiers::NONE);
+            }
+        });
+        assert_eq!((h.app.doc.pages(), h.app.target), (1, 0));
+        assert_eq!(h.app.doc.flow.text.trim_end(), "Before and after");
+    }
+
+    #[test]
+    fn on_a_paperstack_a_backspaced_page_slides_out_quickly_over_a_flat_page() {
+        let mut h = Harness::new();
+        h.app.appearance = Appearance::Paperstack;
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("A page with a post-it.");
+        h.app.doc.notes.push(model::Note { id: 50, start: 0, end: 6, text: "Green.".into(), color: 2 });
+        h.key(Key::Enter, Modifiers::COMMAND);
+        h.frames(120, vec![], Modifiers::NONE);
+
+        let seen = backspace_and_watch(&mut h, |_, _| {});
+        let page = h.app.last_page_rect;
+        assert!(seen.seconds < 0.6, "a paperstack does not turn pages, so it is quick: {} s", seen.seconds);
+        assert!(seen.leaving_lefts.iter().any(|&x| x > page.center().x), "the page slides out to the right");
+        // Nothing turns over: the post-it stays on the right of its page as it comes up from the pile.
+        let xs = &seen.post_it_xs;
+        assert!(!xs.is_empty() && xs.iter().all(|&x| x > page.center().x), "{xs:?}");
     }
 
     #[test]

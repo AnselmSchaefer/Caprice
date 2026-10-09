@@ -51,6 +51,29 @@ impl App {
         }
     }
 
+    /// The other way round: the page after `i` was taken away, so it slides out `to_right` points to
+    /// the right as `s` goes to 1, while page `i` comes out of the pile and turns back over it, its
+    /// post-its with it. The page taken away is blank, since its text is gone.
+    pub fn book_slide_out(&self, ui: &egui::Ui, rect: Rect, i: usize, s: f32, to_right: f32) {
+        let ease = |s: f32| s * s * (3.0 - 2.0 * s);
+        let t = 1.0 - s;
+        let ahead = self.last() - i;
+        let leaving = |r: Rect| {
+            Self::paper(ui.painter(), r);
+            ui.painter().extend(self.backdrop_shapes(ui.ctx(), i, r, &|p| p, 1.0, 1.0));
+        };
+        if t < TURN {
+            self.stack(ui.painter(), rect, i, ahead);
+            leaving(rect.translate(vec2(to_right * (1.0 - ease(t / TURN)), 0.0)));
+            self.flipping_page(ui, rect, i, ease(t / TURN) * std::f32::consts::PI);
+        } else {
+            let from = vec2(-rect.width(), 0.0);
+            self.turned_to_pile(ui, rect, i, from, ease((t - TURN) / (1.0 - TURN)));
+            self.stack(ui.painter(), rect, i, ahead);
+            leaving(rect);
+        }
+    }
+
     /// Draw page `i` turned over, sliding by `s` from `from` (an offset from `rect`) into its place
     /// at the back of the pile behind it. Drawn before the pile and the page at `rect`, so it passes
     /// under them.
