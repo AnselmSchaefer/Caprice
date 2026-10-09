@@ -15,7 +15,7 @@ the pages before and after it as piles, and turns pages with an animation ("Book
 book; "Paperstack": sliding into the pile). Post-its stick out of the page's edge. Chapters get
 titles, drop caps and contents pages. It saves `.caprice` (JSON) and exports `.docx`. Claude Code
 (the CLI) can review a passage drawn around with the pen or selected with the cursor, and paint scenes that show faintly behind the pages, each
-for its part of the story.
+for its part of the story, drawing the people of the story's cast the same in every scene.
 
 ---
 
@@ -33,6 +33,7 @@ images (bytes, width,          └───────────────�
   rotation)                                                 (PageLayout: galleys,     (render, book,
 notes (char ranges + text)                                   hit-testing, caret)       editor, notes)
 scenes (a char + drawings)   ──scene_at(caret) / page_scene(i)──▶ the drawing behind a page
+cast (names, looks, sheets)  ──named_in(what is painted)──▶ the people sent with a scene
                              export::to_docx(&Doc) ─▶ .docx (Word lays it out again itself)
 ```
 
@@ -50,7 +51,7 @@ scenes (a char + drawings)   ──scene_at(caret) / page_scene(i)──▶ the 
 
 | Module | Owns |
 |---|---|
-| `model.rs` | `Doc`, `Flow`, `Style`, `ParaAttrs`, `PageSetup`, `Span`, `Note`, `ImageData`; special chars; char↔byte, `page_of`, `para_start`, `term_from` |
+| `model.rs` | `Doc`, `Flow`, `Style`, `ParaAttrs`, `PageSetup`, `Span`, `Note`, `ImageData`, `Scene`, `Character`; special chars; char↔byte, `page_of`, `para_start`, `term_from` |
 | `edit.rs` | `Edit` (replace / restyle), `Doc::apply`, undo/redo `History`, moving notes with edits (`rebase_notes`) |
 | `paginate.rs` | `full_paginate`, `paginate_after` (incremental), `next_span`: where pages break, at page size |
 | `layout.rs` | One egui `LayoutJob` per paragraph piece; `layout_page`; `PageLayout` (hit, caret, rows, selection, links); `true_to_scale`, `tight_highlights` |
@@ -69,6 +70,7 @@ scenes (a char + drawings)   ──scene_at(caret) / page_scene(i)──▶ the 
 | `export.rs` | Hand-written Office Open XML for `.docx` |
 | `claude.rs` | Pen loop or cursor selection → passage → `claude -p` → streamed answer panel, a conversation; story notes |
 | `backdrop.rs` | Scenes Claude paints (SVG), pinned to the story, faintly behind the pages; the Scene menu and list |
+| `cast.rs` | The cast: people found by name in what is painted, their looks and model sheets in the scene's prompt; the Cast window and its example |
 | `scratchpad.rs` | The scratchpad: plain text saved with the document, in a window on the right |
 | `fonts.rs`, `theme.rs` | Installed fonts loaded on demand; colours and egui visuals |
 
@@ -225,7 +227,8 @@ paginating).
   `the_contents_setting_is_saved_opened_and_exported_through_the_app`,
   `an_older_files_one_scene_opens_pinned_to_the_start_of_the_story`,
   `story_notes_are_saved_and_sent_with_questions_about_the_story_but_not_corrections`,
-  `the_scratchpad_stays_on_the_right_as_it_is_while_pages_turn_and_is_saved`.
+  `the_scratchpad_stays_on_the_right_as_it_is_while_pages_turn_and_is_saved`,
+  `a_scene_that_names_someone_in_the_cast_is_painted_with_their_look_and_model_sheet`.
 
 ### R10 — Word export maps the model, not the pixels
 
@@ -237,8 +240,8 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
   change. Check the output with LibreOffice (`CAPRICE_SAMPLE_OUT=out.docx cargo test sample_docx`,
   then `soffice --headless --convert-to pdf out.docx`). Not yet checked in Microsoft Word itself.
 - Scenes are not exported (decided: they are a writing aid, too faint to print).
-- Story notes and the scratchpad are not exported (decided: notes to Claude and to oneself, not
-  part of the book).
+- Story notes, the scratchpad and the cast are not exported (decided: notes to Claude and to
+  oneself, not part of the book).
 - Tests: in `export.rs`, plus `notes_become_comments_over_the_same_text`.
 
 ### R11 — egui workarounds depend on egui internals
@@ -332,6 +335,8 @@ was painted for (`start_scene`: the selection's or caret's paragraph, or the pas
   the pages are, and small ones while the list is open. Textures beyond those are let go. Turned
   to, a page shows its drawing at once; a change on the page shown (caret, painted, another
   version, hidden) fades.
+- **A painting carries the people its subject names** (R17), their look and model sheet before
+  the passage in the prompt (`scene_prompt`), kept in `Backdrop::asked`.
 - Moving, hiding, deleting and stepping versions change `Doc::scenes` directly: like page
   settings, they are not undoable (R1) and do not paginate.
 - Tests: `the_picture_follows_the_caret_from_one_part_of_the_story_to_the_next`,
@@ -374,8 +379,8 @@ many as fit the text area above the counter), and two drawings must agree with i
 
 ### R16 — Windows float over the pages, and what happens over them is theirs
 
-The scratchpad, Claude's answer, the story notes and the scene panels are egui windows over the
-pages. They belong to the window, not to a page, so turning pages leaves them as they are. The
+The scratchpad, Claude's answer, the story notes, the scene panels and the cast are egui windows
+over the pages. They belong to the window, not to a page, so turning pages leaves them as they are. The
 scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it shows is the app's.
 
 - **Input over a window is the window's.** The view acts on the wheel and touchpad only over the
@@ -387,6 +392,33 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   Scratchpad) or into a menu, or the last toolbar menus run off the window.
 - Tests: `the_scratchpad_stays_on_the_right_as_it_is_while_pages_turn_and_is_saved`,
   `scrolling_over_the_scratchpad_scrolls_it_and_not_the_page`.
+
+### R17 — The cast: people are found by name in what is painted, and sent with that scene only
+
+`Doc::cast` holds the people of the story (`Character`: name, other names, look, model sheet),
+saved with the document (R9), never exported (R10), not undoable and not pinned to the text.
+
+- **Who is in a scene comes from its subject alone** (`Doc::named_in`: the passage or the
+  description painted, whichever `start_scene` paints), never from the text around it. So, as in
+  R13, Claude sees only what the writer marked, plus what the writer wrote for Claude (here the
+  cast). Every way of painting goes through `start_scene` → `scene_prompt`; a new one must too.
+- **Names are whole words, case counts but for the first letter** (`find_word`): "Mara's" names
+  Mara, "Maradona" does not, "rose" is not Rose, and "The miller" is "the miller". Changing this
+  changes who appears in pictures already painted the next time they are repainted.
+- **A scene gets everyone's look but at most `MOST_SHEETS` model sheets**, those named first: each
+  sheet is 15 to 30 KB of SVG, and more people in one picture get mixed up. Sheets name their ids
+  after the person (`slug`), so two in one picture do not clash.
+- **The passage decides the pose** (`cast_prompt`): told only to reuse the sheet, Claude copied a
+  standing figure into a passage where she sat. Sheets have a sitting view for the same reason.
+  Known gap: a pose the sheet shows from another side (sitting with her back to us) still came
+  out standing.
+- A model sheet is kept only if it renders (`draw_sheet`). The example picture is taller than some
+  graphics cards take, so it is scaled to `max_texture_side` when read.
+- Tests: `a_scene_that_names_someone_in_the_cast_is_painted_with_their_look_and_model_sheet`,
+  `a_model_sheet_is_drawn_from_the_look_and_the_example_opens_from_the_cast`, and in `cast.rs`
+  `people_are_found_by_any_of_their_names_as_whole_words`,
+  `a_scene_tells_how_the_people_it_names_look_and_sends_the_first_sheets`,
+  `a_model_sheet_is_asked_for_with_ids_from_the_name`.
 
 ---
 
@@ -410,6 +442,9 @@ on the contents pages with `Harness::long_contents`.
 
 **A new window over the pages:** a toggle in the page bar or a menu, not the toolbar (R16); its
 scrolling must not move the pages (R16); its stored text in `Doc` and `DocFile` (R9).
+
+**Something new sent with a scene** (like the cast): build it in `scene_prompt` from the subject
+only (R13, R17), check it in `Backdrop::asked` in a test.
 
 **Something new pinned to the text** (like notes and scenes): move it in `apply_raw` and in
 `into_doc` (R7), save it (R9), decide its Word mapping (R10).
@@ -454,5 +489,12 @@ scrolling must not move the pages (R16); its stored text in `Doc` and `DocFile` 
   is pinned as a post-it on the passage, so ideas stay with the story without a store of their
   own. What Claude should always know is the story notes, saved with the document (R13). Claude
   sees only the passage marked, never more of the document: the writer decides what it reads.
+- **2026-10-09 — The same people in every scene, from SVG model sheets.** Looked at storing
+  people as image embeddings: they only help find things, and an image model that keeps a face
+  needs the reference picture itself (or a model trained on it), which Claude, painting in SVG,
+  cannot use. Tried instead, on four passages that only name one woman: from the passage alone
+  she was someone else in every picture; with her look in words her clothes held but her build
+  and drawing changed; with a model sheet Claude copied its shapes and colours and changed only
+  the pose. So the cast holds a look in words and a sheet in SVG, found by name (R17).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

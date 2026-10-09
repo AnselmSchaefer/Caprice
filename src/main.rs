@@ -1,5 +1,6 @@
 mod backdrop;
 mod book;
+mod cast;
 mod claude;
 mod contents;
 mod dropcap;
@@ -166,6 +167,8 @@ pub struct App {
     pub scratchpad_open: bool,
     /// The scene Claude paints behind the pages, and the panel to describe it.
     pub backdrop: backdrop::Backdrop,
+    /// The cast window, and the model sheet being drawn.
+    pub cast_panel: cast::CastPanel,
     /// A file dialog waiting for the user to choose.
     pub dialog: Option<fileio::PendingDialog>,
     /// What saving last wrote (or opening read), to notice unsaved changes.
@@ -243,6 +246,7 @@ impl App {
             story_notes_open: false,
             scratchpad_open: false,
             backdrop: backdrop::Backdrop::default(),
+            cast_panel: cast::CastPanel::default(),
             dialog: None,
             saved_hash: 0,
             leaving: None,
@@ -570,6 +574,7 @@ impl App {
         self.scratchpad(&ctx);
         self.scene_panel(&ctx);
         self.scene_list(&ctx);
+        self.cast_window(&ctx);
         self.unsaved_prompt(&ctx);
     }
 }
@@ -2202,6 +2207,79 @@ mod tests {
         h.app.set_scene_mode(backdrop::Mode::Described);
         assert_eq!(h.app.backdrop.pending(), None);
         assert!(!h.app.backdrop.drawing());
+    }
+
+    #[test]
+    fn a_scene_that_names_someone_in_the_cast_is_painted_with_their_look_and_model_sheet() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let story = "Mara walked along the harbour wall.\nThe boats knocked against the stones.\nGrandma sat by the fire.";
+        h.type_text(story);
+        h.click_widget("Scene");
+        h.click_widget("Cast\u{2026}");
+        h.click_widget("Add someone");
+        h.type_text("Mara");
+        h.click_widget("Also called (Grandma, the old woman)");
+        h.type_text("Grandma");
+        h.click_widget(cast::LOOK_HINT);
+        h.type_text("A tall woman of sixty, grey braid, red scarf.");
+        let mara = &h.app.doc.cast[0];
+        assert_eq!((mara.name.as_str(), mara.aliases.as_str()), ("Mara", "Grandma"));
+        assert_eq!(mara.look, "A tall woman of sixty, grey braid, red scarf.");
+        assert_eq!(h.app.doc.visible_text(), story, "nothing is typed into the story");
+        assert!(h.app.unsaved());
+
+        // Her model sheet, drawn (here as if by Claude), shows in the cast window.
+        let id = mara.id;
+        h.app.fake_sheet(id, BLUE);
+        for _ in 0..200 {
+            h.frames(1, vec![], Modifiers::NONE);
+            if h.app.cast_panel.has_sheet_shown(BLUE) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(h.app.cast_panel.has_sheet_shown(BLUE), "the model sheet shows");
+
+        // A scene that names her, by her name or another, is painted with her look and sheet.
+        let ctx = h.ctx.clone();
+        let look = "<cast>\nMara (also called Grandma): A tall woman of sixty, grey braid, red scarf.\n</cast>";
+        let sheet = format!("<model_sheet name=\"Mara\">\n{BLUE}\n</model_sheet>");
+        for (a, b, named) in [(0, 35, true), (36, 73, false), (74, 98, true)] {
+            h.app.paint_passage(&ctx, a, b);
+            let asked = h.app.backdrop.asked();
+            assert!(asked.contains("<passage>"), "{asked}");
+            assert_eq!(asked.contains(look) && asked.contains(&sheet), named, "{a}..{b}: {asked}");
+            assert_eq!(asked.contains("<cast>"), named);
+        }
+
+        let other = h.reopened("cast");
+        let mara = &other.app.doc.cast[0];
+        assert_eq!((mara.name.as_str(), mara.aliases.as_str(), mara.sheet.as_deref()), ("Mara", "Grandma", Some(BLUE)));
+        assert_eq!(mara.look, "A tall woman of sixty, grey braid, red scarf.");
+    }
+
+    #[test]
+    fn a_model_sheet_is_drawn_from_the_look_and_the_example_opens_from_the_cast() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.click_widget("Scene");
+        h.click_widget("Cast\u{2026}");
+        h.click_widget("Add someone");
+        h.type_text("Old Tom");
+        h.click_widget(cast::LOOK_HINT);
+        h.type_text("A fisherman in yellow oilskins.");
+        h.click_widget("Draw a model sheet");
+        assert!(h.app.cast_panel.asked().starts_with("<character>\nOld Tom: A fisherman in yellow oilskins.\n</character>"));
+        // Tests never call Claude, so the drawing fails; it is not kept, and the button comes back.
+        h.frames(30, vec![], Modifiers::NONE);
+        assert!(!h.app.drawing_sheet());
+        assert_eq!(h.app.doc.cast[0].sheet, None);
+
+        h.click_widget("Delete");
+        assert!(h.app.doc.cast.is_empty());
+        h.click_widget("See an example");
+        assert!(h.app.cast_panel.example_shown(), "the example picture is read and shown");
     }
 
     const BLUE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 60 85\"><circle cx=\"30\" cy=\"40\" r=\"20\" fill=\"#36c\"/></svg>";

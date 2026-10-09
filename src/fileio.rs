@@ -14,7 +14,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::App;
-use crate::model::{Doc, Flow, ImageData, Note, PAGE_BREAK, PageSetup, ParaAttrs, Scene, Style};
+use crate::model::{Character, Doc, Flow, ImageData, Note, PAGE_BREAK, PageSetup, ParaAttrs, Scene, Style};
 
 #[derive(Serialize, Deserialize)]
 struct Run {
@@ -76,6 +76,18 @@ struct SceneEntry {
     hidden: bool,
 }
 
+/// Someone in the story: how they look, and their model sheet if drawn.
+#[derive(Serialize, Deserialize)]
+struct CharacterEntry {
+    name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    aliases: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    look: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sheet: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct DocFile {
     version: u32,
@@ -95,6 +107,8 @@ pub struct DocFile {
     pub scene: Option<crate::backdrop::SceneFile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     scenes: Vec<SceneEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cast: Vec<CharacterEntry>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     story_notes: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -154,6 +168,11 @@ impl DocFile {
             pages: Vec::new(),
             scene: None,
             scenes,
+            cast: doc
+                .cast
+                .iter()
+                .map(|c| CharacterEntry { name: c.name.clone(), aliases: c.aliases.clone(), look: c.look.clone(), sheet: c.sheet.clone() })
+                .collect(),
             story_notes: doc.story_notes.clone(),
             scratchpad: doc.scratchpad.clone(),
         }
@@ -178,6 +197,11 @@ impl DocFile {
         doc.setup.clamp_margins();
         doc.story_notes = self.story_notes;
         doc.scratchpad = self.scratchpad;
+        for c in self.cast {
+            let id = doc.next_character_id;
+            doc.next_character_id += 1;
+            doc.cast.push(Character { id, name: c.name, aliases: c.aliases, look: c.look, sheet: c.sheet });
+        }
         let removed = doc.take_out_contents_chars();
         for img in self.images {
             let Ok(bytes) = BASE64.decode(img.data.as_bytes()) else { continue };

@@ -279,6 +279,20 @@ impl Scene {
     }
 }
 
+/// Someone in the story, as Claude should paint them in every scene that names them. Not pinned to
+/// the text: they are found by name in what is painted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Character {
+    pub id: u64,
+    pub name: String,
+    /// Other names the story calls them by, separated by commas.
+    pub aliases: String,
+    /// How they look, in words.
+    pub look: String,
+    /// Their model sheet (SVG), once drawn: the figures scenes copy them from.
+    pub sheet: Option<String>,
+}
+
 pub const NOTE_COLORS: [(u8, u8, u8); 5] =
     [(255, 214, 90), (255, 150, 185), (130, 215, 140), (120, 195, 255), (255, 175, 100)];
 
@@ -301,6 +315,9 @@ pub struct Doc {
     /// Scenes painted for the story, in no particular order.
     pub scenes: Vec<Scene>,
     pub next_scene_id: u64,
+    /// The people of the story, in the order the writer added them.
+    pub cast: Vec<Character>,
+    pub next_character_id: u64,
     /// What the writer wants Claude to know about the story whenever it is asked about it.
     pub story_notes: String,
     /// The scratchpad's plain text, kept beside the story.
@@ -321,6 +338,8 @@ impl Doc {
             history: Default::default(),
             scenes: Vec::new(),
             next_scene_id: 1,
+            cast: Vec::new(),
+            next_character_id: 1,
             story_notes: String::new(),
             scratchpad: String::new(),
         }

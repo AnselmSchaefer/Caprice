@@ -19,7 +19,7 @@ use eframe::egui::{self, Color32, ColorImage, Id, Key, Modifiers, Pos2, Rect, Sh
 
 use crate::App;
 use crate::claude::{Outcome, run_claude};
-use crate::model::{Doc, IMAGE_CHAR, PAGE_BREAK, Scene};
+use crate::model::{Character, Doc, IMAGE_CHAR, PAGE_BREAK, Scene};
 use crate::theme::TEXT_DIM;
 
 /// How strongly a scene shows through the paper.
@@ -37,9 +37,9 @@ const NEAR: usize = 2;
 const KEEP: usize = 6;
 
 /// The model that paints the scenes.
-const MODEL: &str = "claude-opus-5-5";
+pub const MODEL: &str = "claude-opus-5-5";
 
-const SYSTEM: &str = "You are a skilled illustrator who paints with SVG code. You make detailed, \
+pub const SYSTEM: &str = "You are a skilled illustrator who paints with SVG code. You make detailed, \
     atmospheric illustrations for the pages of a story, in the manner of a classic book \
     illustration: believable light, depth and texture rather than cartoon shapes.";
 
@@ -115,6 +115,8 @@ pub struct Backdrop {
     on_target: Option<(usize, Option<DrawingKey>)>,
     fade: Option<(Option<DrawingKey>, f64)>,
     job: Option<Job>,
+    /// What Claude was last asked to paint.
+    asked: String,
     /// Put the keyboard on the description when the dialog opens.
     focus_field: bool,
     /// Following the writing: the paragraph drawn (or being drawn) last, the one finished since,
@@ -140,6 +142,7 @@ impl Default for Backdrop {
             on_target: None,
             fade: None,
             job: None,
+            asked: String::new(),
             focus_field: false,
             drawn_for: String::new(),
             pending: None,
@@ -149,14 +152,14 @@ impl Default for Backdrop {
 }
 
 /// The SVG in Claude's reply (it may wrap it in a code fence).
-fn extract_svg(reply: &str) -> Option<&str> {
+pub fn extract_svg(reply: &str) -> Option<&str> {
     let start = reply.find("<svg")?;
     let end = reply.rfind("</svg>")? + "</svg>".len();
     (end > start).then(|| &reply[start..end])
 }
 
 /// Render an SVG to an image `width` pixels wide.
-fn rasterize(svg: &str, width: f32) -> Result<ColorImage, String> {
+pub fn rasterize(svg: &str, width: f32) -> Result<ColorImage, String> {
     use resvg::{tiny_skia, usvg};
     let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).map_err(|e| format!("the picture could not be read: {e}"))?;
     let size = tree.size();
@@ -167,14 +170,16 @@ fn rasterize(svg: &str, width: f32) -> Result<ColorImage, String> {
     Ok(ColorImage::from_rgba_premultiplied([w as usize, h as usize], pixmap.data()))
 }
 
-/// Ask Claude for a picture of `subject` on a page `size` points large, and render it.
-fn draw_scene(subject: &Subject, size: egui::Vec2, cancel: &AtomicBool) -> Result<Option<Painted>, String> {
+/// What Claude is asked to paint for `subject` on a page `size` points large. The people of the
+/// cast it names come first: how they look, and the model sheets to copy them from (see `cast.rs`).
+fn scene_prompt(subject: &Subject, size: egui::Vec2, named: &[&Character]) -> String {
     let (w, h) = (size.x.round(), size.y.round());
+    let cast = crate::cast::cast_prompt(named);
     let what = match subject {
-        Subject::Description(d) => format!("<scene>\n{d}\n</scene>\n\nPaint one illustration of this scene"),
-        Subject::Passage(p) => format!("<passage>\n{p}\n</passage>\n\nPaint one illustration of the scene this passage of a story describes"),
+        Subject::Description(d) => format!("{cast}<scene>\n{d}\n</scene>\n\nPaint one illustration of this scene"),
+        Subject::Passage(p) => format!("{cast}<passage>\n{p}\n</passage>\n\nPaint one illustration of the scene this passage of a story describes"),
     };
-    let prompt = format!(
+    format!(
         "{what}, to be shown faintly behind the text of a page.\n\
         - One standalone SVG with viewBox=\"0 0 {w} {h}\", the scene filling the whole area, sky included.\n\
         - Realistic and detailed: correct proportions and perspective; several planes of depth with \
@@ -187,9 +192,13 @@ fn draw_scene(subject: &Subject, size: egui::Vec2, cancel: &AtomicBool) -> Resul
         - No text, letters or numbers. No scripts, links, external references or embedded images.\n\
         - At most about 30 KB.\n\
         Reply with only the SVG code."
-    );
+    )
+}
+
+/// Ask Claude for a picture with `prompt`, and render it.
+fn draw_scene(prompt: &str, cancel: &AtomicBool) -> Result<Option<Painted>, String> {
     let mut reply = String::new();
-    match run_claude(MODEL, SYSTEM, &prompt, "medium", cancel, &mut |t| reply.push_str(t))? {
+    match run_claude(MODEL, SYSTEM, prompt, "medium", cancel, &mut |t| reply.push_str(t))? {
         Outcome::Cancelled => Ok(None),
         Outcome::Refused => Err("Claude declined to draw this scene".into()),
         Outcome::Finished => {
@@ -283,6 +292,12 @@ impl Backdrop {
         (!self.description.trim().is_empty() || !self.visible).then(|| SceneFile { svg: None, description: self.description.clone(), hidden: !self.visible })
     }
 
+    /// What Claude was last asked to paint.
+    #[cfg(test)]
+    pub fn asked(&self) -> &str {
+        &self.asked
+    }
+
     /// Following the writing: the paragraph waiting to be drawn.
     #[cfg(test)]
     pub fn pending(&self) -> Option<&str> {
@@ -331,9 +346,11 @@ impl App {
     /// pinned there, which shows once its drawing is done.
     fn start_scene(&mut self, ctx: &egui::Context, subject: Subject, c: usize) {
         let (tx, cancel) = self.pin_painting(subject.text(), c);
-        let (ctx, size) = (ctx.clone(), self.doc.setup.size());
+        let prompt = scene_prompt(&subject, self.doc.setup.size(), &self.doc.named_in(subject.text()));
+        self.backdrop.asked = prompt.clone();
+        let ctx = ctx.clone();
         std::thread::spawn(move || {
-            if let Some(result) = draw_scene(&subject, size, &cancel).transpose() {
+            if let Some(result) = draw_scene(&prompt, &cancel).transpose() {
                 let _ = tx.send(result);
             }
             ctx.request_repaint();
@@ -579,7 +596,7 @@ impl App {
         let has_picture = self.scene_here().is_some();
         let b = &mut self.backdrop;
         let title = if b.job.is_some() { "Scene \u{b7} painting\u{2026}" } else { "Scene" };
-        let (mut mode, mut describe, mut stop, mut save) = (b.mode, false, false, false);
+        let (mut mode, mut describe, mut stop, mut save, mut cast) = (b.mode, false, false, false, false);
         let tip = "Pictures Claude paints faintly behind the pages, each for its part of the story";
         egui::containers::menu::MenuButton::new(title).ui(ui, |ui| {
             ui.set_min_width(230.0);
@@ -595,6 +612,11 @@ impl App {
             let list_tip = "Every scene painted, by where it is in the story";
             if ui.add_enabled(count > 0, egui::Button::new(format!("All scenes ({count})\u{2026}")).frame(false)).on_hover_text(list_tip).clicked() {
                 b.list = true;
+                ui.close();
+            }
+            let cast_tip = "The people of the story, painted the same in every scene that names them";
+            if ui.add(egui::Button::new("Cast\u{2026}").frame(false)).on_hover_text(cast_tip).clicked() {
+                cast = true;
                 ui.close();
             }
             ui.separator();
@@ -619,6 +641,9 @@ impl App {
             b.focus_field = true;
         }
         self.set_scene_mode(mode);
+        if cast {
+            self.cast_panel.open = true;
+        }
         if save {
             self.save_scene_picture(&ui.ctx().clone());
         }
@@ -862,7 +887,8 @@ mod tests {
     fn live_scene() {
         crate::claude::allow_live();
         let passage = "Far away, a lone ship fought its way through a storm on the open sea.";
-        let (_, image) = draw_scene(&Subject::Passage(passage.into()), egui::vec2(595.0, 842.0), &AtomicBool::new(false)).unwrap().unwrap();
+        let prompt = scene_prompt(&Subject::Passage(passage.into()), egui::vec2(595.0, 842.0), &[]);
+        let (_, image) = draw_scene(&prompt, &AtomicBool::new(false)).unwrap().unwrap();
         let path = std::env::temp_dir().join("caprice-live-scene.png");
         let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
         image::save_buffer(&path, &rgba, image.size[0] as u32, image.size[1] as u32, image::ColorType::Rgba8).unwrap();

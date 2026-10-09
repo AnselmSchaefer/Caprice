@@ -15,6 +15,9 @@ Caprice is a word processor for writing stories, not reports. It gives you real 
 ## Features
 
 - **Scenes behind the page.** Describe a place ("a village between the mountains and the sea, at dusk") and Claude paints it faintly behind your writing. Or let it follow along, painting each paragraph as you finish it. Every scene is kept with its part of the story, and the picture changes as your caret moves on. You can save a picture as a PNG or SVG.
+- **The same people in every scene.** Describe the people of your story once under Scene → Cast (a name, other names the story uses for them, how they look), and let Claude draw each one a model sheet. Every scene whose passage names them then paints them from it, so Mara looks like Mara in every picture of the book, though the story never says again how she looks.
+
+  ![Four passages that only name Mara, painted from the passage alone, with her description, and with her model sheet](assets/cast-example.jpg)
 - **Circle to ask Claude.** Turn on the pen (Ctrl+Shift+P) and draw a loop around a passage. Claude can review it, fix awkward wording, check grammar, summarize it, or answer your own question about it. A rewrite can replace the passage, and one undo brings the original back.
 - **Post-it notes** on any selection or line (Ctrl+Alt+N), in several colours.
 - **Leafing through pages** with the scrollbar at the bottom, a two-finger swipe or Page Up / Page Down. In *Paperstack*, dragging the scrollbar slides each page it passes halfway out, and letting go moves them all together.
@@ -44,4 +47,4 @@ The scene painting and the pen use [Claude Code](https://claude.com/claude-code)
 
 ## Files
 
-Stories are saved as `.caprice` files: plain JSON holding the text, notes, pictures and the scene behind the pages.
+Stories are saved as `.caprice` files: plain JSON holding the text, notes, pictures, the scenes behind the pages and the cast.
