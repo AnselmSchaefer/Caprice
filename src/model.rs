@@ -270,6 +270,11 @@ pub struct Scene {
     /// What it was painted from: the description, or the passage.
     pub subject: String,
     pub hidden: bool,
+    /// The people of the cast it was painted with, by name: those its subject names, or carried
+    /// from the paragraphs before it, or those the writer chose (`chosen`).
+    pub people: Vec<String>,
+    /// The writer chose `people`, so painting it again keeps them rather than looking again.
+    pub chosen: bool,
 }
 
 impl Scene {

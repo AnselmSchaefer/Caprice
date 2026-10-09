@@ -74,6 +74,10 @@ struct SceneEntry {
     subject: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     hidden: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    people: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    chosen: bool,
 }
 
 /// Someone in the story: how they look, and their model sheet if drawn.
@@ -156,7 +160,15 @@ impl DocFile {
             .scenes
             .iter()
             .filter(|s| !s.versions.is_empty())
-            .map(|s| SceneEntry { at: s.at, versions: s.versions.clone(), shown: s.shown, subject: s.subject.clone(), hidden: s.hidden })
+            .map(|s| SceneEntry {
+                at: s.at,
+                versions: s.versions.clone(),
+                shown: s.shown,
+                subject: s.subject.clone(),
+                hidden: s.hidden,
+                people: s.people.clone(),
+                chosen: s.chosen,
+            })
             .collect();
         scenes.sort_by_key(|s| s.at);
         Self {
@@ -215,7 +227,7 @@ impl DocFile {
             doc.next_scene_id += 1;
             let shown = s.shown.min(s.versions.len() - 1);
             let at = shift(s.at).min(total - 1);
-            doc.scenes.push(Scene { id, at, versions: s.versions, shown, subject: s.subject, hidden: s.hidden });
+            doc.scenes.push(Scene { id, at, versions: s.versions, shown, subject: s.subject, hidden: s.hidden, people: s.people, chosen: s.chosen });
         }
         for n in self.notes {
             let (start, end) = (shift(n.start).min(total), shift(n.end).min(total));
@@ -535,7 +547,7 @@ mod tests {
         doc.flow.text = "\u{e000}\u{c}One\ntext\n".into();
         doc.flow.styles = vec![st; 11];
         doc.notes.push(Note { id: 1, start: 2, end: 5, text: "the title".into(), color: 0 });
-        doc.scenes.push(Scene { id: 1, at: 6, versions: vec!["<svg/>".into()], shown: 0, subject: String::new(), hidden: false });
+        doc.scenes.push(Scene { id: 1, at: 6, versions: vec!["<svg/>".into()], shown: 0, subject: String::new(), hidden: false, people: Vec::new(), chosen: false });
         let json = serde_json::to_string(&DocFile::from_doc(&doc)).unwrap();
         let back = serde_json::from_str::<DocFile>(&json).unwrap().into_doc();
         assert_eq!(back.flow.text, "One\ntext\n");

@@ -33,7 +33,7 @@ images (bytes, width,          └───────────────�
   rotation)                                                 (PageLayout: galleys,     (render, book,
 notes (char ranges + text)                                   hit-testing, caret)       editor, notes)
 scenes (a char + drawings)   ──scene_at(caret) / page_scene(i)──▶ the drawing behind a page
-cast (names, looks, sheets)  ──named_in(what is painted)──▶ the people sent with a scene
+cast (names, looks, sheets)  ──named_in(what is painted, or just before)──▶ the people sent with a scene
                              export::to_docx(&Doc) ─▶ .docx (Word lays it out again itself)
 ```
 
@@ -393,15 +393,26 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
 - Tests: `the_scratchpad_stays_on_the_right_as_it_is_while_pages_turn_and_is_saved`,
   `scrolling_over_the_scratchpad_scrolls_it_and_not_the_page`.
 
-### R17 — The cast: people are found by name in what is painted, and sent with that scene only
+### R17 — The cast: people are found by name in what is painted, or just before it, and sent with that scene only
 
 `Doc::cast` holds the people of the story (`Character`: name, other names, look, model sheet),
 saved with the document (R9), never exported (R10), not undoable and not pinned to the text.
 
-- **Who is in a scene comes from its subject alone** (`Doc::named_in`: the passage or the
-  description painted, whichever `start_scene` paints), never from the text around it. So, as in
-  R13, Claude sees only what the writer marked, plus what the writer wrote for Claude (here the
-  cast). Every way of painting goes through `start_scene` → `scene_prompt`; a new one must too.
+- **Who is in a scene comes from its subject** (`Doc::named_in`: the passage or the description
+  painted), from the paragraphs just before a passage that names no one (below), or from the
+  writer's choice (`people_for`). Only the subject and the cast are sent, so, as in R13, Claude
+  sees only what the writer marked plus what the writer wrote for Claude. Every way of painting
+  goes through `paint_with` → `scene_prompt`; a new one must too.
+- **A passage that names no one carries on those named just before it** (`carried_people`): the
+  nearest paragraph before it that names anyone, `CARRY_BACK` paragraphs back at most, never across
+  a break in the story (chapter title, page break, an empty or starred line). Only passages carry;
+  a description is all the writer wants painted. It reads text the passage does not hold, but only
+  to choose among the cast: that text is never sent (R13).
+- **A scene keeps who it was painted with** (`Scene::people`, by name, saved), set when its
+  painting arrives (`Job::people`), so a stopped or failed painting changes nothing. The list of
+  scenes shows them; choosing others there (`chosen`) makes every later painting of that paragraph
+  use them instead of looking again. "Paint again" paints with exactly those shown
+  (`paint_with`). A renamed or deleted person is left out of the prompt (`cast_by_names`).
 - **Names are whole words, case counts but for the first letter** (`find_word`): "Mara's" names
   Mara, "Maradona" does not, "rose" is not Rose, and "The miller" is "the miller". Changing this
   changes who appears in pictures already painted the next time they are repainted.
@@ -415,7 +426,9 @@ saved with the document (R9), never exported (R10), not undoable and not pinned 
 - A model sheet is kept only if it renders (`draw_sheet`). The example picture is taller than some
   graphics cards take, so it is scaled to `max_texture_side` when read.
 - Tests: `a_scene_that_names_someone_in_the_cast_is_painted_with_their_look_and_model_sheet`,
-  `a_model_sheet_is_drawn_from_the_look_and_the_example_opens_from_the_cast`, and in `cast.rs`
+  `a_model_sheet_is_drawn_from_the_look_and_the_example_opens_from_the_cast`,
+  `a_passage_that_names_no_one_is_painted_with_those_named_just_before_it`,
+  `the_list_of_scenes_says_who_each_was_painted_with_and_paints_again_with_those_chosen`, and in `cast.rs`
   `people_are_found_by_any_of_their_names_as_whole_words`,
   `a_scene_tells_how_the_people_it_names_look_and_sends_the_first_sheets`,
   `a_model_sheet_is_asked_for_with_ids_from_the_name`.

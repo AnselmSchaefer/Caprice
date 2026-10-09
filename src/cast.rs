@@ -3,7 +3,10 @@
 //! sitting, as SVG. Whenever a scene is painted, everyone its passage names goes with it, their
 //! look in words and their sheet to copy the figure from. So they look the same in every picture
 //! of the book, though the story never says again how they look. People are found by name, or by
-//! another name the writer gives them, as whole words (`Doc::named_in`).
+//! another name the writer gives them, as whole words (`Doc::named_in`). A passage that names no
+//! one ("He climbed the ladder") is about those the paragraph just before it named, so they are
+//! carried on (`App::carried_people`), until a break in the story. The list of scenes says who each
+//! was painted with, and the writer can choose others and paint it again.
 //!
 //! The cast is kept with the document and never exported, like the story notes.
 
@@ -18,12 +21,14 @@ use eframe::egui::{self, ColorImage, Id, TextureHandle, TextureOptions};
 use crate::App;
 use crate::backdrop::{MODEL, SYSTEM, extract_svg, rasterize};
 use crate::claude::{Outcome, run_claude};
-use crate::model::{Character, Doc};
+use crate::model::{Character, Doc, PAGE_BREAK, ParaKind};
 use crate::theme::TEXT_DIM;
 
 /// How many model sheets go with one scene at most. Each is some 15 to 30 KB of SVG, and with more
 /// people in one picture Claude starts to mix them up.
 const MOST_SHEETS: usize = 3;
+/// How many paragraphs back a passage that names no one looks for the people it is about.
+const CARRY_BACK: usize = 3;
 /// Width in pixels model sheets are rendered at, for the cast window.
 const SHEET_WIDTH: f32 = 600.0;
 
@@ -67,6 +72,38 @@ impl Doc {
         let mut named: Vec<(usize, &Character)> = self.cast.iter().filter_map(|c| Some((c.first_named(text)?, c))).collect();
         named.sort_by_key(|&(at, c)| (at, c.id));
         named.into_iter().map(|(_, c)| c).collect()
+    }
+
+    /// The people of the cast with these names, in this order. A name no one has any more (renamed,
+    /// deleted) is left out.
+    pub fn cast_by_names(&self, names: &[String]) -> Vec<&Character> {
+        names.iter().filter_map(|n| self.cast.iter().find(|c| c.name.trim() == n)).collect()
+    }
+}
+
+impl App {
+    /// For a passage at char `at` (a paragraph's start) that names no one: the people named in the
+    /// nearest paragraph before it that names anyone, `CARRY_BACK` paragraphs back at most. A break
+    /// in the story ends the search: a chapter title, a page break, or an empty or starred line
+    /// ("* * *"), after which "he" may well be someone else.
+    pub fn carried_people(&self, at: usize) -> Vec<String> {
+        let mut end = self.doc.para_start(at).0;
+        for _ in 0..CARRY_BACK {
+            if end == 0 || self.doc.char_at(end - 1) == Some(PAGE_BREAK) {
+                break;
+            }
+            let start = self.doc.para_start(end - 1).0;
+            let text = self.selected_passage(start, end - 1);
+            if self.doc.para_attrs_at(start).kind == ParaKind::ChapterTitle || !text.chars().any(char::is_alphanumeric) {
+                break;
+            }
+            let named = self.doc.named_in(&text);
+            if !named.is_empty() {
+                return named.iter().map(|c| c.name.trim().to_owned()).collect();
+            }
+            end = start;
+        }
+        Vec::new()
     }
 }
 

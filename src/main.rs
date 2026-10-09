@@ -2213,7 +2213,7 @@ mod tests {
     fn a_scene_that_names_someone_in_the_cast_is_painted_with_their_look_and_model_sheet() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
-        let story = "Mara walked along the harbour wall.\nThe boats knocked against the stones.\nGrandma sat by the fire.";
+        let story = "Mara walked along the harbour wall.\n* * *\nThe boats knocked against the stones.\nGrandma sat by the fire.";
         h.type_text(story);
         h.click_widget("Scene");
         h.click_widget("Cast\u{2026}");
@@ -2245,11 +2245,13 @@ mod tests {
         let ctx = h.ctx.clone();
         let look = "<cast>\nMara (also called Grandma): A tall woman of sixty, grey braid, red scarf.\n</cast>";
         let sheet = format!("<model_sheet name=\"Mara\">\n{BLUE}\n</model_sheet>");
-        for (a, b, named) in [(0, 35, true), (36, 73, false), (74, 98, true)] {
+        for (passage, named) in [("Mara walked", true), ("The boats", false), ("Grandma sat", true)] {
+            let a = story[..story.find(passage).unwrap()].chars().count();
+            let b = a + story[a..].find('\n').unwrap_or(story.len() - a);
             h.app.paint_passage(&ctx, a, b);
             let asked = h.app.backdrop.asked();
             assert!(asked.contains("<passage>"), "{asked}");
-            assert_eq!(asked.contains(look) && asked.contains(&sheet), named, "{a}..{b}: {asked}");
+            assert_eq!(asked.contains(look) && asked.contains(&sheet), named, "{passage}: {asked}");
             assert_eq!(asked.contains("<cast>"), named);
         }
 
@@ -2280,6 +2282,87 @@ mod tests {
         assert!(h.app.doc.cast.is_empty());
         h.click_widget("See an example");
         assert!(h.app.cast_panel.example_shown(), "the example picture is read and shown");
+    }
+
+    impl Harness {
+        /// Someone added to the cast.
+        fn add_to_cast(&mut self, name: &str, look: &str) {
+            let id = self.app.doc.next_character_id;
+            self.app.doc.next_character_id += 1;
+            let c = model::Character { id, name: name.into(), aliases: String::new(), look: look.into(), sheet: None };
+            self.app.doc.cast.push(c);
+        }
+
+        /// Who of the cast a painting of the paragraph starting at char `at` is sent with.
+        fn painted_with(&mut self, at: usize) -> Vec<String> {
+            let end = at + self.app.doc.visible_text().chars().skip(at).take_while(|&c| c != '\n').count();
+            let ctx = self.ctx.clone();
+            self.app.paint_passage(&ctx, at, end);
+            let asked = self.app.backdrop.asked();
+            self.app.doc.cast.iter().filter(|c| asked.contains(&format!("\n{}: ", c.name))).map(|c| c.name.clone()).collect()
+        }
+    }
+
+    #[test]
+    fn a_passage_that_names_no_one_is_painted_with_those_named_just_before_it() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.add_to_cast("Lion Boy", "a thin boy with a mane of red hair");
+        h.add_to_cast("Mara", "a tall woman of sixty, grey braid");
+        let story = ["Lion Boy climbed up to the attic.", "They had hidden him behind the trunks.", "Mara heard steps on the stairs.",
+            "She held her breath.", "* * *", "He woke at dawn.", "The light came in.", "Lion Boy sat up.", "The roof creaked.",
+            "Rain fell.", "Wind blew.", "Then all was still."];
+        h.type_text(&story.join("\n"));
+        let starts: Vec<usize> = story.iter().scan(0, |at, p| { let s = *at; *at += p.chars().count() + 1; Some(s) }).collect();
+        let lion = vec!["Lion Boy".to_owned()];
+        assert_eq!(h.painted_with(starts[0]), lion, "named");
+        assert_eq!(h.painted_with(starts[1]), lion, "carried on from the paragraph before");
+        assert_eq!(h.painted_with(starts[3]), vec!["Mara".to_owned()], "only those named nearest");
+        assert!(h.painted_with(starts[5]).is_empty(), "not across a starred line");
+        assert_eq!(h.painted_with(starts[11]), Vec::<String>::new(), "not more than a few paragraphs back");
+        assert_eq!(h.painted_with(starts[10]), lion, "but a few");
+
+        // A description is painted with whom it names, and no one else.
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, starts[1] + 3, false);
+        h.app.backdrop.description = "The attic at night, moonlight on the trunks.".into();
+        h.app.draw_backdrop(&ctx);
+        assert!(!h.app.backdrop.asked().contains("<cast>"));
+
+        // Nor across a chapter title.
+        h.app.set_caret(&ctx, starts[2], false);
+        h.click_widget("Chapter");
+        assert!(h.painted_with(starts[3]).is_empty(), "{:?}", h.app.doc.para_attrs_at(starts[2]).kind);
+    }
+
+    #[test]
+    fn the_list_of_scenes_says_who_each_was_painted_with_and_paints_again_with_those_chosen() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.add_to_cast("Lion Boy", "a thin boy with a mane of red hair");
+        h.add_to_cast("Mara", "a tall woman of sixty, grey braid");
+        h.type_text("Lion Boy climbed up to the attic.\nThe trunks were dusty.");
+        h.app.fake_painting_of(0, 33, BLUE);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(h.app.doc.scenes[0].people, vec!["Lion Boy".to_owned()], "the scene keeps who it was painted with");
+
+        h.click_widget("Scene");
+        h.click_widget("All scenes (1)\u{2026}");
+        h.click_widget("People");
+        h.click_widget("Mara");
+        let scene = &h.app.doc.scenes[0];
+        assert_eq!((scene.people.clone(), scene.chosen), (vec!["Lion Boy".to_owned(), "Mara".to_owned()], true));
+
+        h.click_widget("Paint again");
+        let asked = h.app.backdrop.asked();
+        assert!(asked.contains("\nLion Boy: ") && asked.contains("\nMara: "), "{asked}");
+        // Painting its paragraph again keeps the people chosen too.
+        h.frames(30, vec![], Modifiers::NONE);
+        assert_eq!(h.painted_with(0), vec!["Lion Boy".to_owned(), "Mara".to_owned()]);
+
+        let other = h.reopened("scene-people");
+        let scene = &other.app.doc.scenes[0];
+        assert_eq!((scene.people.clone(), scene.chosen), (vec!["Lion Boy".to_owned(), "Mara".to_owned()], true));
     }
 
     const BLUE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 60 85\"><circle cx=\"30\" cy=\"40\" r=\"20\" fill=\"#36c\"/></svg>";

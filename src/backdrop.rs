@@ -54,6 +54,8 @@ struct Job {
     rx: Receiver<Result<Painted, String>>,
     cancel: Arc<AtomicBool>,
     scene: u64,
+    /// The people of the cast it is painted with, for the scene once it is painted.
+    people: Vec<String>,
 }
 
 impl Drop for Job {
@@ -336,7 +338,7 @@ impl App {
         }
     }
 
-    fn selected_passage(&self, a: usize, b: usize) -> String {
+    pub fn selected_passage(&self, a: usize, b: usize) -> String {
         let (ba, bb) = (self.doc.char_to_byte(a), self.doc.char_to_byte(b));
         self.doc.flow.text[ba..bb].chars().filter(|&c| c != IMAGE_CHAR).map(|c| if c == PAGE_BREAK { '\n' } else { c }).collect()
     }
@@ -345,8 +347,17 @@ impl App {
     /// A scene already pinned to that paragraph gets another version; otherwise a new scene is
     /// pinned there, which shows once its drawing is done.
     fn start_scene(&mut self, ctx: &egui::Context, subject: Subject, c: usize) {
+        let people = self.people_for(&subject, c);
+        self.paint_with(ctx, subject, c, people);
+    }
+
+    /// Paint `subject` for char `c`'s paragraph with these people of the cast.
+    fn paint_with(&mut self, ctx: &egui::Context, subject: Subject, c: usize, people: Vec<String>) {
         let (tx, cancel) = self.pin_painting(subject.text(), c);
-        let prompt = scene_prompt(&subject, self.doc.setup.size(), &self.doc.named_in(subject.text()));
+        let prompt = scene_prompt(&subject, self.doc.setup.size(), &self.doc.cast_by_names(&people));
+        if let Some(job) = &mut self.backdrop.job {
+            job.people = people;
+        }
         self.backdrop.asked = prompt.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
@@ -355,6 +366,21 @@ impl App {
             }
             ctx.request_repaint();
         });
+    }
+
+    /// The people of the cast a painting of `subject` for char `c`'s paragraph is about: those the
+    /// writer chose for its scene, else those it names. A passage that names no one carries on
+    /// those named just before it (`carried_people`); a description is all the writer wants.
+    fn people_for(&self, subject: &Subject, c: usize) -> Vec<String> {
+        let at = self.doc.para_start(c).0;
+        if let Some(s) = self.doc.scenes.iter().find(|s| s.at == at && s.chosen) {
+            return s.people.clone();
+        }
+        let named: Vec<String> = self.doc.named_in(subject.text()).iter().map(|c| c.name.trim().to_owned()).collect();
+        match subject {
+            Subject::Passage(_) if named.is_empty() => self.carried_people(at),
+            _ => named,
+        }
     }
 
     /// The scene a painting for char `c` goes to, made if need be, and the painting as the job
@@ -371,13 +397,13 @@ impl App {
             None => {
                 let id = self.doc.next_scene_id;
                 self.doc.next_scene_id += 1;
-                self.doc.scenes.push(Scene { id, at, versions: Vec::new(), shown: 0, subject: subject.to_owned(), hidden: false });
+                self.doc.scenes.push(Scene { id, at, versions: Vec::new(), shown: 0, subject: subject.to_owned(), hidden: false, people: Vec::new(), chosen: false });
                 id
             }
         };
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        self.backdrop.job = Some(Job { rx, cancel: cancel.clone(), scene: id });
+        self.backdrop.job = Some(Job { rx, cancel: cancel.clone(), scene: id, people: Vec::new() });
         (tx, cancel)
     }
 
@@ -385,6 +411,19 @@ impl App {
     #[cfg(test)]
     pub fn fake_painting(&mut self, c: usize, svg: &str) {
         let (tx, _) = self.pin_painting("a test", c);
+        tx.send(Ok((svg.to_owned(), rasterize(svg, RENDER_WIDTH).unwrap()))).unwrap();
+    }
+
+    /// The passage `a..b` painted as `paint_passage` paints it, with the people it finds, as if
+    /// Claude had just finished it.
+    #[cfg(test)]
+    pub fn fake_painting_of(&mut self, a: usize, b: usize, svg: &str) {
+        let subject = Subject::Passage(self.selected_passage(a, b));
+        let people = self.people_for(&subject, a);
+        let (tx, _) = self.pin_painting(subject.text(), a);
+        if let Some(job) = &mut self.backdrop.job {
+            job.people = people;
+        }
         tx.send(Ok((svg.to_owned(), rasterize(svg, RENDER_WIDTH).unwrap()))).unwrap();
     }
 
@@ -442,7 +481,7 @@ impl App {
         if let Some(svg) = file.svg.filter(|_| self.doc.scenes.is_empty()) {
             let id = self.doc.next_scene_id;
             self.doc.next_scene_id += 1;
-            self.doc.scenes.push(Scene { id, at: 0, versions: vec![svg], shown: 0, subject: String::new(), hidden: false });
+            self.doc.scenes.push(Scene { id, at: 0, versions: vec![svg], shown: 0, subject: String::new(), hidden: false, people: Vec::new(), chosen: false });
         }
         if !self.doc.scenes.is_empty() {
             self.backdrop.drawn_for = self.finished_paragraph().map(|(_, t)| t).unwrap_or_default();
@@ -569,8 +608,10 @@ impl App {
         let id = job.scene;
         match job.rx.try_recv() {
             Ok(Ok((svg, image))) => {
+                let people = self.backdrop.job.as_mut().map(|j| std::mem::take(&mut j.people)).unwrap_or_default();
                 self.backdrop.job = None;
                 if let Some(scene) = self.doc.scene_mut(id) {
+                    scene.people = people;
                     scene.versions.push(svg);
                     scene.shown = scene.versions.len() - 1;
                     scene.hidden = false;
@@ -723,7 +764,8 @@ impl App {
     }
 
     /// The list of scenes, in story order: each to go to, pin at the caret, step through its
-    /// versions, show or hide, or delete.
+    /// versions, show or hide, or delete; who of the cast it is painted with, to choose others and
+    /// paint it again.
     pub fn scene_list(&mut self, ctx: &egui::Context) {
         if !self.backdrop.list {
             return;
@@ -734,6 +776,8 @@ impl App {
             Step(u64, isize),
             Hidden(u64, bool),
             Delete(u64),
+            Person(u64, String, bool),
+            PaintAgain(u64),
         }
         let mut action = None;
         let mut open = true;
@@ -767,6 +811,24 @@ impl App {
                                 let mark = if here == Some(s.id) { "  \u{b7} shown now" } else { "" };
                                 ui.label(egui::RichText::new(format!("Page {page}{mark}")).size(12.0).color(TEXT_DIM));
                                 ui.label(self.scene_snippet(s.at)).on_hover_text(&s.subject);
+                                if !self.doc.cast.is_empty() {
+                                    ui.horizontal(|ui| {
+                                        let with = if s.people.is_empty() { "With no one from the cast".to_owned() } else { format!("With {}", s.people.join(", ")) };
+                                        ui.label(egui::RichText::new(with).size(12.0).color(TEXT_DIM));
+                                        let tip = "Choose who of the cast is in this scene, then paint it again";
+                                        egui::containers::menu::MenuButton::new("People").ui(ui, |ui| {
+                                            for c in self.doc.cast.iter().filter(|c| !c.name.trim().is_empty()) {
+                                                let name = c.name.trim();
+                                                let mut on = s.people.iter().any(|p| p == name);
+                                                if ui.checkbox(&mut on, name).changed() {
+                                                    action = Some(Do::Person(s.id, name.to_owned(), on));
+                                                }
+                                            }
+                                        })
+                                        .0
+                                        .on_hover_text(tip);
+                                    });
+                                }
                                 ui.horizontal(|ui| {
                                     if ui.small_button("Go to").on_hover_text("Turn to its place in the story").clicked() {
                                         action = Some(Do::GoTo(s.at));
@@ -786,6 +848,9 @@ impl App {
                                     let mut shows = !s.hidden;
                                     if ui.checkbox(&mut shows, "Show").changed() {
                                         action = Some(Do::Hidden(s.id, !shows));
+                                    }
+                                    if ui.small_button("Paint again").on_hover_text("Paint it again, as another version").clicked() {
+                                        action = Some(Do::PaintAgain(s.id));
                                     }
                                     if ui.small_button("Delete").on_hover_text("Delete this scene and all its versions").clicked() {
                                         action = Some(Do::Delete(s.id));
@@ -819,6 +884,22 @@ impl App {
                 }
             }
             Some(Do::Delete(id)) => self.doc.scenes.retain(|s| s.id != id),
+            Some(Do::Person(id, name, on)) => {
+                if let Some(s) = self.doc.scene_mut(id) {
+                    s.people.retain(|p| *p != name);
+                    if on {
+                        s.people.push(name);
+                    }
+                    s.chosen = true;
+                }
+            }
+            Some(Do::PaintAgain(id)) => {
+                // With the people it shows, rather than looking for them again.
+                if let Some(s) = self.doc.scenes.iter().find(|s| s.id == id) {
+                    let (subject, at, people) = (Subject::Passage(s.subject.clone()), s.at, s.people.clone());
+                    self.paint_with(ctx, subject, at, people);
+                }
+            }
             None => {}
         }
     }
