@@ -731,9 +731,54 @@ mod tests {
         // Taken off again: Ctrl+I, and the usual ink.
         h.key(Key::I, Modifiers::COMMAND);
         h.click_widget("Text colour");
-        h.click_widget("Automatic");
+        h.click_widget("Black");
         h.frames(2, vec![], Modifiers::NONE);
         assert_eq!(painted_look(&h, "Plain words and red italic words."), Some((false, theme::INK)));
+    }
+
+    #[test]
+    fn any_colour_can_be_picked_and_black_goes_back_to_the_usual_ink() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Some words here.");
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, 5, false);
+        h.app.set_caret(&ctx, 10, true);
+        h.click_widget("Text colour");
+        h.click_widget("Other colour");
+        h.frames(20, vec![], Modifiers::NONE); // the section folds open
+        // The picker is in the popup itself: its square of saturation and brightness, dragged across.
+        let nodes = h.access.as_ref().unwrap().nodes.clone();
+        let side = |a: f64, b: f64| (b - a - 100.0).abs() < 1.0;
+        let square = nodes.iter().filter_map(|(_, n)| n.bounds()).find(|b| side(b.x0, b.x1) && side(b.y0, b.y1));
+        let r = square.expect("the picker shows in the popup");
+        let at = |fx: f64, fy: f64| egui::pos2((r.x0 + (r.x1 - r.x0) * fx) as f32, (r.y0 + (r.y1 - r.y0) * fy) as f32);
+        h.press_at(at(0.5, 0.5), true);
+        for k in 1..=10 {
+            h.frames(1, vec![egui::Event::PointerMoved(at(0.5 + 0.045 * k as f64, 0.5 - 0.045 * k as f64))], Modifiers::NONE);
+        }
+        h.press_at(at(0.95, 0.05), false);
+        h.frames(2, vec![], Modifiers::NONE);
+        let picked = h.app.doc.flow.styles[6].color.expect("a colour of its own");
+        let [r_, g, b] = picked;
+        assert!(r_.max(g).max(b) - r_.min(g).min(b) > 100, "a strong colour, not near black: {picked:?}");
+        assert_eq!(painted_look(&h, "words"), Some((false, egui::Color32::from_rgb(r_, g, b))));
+        assert!(h.app.doc.flow.styles[4].color.is_none(), "only the selection");
+        // Dragging through colours is one step to undo.
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert!(h.app.doc.flow.styles[6].color.is_none(), "undone at once: {:?}", h.app.doc.flow.styles[6].color);
+        h.key(Key::Z, Modifiers::SHIFT | Modifiers::COMMAND);
+
+        // Black, first in the palette, is the usual ink again. (The popup stays open while a colour
+        // is picked in it, to try another.)
+        h.app.set_caret(&ctx, 5, false);
+        h.app.set_caret(&ctx, 10, true);
+        if !egui::Popup::is_any_open(&h.ctx) {
+            h.click_widget("Text colour");
+        }
+        h.click_widget("Black");
+        assert!(h.app.doc.flow.styles[6].color.is_none());
+        assert_eq!(painted_look(&h, "Some words here."), Some((false, theme::INK)));
     }
 
     #[test]

@@ -414,8 +414,14 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   frame, without end. Lay such a row out right to left inside `horizontal` (the button first, then
   the field at `f32::INFINITY`); `with_layout` alone takes all the height left and centres the row
   in it. (Found in the Cast window, guarded by `someone_can_keep_several_looks_and_scenes_get_the_one_in_use`.)
-- The toolbar is full at about 1100 points wide: a new toggle goes in the page bar (like Fit and
-  Scratchpad) or into a menu, or the last toolbar menus run off the window.
+- The toolbar is full: about 1050 points of tools since italic and colour, so in a window
+  narrower than about 1100 it slides sideways (arrows), and its last menus (Claude, Scene) are
+  out of view until slid to. A new toggle goes in the page bar (like Fit and Scratchpad) or into
+  a menu. The test window (`Harness`) is 1200 wide so that the tests reach every menu.
+- **A popup that needs more input (a colour picker) holds it in itself**, never in a popup of its
+  own: a click in a popup opened from a popup counts as outside the first, which closes both (the
+  "Other colour" picker did nothing). Guarded by
+  `any_colour_can_be_picked_and_black_goes_back_to_the_usual_ink`.
 - Tests: `the_scratchpad_stays_on_the_right_as_it_is_while_pages_turn_and_is_saved`,
   `scrolling_over_the_scratchpad_scrolls_it_and_not_the_page`.
 

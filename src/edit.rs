@@ -67,6 +67,8 @@ impl Edit {
                 let deleting = n1.chars() == 0 && n2.chars() == 0 && (*a2 + o2.chars() == *a1 || a2 == a1);
                 typing || deleting
             }
+            // The same text recoloured or restyled again and again, as while dragging in a picker.
+            (Edit::Restyle { at: a1, new: n1, .. }, Edit::Restyle { at: a2, new: n2, .. }) => a1 == a2 && n1.len() == n2.len(),
             _ => false,
         }
     }
