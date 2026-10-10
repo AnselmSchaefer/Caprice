@@ -37,8 +37,8 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
                              export::to_docx(&Doc) ─▶ .docx (Word lays it out again itself)
 ```
 
-- **`Flow`** (`model.rs`) is one `String` plus one `Style` per char (font, size, bold, underline,
-  image id, paragraph attributes). Paragraph formatting sits on the paragraph's **terminator** char.
+- **`Flow`** (`model.rs`) is one `String` plus one `Style` per char (font, size, bold, italic,
+  underline, colour, image id, paragraph attributes). Paragraph formatting sits on the paragraph's **terminator** char.
 - **Pages are not stored.** `Doc::spans` is a cache: per page, a char/byte range of the flow, whether
   a hard break ends it, and, for a contents page, which part of the contents it shows.
 - **Notes** are char ranges kept beside the text, not in it; **scenes** are chars likewise.
@@ -242,7 +242,10 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
 - Scenes are not exported (decided: they are a writing aid, too faint to print).
 - Story notes, the scratchpad and the cast are not exported (decided: notes to Claude and to
   oneself, not part of the book).
-- Tests: in `export.rs`, plus `notes_become_comments_over_the_same_text`.
+- Character formatting maps to run properties (`run_props`): bold, italic (`<w:i/>`), underline,
+  and colour (`<w:color>`; none is Word's automatic colour, as it is Caprice's usual ink).
+- Tests: in `export.rs`, plus `notes_become_comments_over_the_same_text`,
+  `italic_and_coloured_text_is_drawn_saved_and_exported`.
 
 ### R11 — egui workarounds depend on egui internals
 

@@ -22,7 +22,7 @@ Caprice is a word processor for writing stories, not reports. It gives you real 
 - **Post-it notes** on any selection or line (Ctrl+Alt+N), in several colours.
 - **Leafing through pages** with the scrollbar at the bottom, a two-finger swipe or Page Up / Page Down. In *Paperstack*, dragging the scrollbar slides each page it passes halfway out, and letting go moves them all together.
 - **Pictures** in your text that you can move, resize and rotate.
-- **Formatting** that stays out of the way: fonts, sizes, bold, underline, alignment, lists and page setup.
+- **Formatting** that stays out of the way: fonts, sizes, bold, italic, underline, text colour, alignment, lists and page setup.
 - **Search** (Ctrl+F), **undo** and **zoom** (Ctrl + / − / 0).
 - **Your work is safe.** Caprice asks before closing or opening another file when you have unsaved changes.
 - **Export to Word** (.docx) when the story is ready to share.

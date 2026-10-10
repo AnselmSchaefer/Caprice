@@ -3,19 +3,26 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, FontFamily};
 
-/// Fonts egui knows about right now (by UI name, plus "<name>:bold" for bold faces).
+/// Fonts egui knows about right now (by UI name, plus "<name>:bold", "<name>:italic" and
+/// "<name>:bold:italic" for those faces).
 pub static LOADED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-pub fn family_for(font: &str, bold: bool) -> FontFamily {
+/// The name a face of `font` is loaded under.
+fn face_key(font: &str, bold: bool, italic: bool) -> String {
+    format!("{font}{}{}", if bold { ":bold" } else { "" }, if italic { ":italic" } else { "" })
+}
+
+/// The family to draw `font` with, and whether egui must slant it itself, for want of an italic
+/// face. A missing bold face is drawn regular.
+pub fn family_for(font: &str, bold: bool, italic: bool) -> (FontFamily, bool) {
     let loaded = LOADED.lock().unwrap();
-    if loaded.iter().any(|f| f == font) {
-        let key = format!("{font}:bold");
-        if bold && loaded.contains(&key) {
-            return FontFamily::Name(key.into());
-        }
-        return FontFamily::Name(font.into());
+    if !loaded.iter().any(|f| f == font) {
+        return (FontFamily::Proportional, italic);
     }
-    FontFamily::Proportional
+    let has = |b: bool, i: bool| loaded.contains(&face_key(font, b, i));
+    let bold = bold && (has(true, italic) || has(true, false));
+    let italic_face = italic && has(bold, true);
+    (FontFamily::Name(face_key(font, bold, italic_face).into()), italic && !italic_face)
 }
 
 /// Common document fonts, most popular first; the first ten that are installed get offered.
@@ -73,20 +80,22 @@ impl FontBook {
         }
         let Some((_, actual)) = self.families.iter().find(|(n, _)| n == font).cloned() else { return };
         let families = [fontdb::Family::Name(&actual)];
-        let query = |bold: bool| fontdb::Query {
+        let query = |bold: bool, italic: bool| fontdb::Query {
             families: &families,
             weight: if bold { fontdb::Weight::BOLD } else { fontdb::Weight::NORMAL },
+            style: if italic { fontdb::Style::Italic } else { fontdb::Style::Normal },
             ..Default::default()
         };
         let mut keys = Vec::new();
-        for bold in [false, true] {
-            let Some(id) = self.db.query(&query(bold)) else { continue };
+        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+            let Some(id) = self.db.query(&query(bold, italic)) else { continue };
             let Some(info) = self.db.face(id) else { continue };
-            if bold && info.weight.0 < 600 {
+            // fontdb gives the nearest face; only a real bold or italic one will do.
+            if (bold && info.weight.0 < 600) || (italic && info.style == fontdb::Style::Normal) {
                 continue;
             }
             let Some((bytes, index)) = self.db.with_face_data(id, |d, i| (d.to_vec(), i)) else { continue };
-            let key = if bold { format!("{font}:bold") } else { font.to_owned() };
+            let key = face_key(font, bold, italic);
             let mut data = egui::FontData::from_owned(bytes);
             data.index = index;
             self.defs.font_data.insert(key.clone(), Arc::new(data));
@@ -112,3 +121,4 @@ impl FontBook {
         }
     }
 }
+

@@ -563,6 +563,10 @@ impl App {
                     let on = !self.typing.bold;
                     return self.apply_style(ctx, |s| s.bold = on);
                 }
+                Key::I => {
+                    let on = !self.typing.italic;
+                    return self.apply_style(ctx, |s| s.italic = on);
+                }
                 Key::U => {
                     let on = !self.typing.underline;
                     return self.apply_style(ctx, |s| s.underline = on);

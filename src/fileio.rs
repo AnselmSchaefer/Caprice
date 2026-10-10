@@ -22,7 +22,11 @@ struct Run {
     font: String,
     size: f32,
     bold: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    italic: bool,
     underline: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    color: Option<[u8; 3]>,
     /// Paragraph format; only present on runs holding paragraph marks.
     #[serde(default, skip_serializing_if = "is_default_para")]
     para: ParaAttrs,
@@ -143,13 +147,24 @@ fn to_runs(text: &str, styles: &[Style]) -> Vec<Run> {
         }
     }
     runs.into_iter()
-        .map(|(s, text)| Run { text, font: s.font.to_string(), size: s.size, bold: s.bold, underline: s.underline, para: s.para, image: s.image })
+        .map(|(s, text)| Run {
+            text,
+            font: s.font.to_string(),
+            size: s.size,
+            bold: s.bold,
+            italic: s.italic,
+            underline: s.underline,
+            color: s.color,
+            para: s.para,
+            image: s.image,
+        })
         .collect()
 }
 
 fn from_runs(runs: Vec<Run>, text: &mut String, styles: &mut Vec<Style>) {
     for r in runs {
-        let st = Style { font: r.font.into(), size: r.size, bold: r.bold, underline: r.underline, para: r.para, image: r.image };
+        let (font, size, para, image) = (r.font.into(), r.size, r.para, r.image);
+        let st = Style { font, size, bold: r.bold, italic: r.italic, underline: r.underline, color: r.color, para, image };
         styles.extend(std::iter::repeat_n(st, r.text.chars().count()));
         text.push_str(&r.text);
     }

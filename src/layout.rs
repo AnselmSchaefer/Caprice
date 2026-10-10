@@ -26,15 +26,18 @@ pub struct Mark {
 pub fn run_format(ctx: &egui::Context, st: &Style, scale: f32, background: Color32, attrs: ParaAttrs) -> TextFormat {
     let title = attrs.is_chapter_title();
     let size = if title { st.size * CHAPTER_TITLE_SCALE } else { st.size };
-    let font_id = FontId::new(size * scale, family_for(&st.font, st.bold || title));
+    let (family, slant) = family_for(&st.font, st.bold || title, st.italic);
+    let font_id = FontId::new(size * scale, family);
     let spacing = attrs.spacing;
     let line_height = ((spacing - 1.0).abs() > 0.001).then(|| ctx.fonts_mut(|f| f.row_height(&font_id)) * spacing);
+    let color = st.color.map_or(INK, |[r, g, b]| Color32::from_rgb(r, g, b));
     TextFormat {
         background,
         line_height,
         font_id,
-        color: INK,
-        underline: if st.underline { Stroke::new(scale.max(1.0), INK) } else { Stroke::NONE },
+        color,
+        italics: slant,
+        underline: if st.underline { Stroke::new(scale.max(1.0), color) } else { Stroke::NONE },
         ..Default::default()
     }
 }
@@ -221,7 +224,7 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
     let height = if spec.invisible { 0.0 } else { galley.size().y };
     let marker = spec.marker.as_ref().map(|text| {
         let st = spec.styles.first().unwrap_or(spec.term);
-        let font = FontId::new(st.size * spec.scale, family_for(&st.font, false));
+        let font = FontId::new(st.size * spec.scale, family_for(&st.font, false, false).0);
         let g = ctx.fonts_mut(|f| f.layout(text.clone(), font, INK, f32::INFINITY));
         let row = galley.rows.first().map_or((0.0, g.size().y), |r| (r.pos.y, r.size.y));
         let at = vec2(
@@ -738,7 +741,8 @@ mod tests {
                         let step = w[1].pos.y - w[0].pos.y;
                         assert!((step - pitch).abs() <= 1.0, "{n} chars at zoom {sc}: rows {} pt apart, not {pitch}", step);
                     }
-                    let normal = ctx.fonts_mut(|f| f.row_height(&egui::FontId::new(st.size * sc, family_for(&st.font, false))));
+                    let font = egui::FontId::new(st.size * sc, family_for(&st.font, false, false).0);
+                    let normal = ctx.fonts_mut(|f| f.row_height(&font));
                     assert!((pitch - normal).abs() <= 1.0, "{n} chars at zoom {sc} ({} rows, {page_rows} at page size): rows {pitch} apart, not {normal}", g.rows.len());
                 }
             }

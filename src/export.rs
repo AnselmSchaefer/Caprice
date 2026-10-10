@@ -3,7 +3,7 @@
 //!
 //! * paragraphs = paragraphs of the flow; alignment, line spacing, bullets and numbering = paragraph properties
 //! * hard page breaks = "page break before" on the paragraph that follows
-//! * font, size, bold, underline = run properties
+//! * font, size, bold, italic, underline, colour = run properties
 //! * page setup = section properties (paper, orientation, margins), page numbers = a footer field
 //! * notes = Word comments anchored to the same text
 //! * chapter titles = the built-in "Heading 1" style; drop caps = Word's own drop caps (a framed
@@ -65,6 +65,12 @@ fn run_props(st: &Style) -> String {
     let mut s = format!("<w:rFonts w:ascii=\"{font}\" w:hAnsi=\"{font}\" w:cs=\"{font}\"/>");
     if st.bold {
         s.push_str("<w:b/><w:bCs/>");
+    }
+    if st.italic {
+        s.push_str("<w:i/><w:iCs/>");
+    }
+    if let Some([r, g, b]) = st.color {
+        let _ = write!(s, "<w:color w:val=\"{r:02X}{g:02X}{b:02X}\"/>");
     }
     let _ = write!(s, "<w:sz w:val=\"{half_points}\"/><w:szCs w:val=\"{half_points}\"/>");
     if st.underline {
@@ -829,6 +835,7 @@ mod sample {
         let plain = Style::new("Liberation Serif");
         let bold = Style { bold: true, size: 20.0, ..plain.clone() };
         let under = Style { underline: true, ..plain.clone() };
+        let italic_red = Style { italic: true, color: Some([205, 40, 40]), ..plain.clone() };
         let centered = ParaAttrs { align: Align::Center, ..Default::default() };
         let bullet = ParaAttrs { list: ListKind::Bullet, ..Default::default() };
         let numbered = ParaAttrs { list: ListKind::Numbered, ..Default::default() };
@@ -847,6 +854,8 @@ from the President of a far distant country.";
             ("\n", &bold, centered),
             ("Plain text, then ", &plain, ParaAttrs::default()),
             ("underlined words", &under, ParaAttrs::default()),
+            (", ", &plain, ParaAttrs::default()),
+            ("red italic words", &italic_red, ParaAttrs::default()),
             (" and more plain text.", &plain, ParaAttrs::default()),
             ("\n", &plain, ParaAttrs::default()),
             ("first bullet", &plain, ParaAttrs::default()),

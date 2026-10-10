@@ -89,6 +89,68 @@ fn icon_dropdown(ui: &mut egui::Ui, icon: Icon, active: bool, tip: &str, popup: 
     }
 }
 
+/// Text colours offered in the toolbar, named for their tooltips. Dark enough to read on paper.
+const TEXT_COLORS: [(&str, [u8; 3]); 10] = [
+    ("Dark red", [150, 28, 28]),
+    ("Red", [205, 40, 40]),
+    ("Orange", [215, 110, 15]),
+    ("Gold", [180, 135, 0]),
+    ("Green", [40, 125, 60]),
+    ("Teal", [0, 120, 125]),
+    ("Blue", [35, 90, 200]),
+    ("Navy", [25, 40, 110]),
+    ("Purple", [115, 50, 160]),
+    ("Grey", [105, 105, 110]),
+];
+
+/// The text colour button: an "A" over a bar in the colour of the text at the caret (light for
+/// the usual ink, which would not show on the dock). Its popup sets a colour: `Some(None)` is the
+/// usual ink again.
+fn color_dropdown(ui: &mut egui::Ui, color: Option<[u8; 3]>) -> Option<Option<[u8; 3]>> {
+    let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 30.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Text colour"));
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+    ui.painter().rect_filled(rect, 8.0, if resp.hovered() || open { BTN_HOVER } else { BTN });
+    let font = egui::FontId::proportional(15.0);
+    ui.painter().text(rect.center() - vec2(0.0, 3.0), egui::Align2::CENTER_CENTER, "A", font, TEXT);
+    let bar = Rect::from_center_size(pos2(rect.center().x, rect.bottom() - 7.0), vec2(16.0, 3.5));
+    ui.painter().rect_filled(bar, 1.0, color.map_or(TEXT, |[r, g, b]| Color32::from_rgb(r, g, b)));
+    let mut pick = None;
+    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        if ui.add(egui::Button::new("Automatic").selected(color.is_none()).frame(false)).clicked() {
+            pick = Some(None);
+            ui.close();
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.set_max_width(5.0 * 26.0);
+            ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+            for (name, rgb) in TEXT_COLORS {
+                let (r, swatch) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+                swatch.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+                ui.painter().rect_filled(r, 4.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+                if color == Some(rgb) || swatch.hovered() {
+                    ui.painter().rect_stroke(r.expand(1.5), 5.0, Stroke::new(1.5, TEXT), egui::StrokeKind::Outside);
+                }
+                if swatch.on_hover_text(name).clicked() {
+                    pick = Some(Some(rgb));
+                    ui.close();
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            let mut other = color.unwrap_or([0, 0, 0]);
+            if egui::color_picker::color_edit_button_srgb(ui, &mut other).changed() {
+                pick = Some(Some(other));
+            }
+            ui.label("Other colour");
+        });
+    });
+    if !open {
+        resp.on_hover_text("Text colour");
+    }
+    pick
+}
+
 #[derive(Clone, Copy)]
 enum ImageAction {
     Insert,
@@ -223,8 +285,9 @@ impl App {
     fn toolbox(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let mut font_pick = None;
-        let (mut bold, mut underline, mut size) = (self.typing.bold, self.typing.underline, self.typing.size);
-        let small = vec2(32.0, 30.0);
+        let t = &self.typing;
+        let (mut bold, mut italic, mut underline, mut size) = (t.bold, t.italic, t.underline, t.size);
+        let small = vec2(28.0, 30.0);
 
         let mut file_action = None;
         egui::containers::menu::MenuButton::new("File").ui(ui, |ui| {
@@ -247,7 +310,7 @@ impl App {
 
         egui::ComboBox::from_id_salt("font")
             .selected_text(self.typing.font.to_string())
-            .width(170.0)
+            .width(150.0)
             .show_ui(ui, |ui| {
                 for (f, _) in &self.fonts.families {
                     if ui.selectable_label(*f == *self.typing.font, f).clicked() {
@@ -256,13 +319,21 @@ impl App {
                 }
             });
         ui.add_sized(
-            [64.0, 30.0],
+            [58.0, 30.0],
             egui::DragValue::new(&mut size).range(6.0..=96.0).speed(0.15).max_decimals(1).suffix(" pt"),
         );
-        let b = egui::Button::new(egui::RichText::new("B").strong()).selected(bold).min_size(small);
-        bold ^= ui.add(b).clicked();
-        let u = egui::Button::new(egui::RichText::new("U").underline()).selected(underline).min_size(small);
-        underline ^= ui.add(u).clicked();
+        // The look of the letters, close together as one group.
+        let mut color = None;
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            let b = egui::Button::new(egui::RichText::new("B").strong()).selected(bold).min_size(small);
+            bold ^= ui.add(b).on_hover_text("Bold (Ctrl+B)").clicked();
+            let i = egui::Button::new(egui::RichText::new("I").italics()).selected(italic).min_size(small);
+            italic ^= ui.add(i).on_hover_text("Italic (Ctrl+I)").clicked();
+            let u = egui::Button::new(egui::RichText::new("U").underline()).selected(underline).min_size(small);
+            underline ^= ui.add(u).on_hover_text("Underline (Ctrl+U)").clicked();
+            color = color_dropdown(ui, self.typing.color);
+        });
 
         ui.add_space(2.0);
         ui.separator();
@@ -354,8 +425,14 @@ impl App {
         if bold != self.typing.bold {
             self.apply_style(&ctx, |s| s.bold = bold);
         }
+        if italic != self.typing.italic {
+            self.apply_style(&ctx, |s| s.italic = italic);
+        }
         if underline != self.typing.underline {
             self.apply_style(&ctx, |s| s.underline = underline);
+        }
+        if let Some(color) = color {
+            self.apply_style(&ctx, |s| s.color = color);
         }
         match para_change {
             Some(ParaChange::Align(a)) => self.set_para(&ctx, |p| p.align = a),

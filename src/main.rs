@@ -607,9 +607,10 @@ mod tests {
         fn frames(&mut self, n: usize, events: Vec<egui::Event>, modifiers: Modifiers) {
             for k in 0..n {
                 self.time += 1.0 / 60.0;
+                // Wide enough for the whole toolbar, so its menus are there to click without sliding it.
                 let mut input = egui::RawInput {
                     time: Some(self.time),
-                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 900.0))),
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0))),
                     ..Default::default()
                 };
                 if modifiers != self.mods {
@@ -687,6 +688,52 @@ mod tests {
         h.app.set_caret(&ctx, starts[1], false);
         h.key(Key::End, Modifiers::NONE);
         assert!(h.app.caret > starts[1] && h.app.caret <= starts[2], "{} in {:?}", h.app.caret, starts);
+    }
+
+    /// How the words `words` were last painted: in italics (a slanted or italic face), and their colour.
+    fn painted_look(h: &Harness, words: &str) -> Option<(bool, egui::Color32)> {
+        h.painted.iter().find_map(|cs| {
+            let egui::Shape::Text(t) = &cs.shape else { return None };
+            let job = &t.galley.job;
+            let s = job.sections.iter().find(|s| &job.text[s.byte_range.start.0..s.byte_range.end.0] == words)?;
+            let italic_face = matches!(&s.format.font_id.family, egui::FontFamily::Name(n) if n.ends_with(":italic"));
+            Some((s.format.italics || italic_face, s.format.color))
+        })
+    }
+
+    #[test]
+    fn italic_and_coloured_text_is_drawn_saved_and_exported() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Plain words and red italic words.");
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, 16, false);
+        h.app.set_caret(&ctx, 26, true);
+        h.key(Key::I, Modifiers::COMMAND);
+        h.click_widget("Text colour");
+        h.click_widget("Red");
+        h.frames(2, vec![], Modifiers::NONE);
+        let red = egui::Color32::from_rgb(205, 40, 40);
+        assert_eq!(painted_look(&h, "red italic"), Some((true, red)));
+        assert_eq!(painted_look(&h, "Plain words and "), Some((false, theme::INK)), "the rest as it was");
+
+        // Kept in the file, and in Word.
+        let other = h.reopened("italic-colour");
+        let st = &other.app.doc.flow.styles[20];
+        assert!(st.italic && st.color == Some([205, 40, 40]) && !other.app.doc.flow.styles[10].italic);
+        let docx = crate::export::to_docx(&h.app.doc).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(docx)).unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("word/document.xml").unwrap(), &mut xml).unwrap();
+        let run = xml.split("<w:r>").find(|r| r.contains(">red italic<")).expect("a run of its own");
+        assert!(run.contains("<w:i/>") && run.contains("<w:color w:val=\"CD2828\"/>"), "{run}");
+
+        // Taken off again: Ctrl+I, and the usual ink.
+        h.key(Key::I, Modifiers::COMMAND);
+        h.click_widget("Text colour");
+        h.click_widget("Automatic");
+        h.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(painted_look(&h, "Plain words and red italic words."), Some((false, theme::INK)));
     }
 
     #[test]

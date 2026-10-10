@@ -87,7 +87,10 @@ pub struct Style {
     pub font: Arc<str>,
     pub size: f32,
     pub bold: bool,
+    pub italic: bool,
     pub underline: bool,
+    /// The text's colour (red, green, blue); none is the usual ink.
+    pub color: Option<[u8; 3]>,
     pub para: ParaAttrs,
     /// Nonzero on the placeholder character of an inline picture: the id in `Doc::images`.
     pub image: u32,
@@ -95,12 +98,14 @@ pub struct Style {
 
 impl Style {
     pub fn new(font: &str) -> Self {
-        Self { font: font.into(), size: FONT_SIZE, bold: false, underline: false, para: ParaAttrs::default(), image: 0 }
+        let para = ParaAttrs::default();
+        Self { font: font.into(), size: FONT_SIZE, bold: false, italic: false, underline: false, color: None, para, image: 0 }
     }
 
     /// Same look of the glyph itself, ignoring paragraph formatting.
     pub fn same_char(&self, o: &Style) -> bool {
-        self.font == o.font && self.size == o.size && self.bold == o.bold && self.underline == o.underline && self.image == o.image
+        let look = (self.bold, self.italic, self.underline, self.color) == (o.bold, o.italic, o.underline, o.color);
+        self.font == o.font && self.size == o.size && look && self.image == o.image
     }
 
     pub fn with_para(&self, para: ParaAttrs) -> Style {
