@@ -665,6 +665,31 @@ mod tests {
     }
 
     #[test]
+    fn up_and_down_from_the_start_of_a_wrapped_line_move_one_line() {
+        let mut h = Harness::new();
+        paragraphs_over_pages(&mut h);
+        let ctx = h.ctx.clone();
+        let rows = h.app.doc.layout_page(&ctx, 0, 1.0, &[]).rows();
+        let starts: Vec<usize> = rows.iter().filter(|r| r.para == rows[0].para).map(|r| r.start).take(4).collect();
+        assert_eq!(starts.len(), 4, "the first paragraph wraps");
+        // The caret at the start of the second line, where the first one wraps.
+        h.app.set_caret(&ctx, starts[1], false);
+        h.key(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(h.app.caret, starts[2], "down to the third line, not stuck");
+        h.key(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(h.app.caret, starts[3]);
+        h.key(Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(h.app.caret, starts[2], "up one line, not two");
+        h.key(Key::ArrowUp, Modifiers::NONE);
+        h.key(Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(h.app.caret, starts[0]);
+        // End on the line the caret starts goes to that line's end.
+        h.app.set_caret(&ctx, starts[1], false);
+        h.key(Key::End, Modifiers::NONE);
+        assert!(h.app.caret > starts[1] && h.app.caret <= starts[2], "{} in {:?}", h.app.caret, starts);
+    }
+
+    #[test]
     fn arrow_keys_treat_a_drop_cap_and_the_line_beside_it_as_one_line() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);

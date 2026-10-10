@@ -555,12 +555,11 @@ impl PageLayout {
         let k = self.piece_of(local, prefer_next_row)?;
         let in_piece: Vec<&RowRef> = rows.iter().filter(|r| r.para == k).collect();
         let last = in_piece.len().checked_sub(1)?;
+        // A row ends where the next one starts, so at a wrap point the caret is on this row only
+        // if it prefers the end of it to the start of the next.
         for (n, r) in in_piece.iter().enumerate() {
-            let wraps_on = n < last && local == r.end;
-            if (local >= r.start && local < r.end) || (wraps_on && prefer_next_row) {
-                return Some(**r);
-            }
-            if local == r.end && (n == last || !prefer_next_row) {
+            let on_end = local == r.end && (n == last || !prefer_next_row);
+            if local >= r.start && (local < r.end || on_end) {
                 return Some(**r);
             }
         }

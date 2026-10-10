@@ -467,6 +467,22 @@ undoable and not pinned to the text.
   `a_scene_tells_how_the_people_it_names_look_and_sends_the_first_sheets`,
   `a_model_sheet_is_asked_for_with_ids_from_the_name`.
 
+### R18 — At a soft wrap one position is two places; `prefer_next` says which
+
+Rows of a paragraph are contiguous (`PageLayout::rows`): a row ends where the next one starts, so
+the position at a wrap is both the end of one line and the start of the next. `App::prefer_next`
+says which: true (set by `set_caret`, Home) the start of the next line, false (End) the end of
+this one.
+
+- **Everything that asks which line the caret is on goes through `row_of` / `caret_rect` with
+  `prefer_next`**, and they must agree with what is drawn: egui draws the caret by
+  `CCursor::prefer_next_row` the same way. Taking the wrap as the end of the line above while the
+  caret shows at the start of the next made Down stay put and Up skip a line.
+- Something new that moves the caret line by line, or to a line's ends, sets `prefer_next` for
+  where it means the caret to be.
+- Tests: `up_and_down_from_the_start_of_a_wrapped_line_move_one_line`,
+  `arrow_keys_treat_a_drop_cap_and_the_line_beside_it_as_one_line`.
+
 ---
 
 ## 5. Checklists for common changes
