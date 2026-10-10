@@ -105,6 +105,7 @@ pub struct App {
     pub toolbar_scroll: f32,
     pub toolbar_target: f32,
     pub path: Option<PathBuf>,
+    /// A message to show briefly ("- saved"); the toast takes it from here when it shows it.
     pub status: String,
     /// Animated position in page units. 2.4 means page 2 has slid 40% of the way into the pile behind.
     pub pos: f32,
@@ -142,7 +143,7 @@ pub struct App {
     /// Textures of the document's pictures, by picture id.
     pub textures: HashMap<u32, egui::TextureHandle>,
     pub startup_file: Option<PathBuf>,
-    /// The last status message shown, when it appeared, and the window title last set.
+    /// The status message being shown (taken from `status`), when it appeared, and the window title last set.
     pub shown_status: String,
     /// Right-click menu of a picture (where it was opened), a picture being dragged, a resize in progress.
     pub pic_menu: Option<Pos2>,
@@ -268,14 +269,15 @@ impl App {
         }
 
         let now = ctx.input(|i| i.time);
-        if self.status != self.shown_status {
-            self.shown_status = self.status.clone();
+        // Taken out of `status`, so the same message set again ("saved" twice) shows again.
+        if !self.status.is_empty() {
+            self.shown_status = std::mem::take(&mut self.status);
             self.status_at = now;
         }
         let age = now - self.status_at;
         const SHOW_FOR: f64 = 4.0;
-        if !self.status.is_empty() && age < SHOW_FOR {
-            let text = self.status.trim_start_matches(['-', ' ']).to_owned();
+        if !self.shown_status.is_empty() && age < SHOW_FOR {
+            let text = self.shown_status.trim_start_matches(['-', ' ']).to_owned();
             let fade = (((SHOW_FOR - age) / 0.6) as f32).clamp(0.0, 1.0);
             let galley = ui.painter().layout_no_wrap(text, egui::FontId::proportional(13.0), theme::TEXT.gamma_multiply(fade));
             let size = galley.size() + egui::vec2(28.0, 14.0);
@@ -1651,6 +1653,27 @@ mod tests {
             }
         }
         rows
+    }
+
+    #[test]
+    fn saving_again_says_saved_again() {
+        let dir = std::env::temp_dir().join(format!("caprice-saved-again-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.app.path = Some(dir.join("story.caprice"));
+        let says_saved = |h: &Harness| h.painted.iter().any(|cs| matches!(&cs.shape, egui::Shape::Text(t) if t.galley.text() == "saved"));
+
+        h.type_text("Once.");
+        h.key(Key::S, Modifiers::COMMAND);
+        assert!(says_saved(&h));
+        h.frames(300, vec![], Modifiers::NONE);
+        assert!(!says_saved(&h), "the message goes after a few seconds");
+        // The same message a second time shows like the first.
+        h.type_text(" Twice.");
+        h.key(Key::S, Modifiers::COMMAND);
+        assert!(says_saved(&h));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     impl Harness {
