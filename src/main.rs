@@ -367,8 +367,9 @@ impl App {
     fn animate_slide_out(&mut self, ui: &egui::Ui) {
         let Some(s) = self.slide_out else { return };
         let dt = ui.input(|i| i.stable_dt).min(0.05);
-        // In a book, as unhurried as a new page arriving, since a page turns back with it.
-        let speed = if self.appearance == Appearance::Book { book::NEW_PAGE_PACE } else { ((1.0 - s) * 5.0).clamp(2.2, 14.0) };
+        // In a book, as unhurried as a new page arriving, since a page turns back with it; on a
+        // paperstack, as quick as one page back, since the page before comes out of the pile as on one.
+        let speed = if self.appearance == Appearance::Book { book::NEW_PAGE_PACE } else { 2.75 };
         let s = s + speed * dt;
         self.slide_out = (s < 1.0).then_some(s);
         ui.ctx().request_repaint();
@@ -493,8 +494,6 @@ impl App {
         self.last_page_rect = page_rect;
         let base = self.pos.floor() as usize;
         let t = self.pos - base as f32;
-        let n = self.doc.pages();
-
         self.animate_held(ui);
 
         if let Some((from, to, s, held)) = self.batch {
@@ -509,18 +508,17 @@ impl App {
                 // Passing by: just the page.
                 self.stack(ui.painter(), page_rect, i, self.last() - i);
                 self.static_page(ui, page_rect, i);
-            } else if let (Some(s), Appearance::Book) = (self.slide_out, self.appearance) {
-                // In a book the page before lies turned over in the pile, so it turns back over the
+            } else if let Some(s) = self.slide_out {
+                // The page before lies in the pile (turned over, in a book), so it comes back over the
                 // page that slides out, its post-its with it; it is editable once it lies flat.
                 let to_right = area.right() + 40.0 - page_rect.left();
-                self.book_slide_out(ui, page_rect, i, s, to_right);
+                if self.appearance == Appearance::Book {
+                    self.book_slide_out(ui, page_rect, i, s, to_right);
+                } else {
+                    self.paper_slide_out(ui, page_rect, i, s, to_right);
+                }
             } else {
                 // Settled: this page is editable.
-                let ease = |s: f32| s * s * (3.0 - 2.0 * s);
-                if let Some(s) = self.slide_out {
-                    // While a page slides out, the one before comes up from the back of the pile.
-                    self.sheet_to_pile(ui, page_rect, i, egui::Vec2::ZERO, 1.0 - ease(s));
-                }
                 self.stack(ui.painter(), page_rect, i, self.last() - i);
                 // A post-it of a covered page takes clicks where it shows, under the page's own widgets.
                 for (id, _, r) in self.pile_note_hits(&ctx, page_rect, i, self.last() - i) {
@@ -535,34 +533,28 @@ impl App {
                 self.editor_surface(ui, page_rect, i, !self.circling());
                 self.draw_notes(ui, page_rect, i);
                 self.pen_surface(ui, page_rect, i);
-                if let Some(s) = self.slide_out {
-                    let to_right = area.right() + 40.0 - page_rect.left();
-                    let r = page_rect.translate(egui::vec2(to_right * ease(s), 0.0));
-                    Self::paper(ui.painter(), r);
-                    ui.painter().extend(self.backdrop_shapes(&ctx, i, r, &|p| p, 1.0, 1.0));
-                }
             }
         } else if self.slides_in(base) && self.appearance == Appearance::Book {
             // A new page comes in from beyond the right edge of the window while the old one turns
             // over onto the pile, taking its post-its with it.
             let from_right = area.right() + 40.0 - page_rect.left();
             self.book_slide_in(ui, page_rect, base, t, from_right);
-        } else if self.slides_in(base) {
-            // A new page comes in from beyond the right edge of the window, over the old one,
-            // while the pile behind grows by a sheet from the back.
-            let ease = |s: f32| s * s * (3.0 - 2.0 * s);
-            self.sheet_to_pile(ui, page_rect, base, egui::Vec2::ZERO, ease(t));
-            self.stack(ui.painter(), page_rect, base, n - 1 - base - 1);
-            self.static_page(ui, page_rect, base);
-            let from_right = area.right() + 40.0 - page_rect.left();
-            self.static_page(ui, page_rect.translate(egui::vec2(from_right * (1.0 - ease(t)), 0.0)), base + 1);
         } else if self.appearance == Appearance::Book {
             // Mid-turn: page `base` turns over, revealing `base + 1`, or back.
             self.book_turn(ui, page_rect, base, t);
         } else {
-            // Between pages: page `base` slides off `base + 1` into the back of the pile behind, or out of it.
+            // Between pages: page `base` slides off `base + 1` into the back of the pile behind, or
+            // out of it. A new page comes in from beyond the right edge of the window meanwhile,
+            // the old one going into the pile as on any page forward, its post-its with it.
             let back = (self.target as f32) < self.pos;
-            self.slide_page(ui, page_rect, base, t, back);
+            let mut next = page_rect;
+            if self.slides_in(base) {
+                let ease = |s: f32| s * s * (3.0 - 2.0 * s);
+                let from_right = area.right() + 40.0 - page_rect.left();
+                next = page_rect.translate(egui::vec2(from_right * (1.0 - ease(t)), 0.0));
+            }
+            let ahead = self.last() - base - 1;
+            self.slide_page(ui, page_rect, base, t, back, ahead, &|| self.static_page(ui, next, base + 1));
         }
 
         self.pan_with_ctrl(ui, area);
@@ -1886,6 +1878,37 @@ mod tests {
         assert!(jump < page.width() / 3.0, "it goes over with its page, not in one jump of {jump}: {xs:?}");
     }
 
+    #[test]
+    fn on_a_paperstack_a_new_page_slides_in_as_the_old_one_goes_into_the_pile_with_its_post_it() {
+        let mut h = Harness::new();
+        h.app.appearance = Appearance::Paperstack;
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("A page with a post-it.");
+        h.app.doc.notes.push(model::Note { id: 50, start: 0, end: 6, text: "Green.".into(), color: 2 });
+        h.frames(3, vec![], Modifiers::NONE);
+        let page = h.app.last_page_rect;
+        let start = green_post_it_x(&h).unwrap();
+        assert!(start > page.right(), "it sticks out on the right");
+
+        h.click_widget("+ New page");
+        let (mut xs, mut new_page_lefts) = (vec![start], Vec::new());
+        for _ in 0..60 {
+            h.frames(1, vec![], Modifiers::NONE);
+            xs.extend(green_post_it_x(&h));
+            let flat = h.painted.iter().filter_map(|cs| match &cs.shape {
+                egui::Shape::Rect(r) if r.fill == theme::PAPER && r.rect.width() > page.width() * 0.9 => Some(r.rect.left()),
+                _ => None,
+            });
+            new_page_lefts.extend(flat.filter(|&x| x > page.left() + 1.0));
+        }
+        assert!(new_page_lefts.iter().any(|&x| x > page.center().x), "the new page slides in from the right: {new_page_lefts:?}");
+        assert_eq!((h.app.doc.pages(), h.app.target), (2, 1), "on the new page");
+        let end = *xs.last().unwrap();
+        assert!(end < page.left(), "its page lies in the pile on the left: {end}");
+        let jump = xs.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
+        assert!(jump < page.width() / 3.0, "it goes into the pile with its page, not in one jump of {jump}: {xs:?}");
+    }
+
     /// What a backspace that takes a page away shows, frame by frame for two seconds: where the green
     /// post-it is, where the page going out is (flat paper right of the page's place), and how long
     /// the slide-out lasted.
@@ -1994,7 +2017,7 @@ mod tests {
     }
 
     #[test]
-    fn on_a_paperstack_a_backspaced_page_slides_out_quickly_over_a_flat_page() {
+    fn on_a_paperstack_a_backspaced_page_slides_out_quickly_as_the_one_before_comes_back_with_its_post_it() {
         let mut h = Harness::new();
         h.app.appearance = Appearance::Paperstack;
         h.frames(3, vec![], Modifiers::NONE);
@@ -2002,14 +2025,19 @@ mod tests {
         h.app.doc.notes.push(model::Note { id: 50, start: 0, end: 6, text: "Green.".into(), color: 2 });
         h.key(Key::Enter, Modifiers::COMMAND);
         h.frames(120, vec![], Modifiers::NONE);
+        let page = h.app.last_page_rect;
+        let start = green_post_it_x(&h).unwrap();
+        assert!(start < page.left(), "its page lies in the pile on the left: {start}");
 
         let seen = backspace_and_watch(&mut h, |_, _| {});
-        let page = h.app.last_page_rect;
+        assert_eq!((h.app.doc.pages(), h.app.target), (1, 0));
         assert!(seen.seconds < 0.6, "a paperstack does not turn pages, so it is quick: {} s", seen.seconds);
         assert!(seen.leaving_lefts.iter().any(|&x| x > page.center().x), "the page slides out to the right");
-        // Nothing turns over: the post-it stays on the right of its page as it comes up from the pile.
-        let xs = &seen.post_it_xs;
-        assert!(!xs.is_empty() && xs.iter().all(|&x| x > page.center().x), "{xs:?}");
+        let xs: Vec<f32> = std::iter::once(start).chain(seen.post_it_xs.iter().copied()).collect();
+        let end = *xs.last().unwrap();
+        assert!(end > page.right(), "the page before lies flat again, its post-it on the right: {end}");
+        let jump = xs.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
+        assert!(jump < page.width() / 3.0, "it comes back with its page, not in one jump of {jump}: {xs:?}");
     }
 
     #[test]

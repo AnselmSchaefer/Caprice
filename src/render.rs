@@ -165,12 +165,13 @@ impl App {
     /// in under the pile, its post-its moving over to its left edge as it goes in (nothing overlaps
     /// it out there, so it can go from over the pile to under it unseen). Coming `back` out of the
     /// pile, its post-its stay on its left edge until it slides over to the right onto the page,
-    /// and move over to its right edge then.
-    pub fn slide_page(&self, ui: &egui::Ui, rect: Rect, base: usize, t: f32, back: bool) {
+    /// and move over to its right edge then. `under` draws what it lies on: page `base + 1`, or a
+    /// page coming in or going out, with `ahead` pages in the pile ahead of that.
+    #[allow(clippy::too_many_arguments)]
+    pub fn slide_page(&self, ui: &egui::Ui, rect: Rect, base: usize, t: f32, back: bool, ahead: usize, under: &dyn Fn()) {
         let ease = |s: f32| s * s * (3.0 - 2.0 * s);
         let ctx = ui.ctx();
         let (gap, sc) = (self.stack_gap(ctx, rect), self.scale_of(rect));
-        let ahead = self.last() - (base + 1);
         let pile = BEHIND * gap * (base + 1) as f32;
         // Out there its post-its sticking out to the right are left of the pile and the post-its
         // sticking out of it.
@@ -179,26 +180,27 @@ impl App {
         if t < OUT {
             let s = ease(t / OUT);
             self.stack(ui.painter(), rect, base, ahead);
-            self.static_page(ui, rect, base + 1);
+            under();
             self.sheet_at(ui, rect, base, clear * s, 0.0, if back { s } else { 0.0 }, true);
         } else {
             let s = ease((t - OUT) / (1.0 - OUT));
             self.sheet_at(ui, rect, base, clear + (pile - clear) * s, s, if back { 1.0 } else { s }, true);
             self.stack(ui.painter(), rect, base, ahead);
-            self.static_page(ui, rect, base + 1);
+            under();
         }
     }
 
-    /// Draw page `i` sliding by `s` from `from` (an offset from `rect`) into its place at the back
-    /// of the pile behind it, its post-its moving over to its left edge. Drawn before the pile and
-    /// the page at `rect`, so it passes under them.
-    pub fn sheet_to_pile(&self, ui: &egui::Ui, rect: Rect, i: usize, from: egui::Vec2, s: f32) {
-        if self.appearance == Appearance::Book {
-            return self.turned_to_pile(ui, rect, i, from, s);
-        }
-        let pile = BEHIND * self.stack_gap(ui.ctx(), rect) * (i + 1) as f32;
-        // The pile's edge line comes in as the sheet arrives.
-        self.sheet_at(ui, rect, i, from + (pile - from) * s, s, s, true);
+    /// The paperstack's `book_slide_out`: the page after `i` was taken away, so it slides out
+    /// `to_right` points to the right as `s` goes to 1, while page `i` comes back out of the pile
+    /// over it as on any page back, its post-its with it. The page taken away is blank.
+    pub fn paper_slide_out(&self, ui: &egui::Ui, rect: Rect, i: usize, s: f32, to_right: f32) {
+        let ease = |s: f32| s * s * (3.0 - 2.0 * s);
+        let leaving = || {
+            let r = rect.translate(vec2(to_right * ease(s), 0.0));
+            Self::paper(ui.painter(), r);
+            ui.painter().extend(self.backdrop_shapes(ui.ctx(), i, r, &|p| p, 1.0, 1.0));
+        };
+        self.slide_page(ui, rect, i, 1.0 - s, true, self.last() - i, &leaving);
     }
 
     /// Where page `i` lies (an offset from the page) while the dragged scrollbar holds `held` pages'

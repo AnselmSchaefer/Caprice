@@ -389,10 +389,13 @@ many as fit the text area above the counter), and two drawings must agree with i
   their post-its' backs mirrored on the left (`stack`), so a page may only get there by turning
   over (`book_turn`, which carries its post-its). Adding a page in a book therefore slides the
   new page in from the right while the old one turns over onto the pile (`book_slide_in`); the
-  paperstack slides it in over the old page, which stays flat. Backspacing a page away is the same
+  paperstack slides it in while the old page goes into the pile as on any page forward
+  (`slide_page`, with the new page as `under`), its post-its with it. Backspacing a page away is the same
   backwards: it slides out to the right while the page before turns back over it out of the pile
-  (`book_slide_out`, at the same pace), and only then is that page drawn flat and editable. Anything
-  new that moves pages in a book must turn them, or post-its jump sides.
+  (`book_slide_out`, at the same pace), and only then is that page drawn flat and editable. On a
+  paperstack the page before comes back out of the pile as on any page back, at that pace
+  (`paper_slide_out`, through `slide_page`), and is likewise editable only once flat. Anything
+  new that moves pages must carry the post-its with them, or they jump sides.
 - Tests: `a_post_it_shows_whole_rows_and_the_rest_on_its_next_sheet` (checks what is painted,
   through `Harness::painted`), `a_post_its_sheets_turn_back_as_well_as_forward`,
   `in_a_book_a_new_page_slides_in_as_the_old_one_turns_over_with_its_post_it` (follows the
@@ -401,7 +404,8 @@ many as fit the text area above the counter), and two drawings must agree with i
   `in_a_book_a_page_backspaced_away_between_others_turns_the_one_before_back_too` (both follow the
   post-it, the leaving page and the pace, through `assert_turns_back`),
   `typing_while_a_backspaced_page_slides_out_goes_into_the_page_turning_back`,
-  `on_a_paperstack_a_backspaced_page_slides_out_quickly_over_a_flat_page`.
+  `on_a_paperstack_a_backspaced_page_slides_out_quickly_as_the_one_before_comes_back_with_its_post_it`,
+  `on_a_paperstack_a_new_page_slides_in_as_the_old_one_goes_into_the_pile_with_its_post_it`.
 
 ### R16 — Windows float over the pages, and what happens over them is theirs
 
