@@ -11,8 +11,8 @@ use crate::theme::{INK, PAPER};
 
 /// Share of a page's turn spent turning it over; the rest slides it onto the pile.
 pub const TURN: f32 = 0.75;
-/// Pages a second while a new page slides in and the old one turns over: unhurried, just under a
-/// second, slower than turning through pages that are already there.
+/// Pages a second while a new page slides in, or one taken away slides out, in a book or on a
+/// paperstack: unhurried, just under a second, slower than turning through pages already there.
 pub const NEW_PAGE_PACE: f32 = 1.05;
 
 impl App {

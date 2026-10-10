@@ -367,9 +367,8 @@ impl App {
     fn animate_slide_out(&mut self, ui: &egui::Ui) {
         let Some(s) = self.slide_out else { return };
         let dt = ui.input(|i| i.stable_dt).min(0.05);
-        // In a book, as unhurried as a new page arriving, since a page turns back with it; on a
-        // paperstack, as quick as one page back, since the page before comes out of the pile as on one.
-        let speed = if self.appearance == Appearance::Book { book::NEW_PAGE_PACE } else { 2.75 };
+        // As unhurried as a new page arriving, since the page before comes back with it.
+        let speed = book::NEW_PAGE_PACE;
         let s = s + speed * dt;
         self.slide_out = (s < 1.0).then_some(s);
         ui.ctx().request_repaint();
@@ -394,7 +393,10 @@ impl App {
         let dt = ui.input(|i| i.stable_dt).min(0.05);
         // Pages per second, by whole pages left: one page eases by itself, many go by quickly.
         let mut speed = (diff.abs().ceil() * 2.75).max(2.2);
-        if self.swiped {
+        if self.slides_in(self.pos.floor() as usize) {
+            // A new page is something to watch arrive, as in a book.
+            speed = book::NEW_PAGE_PACE * diff.abs().ceil();
+        } else if self.swiped {
             speed /= 2.0;
         }
         let step = speed * dt;
@@ -1891,9 +1893,10 @@ mod tests {
         assert!(start > page.right(), "it sticks out on the right");
 
         h.click_widget("+ New page");
-        let (mut xs, mut new_page_lefts) = (vec![start], Vec::new());
-        for _ in 0..60 {
+        let (mut xs, mut new_page_lefts, mut moving) = (vec![start], Vec::new(), 0);
+        for _ in 0..120 {
             h.frames(1, vec![], Modifiers::NONE);
+            moving += usize::from(h.app.pos != h.app.target as f32);
             xs.extend(green_post_it_x(&h));
             let flat = h.painted.iter().filter_map(|cs| match &cs.shape {
                 egui::Shape::Rect(r) if r.fill == theme::PAPER && r.rect.width() > page.width() * 0.9 => Some(r.rect.left()),
@@ -1901,6 +1904,8 @@ mod tests {
             });
             new_page_lefts.extend(flat.filter(|&x| x > page.left() + 1.0));
         }
+        let seconds = moving as f32 / 60.0;
+        assert!((0.8..1.1).contains(&seconds), "as unhurried as in a book: {seconds} s");
         assert!(new_page_lefts.iter().any(|&x| x > page.center().x), "the new page slides in from the right: {new_page_lefts:?}");
         assert_eq!((h.app.doc.pages(), h.app.target), (2, 1), "on the new page");
         let end = *xs.last().unwrap();
@@ -2017,7 +2022,7 @@ mod tests {
     }
 
     #[test]
-    fn on_a_paperstack_a_backspaced_page_slides_out_quickly_as_the_one_before_comes_back_with_its_post_it() {
+    fn on_a_paperstack_a_backspaced_page_slides_out_as_the_one_before_comes_back_with_its_post_it() {
         let mut h = Harness::new();
         h.app.appearance = Appearance::Paperstack;
         h.frames(3, vec![], Modifiers::NONE);
@@ -2031,7 +2036,7 @@ mod tests {
 
         let seen = backspace_and_watch(&mut h, |_, _| {});
         assert_eq!((h.app.doc.pages(), h.app.target), (1, 0));
-        assert!(seen.seconds < 0.6, "a paperstack does not turn pages, so it is quick: {} s", seen.seconds);
+        assert!((0.8..1.1).contains(&seen.seconds), "as unhurried as in a book: {} s", seen.seconds);
         assert!(seen.leaving_lefts.iter().any(|&x| x > page.center().x), "the page slides out to the right");
         let xs: Vec<f32> = std::iter::once(start).chain(seen.post_it_xs.iter().copied()).collect();
         let end = *xs.last().unwrap();
