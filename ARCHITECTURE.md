@@ -104,8 +104,13 @@ including the part on earlier pages.
   the edit is. Drop caps reach further still: whether a paragraph gets one depends on the
   paragraphs before it (`drop_cap_reach`).
 - New paragraph-level attribute: put it in `ParaAttrs`, read it from the terminator's style.
+- **Enter puts the caret before the old paragraph's terminator**, which keeps the look it had.
+  Typing must not take its style from there: after text is typed (`replace_raw`) the typing style
+  stays as it was, so a colour, size or bold chosen to type with goes on to the next line. Only
+  moving the caret or deleting takes the style from the text (`typing_follows_caret`).
 - Tests: `a_new_chapter_far_on_reflows_like_from_scratch`,
-  `editing_a_title_repaginates_the_chapter_after_it_like_from_scratch`.
+  `editing_a_title_repaginates_the_chapter_after_it_like_from_scratch`,
+  `a_colour_chosen_for_typing_goes_on_to_the_next_line`.
 
 ### R3 — Incremental pagination must equal full pagination
 

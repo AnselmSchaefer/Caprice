@@ -782,6 +782,32 @@ mod tests {
     }
 
     #[test]
+    fn a_colour_chosen_for_typing_goes_on_to_the_next_line() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Black words.");
+        h.key(Key::Enter, Modifiers::NONE);
+        h.click_widget("Text colour");
+        h.click_widget("Red");
+        h.key(Key::B, Modifiers::COMMAND);
+        h.type_text("Red words.");
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("Still red.");
+        // And an Enter straight after choosing it, before typing anything.
+        h.key(Key::Enter, Modifiers::NONE);
+        h.click_widget("Text colour");
+        h.click_widget("Blue");
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("Blue.");
+        let red = egui::Color32::from_rgb(205, 40, 40);
+        assert_eq!(painted_look(&h, "Black words."), Some((false, theme::INK)));
+        assert_eq!(painted_look(&h, "Red words."), Some((false, red)));
+        assert_eq!(painted_look(&h, "Still red."), Some((false, red)), "the new line goes on in red");
+        assert!(h.app.doc.flow.styles[h.app.doc.flow.text.find("Still").unwrap()].bold, "and bold");
+        assert_eq!(painted_look(&h, "Blue."), Some((false, egui::Color32::from_rgb(35, 90, 200))));
+    }
+
+    #[test]
     fn arrow_keys_treat_a_drop_cap_and_the_line_beside_it_as_one_line() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);

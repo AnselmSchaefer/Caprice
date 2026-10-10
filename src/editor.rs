@@ -138,8 +138,15 @@ impl App {
             .chars()
             .map(|c| if is_terminator(c) { self.typing.with_para(line_format) } else { self.typing.with_para(ParaAttrs::default()) })
             .collect();
+        let typed = !text.is_empty();
+        let typing = self.typing.clone();
         let edit = Edit::Replace { at: a, old, new: Piece { text, styles } };
         self.apply_edit(ctx, edit, b);
+        // Typing goes on in the style it was typed in. After a new line the caret is before the
+        // old paragraph's mark, and taking its style lost a colour or size chosen to type with.
+        if typed {
+            self.typing = typing;
+        }
     }
 
     /// Apply an edit made around the caret and park the caret after it.
