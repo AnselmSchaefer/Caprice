@@ -323,26 +323,29 @@ is; callers that paint for a paragraph pass `para_start` themselves.
   (`Doc::page_scene(i)`). So a page looks the same while turning as once turned to, and turning
   back to the caret finds its picture as it was left. Every look (`render.rs`, `book.rs`, the
   settled page in `main.rs`) passes its page to `backdrop_shapes`.
-- **Following the writing paints each finished passage once** (`finished_paragraph`): a passage
-  is the lines with text between empty lines, and it is finished once an empty line follows it
-  (Enter twice); lines broken by a single Enter belong to the same passage. The last finished one
-  before the caret's, if no scene is pinned in it yet, is taken after `PAUSE`. Finished sentences
-  or lines alone paint nothing.
-- **A finished passage is split into the scenes it describes, so no picture mixes two places**
-  (`split_passage`): its sentences (`sentence_starts`) go to Claude numbered, and it answers which
-  begin a scene (`split_prompt`, `parse_split`). Meanwhile each sentence has an unpainted scene
-  pinned to it, so an edit moves them (R7); those that begin a scene are queued (`split_done`) with
-  the sentences up to the next as their subject, and painted one after the other; the rest go. If
-  Claude cannot say, the passage is one scene. A passage of one sentence is not sent.
-  `Backdrop::drawing` covers the split and the queue too, and "Stop painting" (`stop_painting`)
-  ends all three.
+- **Following the writing groups sentences into scenes by what they say, and paints each scene
+  once the next begins.** The first edit opens a scene at the sentence written in (`open_at_edit`,
+  from `History::last_at`); what was written before counts as drawn. After `PAUSE` without edits,
+  the sentences finished since (`sentence_starts`) go to Claude numbered, with the open scene's
+  text so far (`reading_prompt`), and it answers which begin a new scene (`parse_firsts`). At each,
+  the scene before ends: it is queued with its text up to there as subject (`reading_done`) and
+  painted, once; the new one is open. The open scene is never painted while open.
+  - **Only content decides**, never layout: dialogue, thoughts and description belong to the scene
+    they happen in, and line breaks and empty lines are no scene breaks (the prompt says so).
+    Lines only end sentences, since a line of dialogue often has no full stop. A capital after
+    ". " begins a sentence; lower case goes on it (`"Where?" he asked.` is one).
+  - The open scene and each sentence being read are unpainted scenes pinned to their starts, so
+    edits move them (R7). How many of the open scene's sentences were read is a count
+    (`Open::read`), so a sentence put into the open scene's middle shifts which is read next by one.
+  - If Claude cannot answer, the sentences go on the open scene. `Backdrop::drawing` covers the
+    reading and the queue, and "Stop painting" (`stop_painting`) ends both; the open scene stays.
 - **Painting a paragraph again adds a version** to its scene (`pin_painting` finds it by `at`)
   rather than another scene; `shown` picks one. Moving a scene onto a paragraph with one already
   (Pin here) takes the other's place.
 - **A scene is made when painting starts**, with no versions, so its pin follows edits made while
-  Claude paints (or splits, or the scene waits in the queue). It is not saved (`from_doc` skips
-  it), never shows, and is dropped once its painting ends without a picture
-  (`drop_unpainted_scenes`, which keeps those of the split and the queue).
+  Claude paints (or, following the writing, while it is open, being read, or queued). It is not
+  saved (`from_doc` skips it), never shows, and is dropped once its painting ends without a
+  picture (`drop_unpainted_scenes`, which keeps the open, read and queued ones).
 - **Drawings are rendered on threads, when needed:** those of pages within `NEAR` of the page
   shown, of scenes that begin on them (for the caret to reach), and of the caret's scene wherever
   the pages are, and small ones while the list is open. Textures beyond those are let go. Turned
@@ -356,9 +359,9 @@ is; callers that paint for a paragraph pass `para_start` themselves.
   `turning_back_to_the_caret_finds_its_picture_as_it_was_left`,
   `painting_a_paragraph_again_adds_a_version_and_keeps_the_others`,
   `a_scene_still_being_painted_is_not_saved_and_goes_if_stopped`,
-  `following_the_writing_paints_each_passage_once_an_empty_line_ends_it`,
-  `a_finished_passage_is_painted_as_the_scenes_claude_splits_it_into_without_mixing_places`,
-  `live_split` (ignored, calls Claude), and those of R7 and R9.
+  `following_the_writing_paints_each_scene_once_the_next_one_begins`,
+  `following_the_writing_begins_with_the_sentence_written_in`,
+  `live_reading` (ignored, calls Claude: dialogue stays in its scene), and those of R7 and R9.
 
 ### R15 — Post-its: one size, the text in sheets; a sheet shows its own rows and no more
 

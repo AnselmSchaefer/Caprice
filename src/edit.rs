@@ -117,6 +117,13 @@ impl History {
         }
     }
 
+    /// Where the last edit began (the last one typed, not the run of typing it undoes with).
+    pub fn last_at(&self) -> Option<usize> {
+        match self.undo.last()?.last()? {
+            Edit::Replace { at, .. } | Edit::Restyle { at, .. } => Some(*at),
+        }
+    }
+
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();

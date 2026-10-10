@@ -2,8 +2,9 @@
 //! kept with the story, pinned to where it begins, like a note. It covers the story up to the next
 //! scene, and the page shown shows the one the caret is in, faintly behind its text, so the
 //! pictures change as the caret moves on through the story. A scene is one the writer describes, a
-//! passage they select, or follows the writing: each finished passage (ended by an empty line) is
-//! split by Claude into the scenes it describes, a picture for each, so no picture mixes two places.
+//! passage they select, or follows the writing: as sentences are written, Claude groups them into
+//! scenes by what they say, and each scene is painted once the next begins, so no picture mixes
+//! two places.
 //! Painting again for the same scene adds a version to it rather than replacing it. The list of
 //! scenes shows them all, to go to, show again, step through versions, hide or delete.
 //!
@@ -11,7 +12,6 @@
 //! only those near are kept as textures.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -65,16 +65,25 @@ impl Drop for Job {
     }
 }
 
-/// A finished passage Claude is splitting into the scenes it describes. Each sentence has a scene
-/// pinned to its start, not yet painted, so the starts move with edits made meanwhile.
-struct Split {
-    rx: Receiver<Result<Vec<usize>, String>>,
-    cancel: Arc<AtomicBool>,
-    /// The scene at each sentence's start, and the sentence.
-    pins: Vec<(u64, String)>,
+/// Following the writing, the scene being written: a scene pinned to its first sentence, not yet
+/// painted (so it moves with edits), and how many of its sentences have been read.
+struct Open {
+    scene: u64,
+    read: usize,
 }
 
-impl Drop for Split {
+/// Sentences written since, which Claude is reading to say which of them begin a new scene. Each
+/// has a scene pinned to its start meanwhile, not yet painted.
+struct Reading {
+    rx: Receiver<Result<Vec<usize>, String>>,
+    cancel: Arc<AtomicBool>,
+    pins: Vec<u64>,
+    /// What Claude was asked, for the tests to look at.
+    #[cfg_attr(not(test), allow(dead_code))]
+    prompt: String,
+}
+
+impl Drop for Reading {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -93,7 +102,7 @@ pub enum Mode {
     /// The writer's description, drawn when they ask.
     #[default]
     Described,
-    /// Each finished passage, split into the scenes it describes, each drawn.
+    /// Each scene of the story as it is written, drawn once the next one begins.
     Writing,
 }
 
@@ -137,15 +146,15 @@ pub struct Backdrop {
     asked: String,
     /// Put the keyboard on the description when the dialog opens.
     focus_field: bool,
-    /// Following the writing: the paragraph drawn (or being drawn) last, the one finished since,
-    /// where it starts and when it was seen, and the document version they were read at (only
-    /// edits count, not moving the caret).
-    drawn_for: String,
-    pending: Option<(String, Range<usize>, f64)>,
+    /// Following the writing: the document version last seen and when it changed (only edits
+    /// count, not moving the caret), and the version whose sentences were read last.
+    seen: Option<u64>,
+    edited_at: f64,
     read_at: Option<u64>,
-    /// The passage finished last, being split into scenes, and the scenes it was split into,
+    /// The scene being written, the sentences since being read, and the scenes they ended,
     /// waiting to be painted one after the other.
-    split: Option<Split>,
+    open: Option<Open>,
+    reading: Option<Reading>,
     queue: VecDeque<u64>,
 }
 
@@ -166,10 +175,11 @@ impl Default for Backdrop {
             job: None,
             asked: String::new(),
             focus_field: false,
-            drawn_for: String::new(),
-            pending: None,
+            seen: None,
+            edited_at: 0.0,
             read_at: None,
-            split: None,
+            open: None,
+            reading: None,
             queue: VecDeque::new(),
         }
     }
@@ -232,40 +242,43 @@ fn draw_scene(prompt: &str, cancel: &AtomicBool) -> Result<Option<Painted>, Stri
     }
 }
 
-pub const SPLIT_SYSTEM: &str = "You read stories closely, as an illustrator choosing what to paint.";
+pub const READING_SYSTEM: &str = "You read stories closely, as an illustrator choosing what to paint.";
 
-/// What Claude is asked to split a passage into scenes with: its sentences, numbered from 1.
-fn split_prompt(sentences: &[String]) -> String {
+/// What Claude is asked about the `sentences` written after the scene so far: which of them
+/// begin a new scene. Only what they say counts, not how they are laid out.
+fn reading_prompt(scene: &str, sentences: &[String]) -> String {
     let numbered: Vec<String> = sentences.iter().enumerate().map(|(i, t)| format!("{}. {}", i + 1, t.replace('\n', " "))).collect();
     format!(
-        "<passage>\n{}\n</passage>\n\n\
-        This passage of a story is given one sentence per numbered line. Each scene in it will be \
-        painted as an illustration of its own. Group the sentences into scenes: a new scene begins \
-        where the story moves to another place, or to a moment that needs a picture of its own. \
-        Sentences about the same place stay together, so that no picture mixes two places.\n\
-        Reply with only the numbers of the sentences that begin a scene, separated by commas, \
-        starting with 1.",
+        "<scene_so_far>\n{scene}\n</scene_so_far>\n\n<new_sentences>\n{}\n</new_sentences>\n\n\
+        A story is being written, and each of its scenes will be painted as one illustration. The \
+        scene so far is above; the numbered sentences were written after it, in order. Which of them \
+        begin a new scene: the story moves to another place, or to a moment that needs a picture of \
+        its own?\n\
+        Judge only by what the sentences say, not by how they are laid out: dialogue, thoughts and \
+        description all belong to the scene they happen in, and a new line or paragraph alone is no \
+        new scene. Sentences that go on in the same place stay with the scene before them, so that \
+        no picture mixes two places.\n\
+        Reply with only the numbers of the sentences that begin a new scene, separated by commas, \
+        or 0 if none does.",
         numbered.join("\n")
     )
 }
 
-/// The sentences (from 0) that begin a scene, from Claude's reply about `n` sentences. The first
-/// always does.
-fn parse_split(reply: &str, n: usize) -> Vec<usize> {
+/// The sentences (from 0) that begin a new scene, from Claude's reply about `n` sentences.
+fn parse_firsts(reply: &str, n: usize) -> Vec<usize> {
     let numbers = reply.split(|c: char| !c.is_ascii_digit()).filter_map(|w| w.parse().ok());
     let mut firsts: Vec<usize> = numbers.filter(|&k| (1..=n).contains(&k)).map(|k| k - 1).collect();
-    firsts.push(0);
     firsts.sort_unstable();
     firsts.dedup();
     firsts
 }
 
-/// Ask Claude which sentences begin a scene.
-fn split_scenes(prompt: &str, n: usize, cancel: &AtomicBool) -> Result<Vec<usize>, String> {
+/// Ask Claude which of the new sentences begin a scene.
+fn read_sentences(prompt: &str, n: usize, cancel: &AtomicBool) -> Result<Vec<usize>, String> {
     let mut reply = String::new();
-    match run_claude(MODEL, SPLIT_SYSTEM, prompt, "low", cancel, &mut |t| reply.push_str(t))? {
-        Outcome::Finished => Ok(parse_split(&reply, n)),
-        _ => Err("the passage was not split".into()),
+    match run_claude(MODEL, READING_SYSTEM, prompt, "low", cancel, &mut |t| reply.push_str(t))? {
+        Outcome::Finished => Ok(parse_firsts(&reply, n)),
+        _ => Err("the sentences were not read".into()),
     }
 }
 
@@ -344,9 +357,9 @@ impl App {
 }
 
 impl Backdrop {
-    /// A painting is under way, or a passage being split or waiting to be painted.
+    /// A painting is under way, or sentences being read, or scenes waiting to be painted.
     pub fn drawing(&self) -> bool {
-        self.job.is_some() || self.split.is_some() || !self.queue.is_empty()
+        self.job.is_some() || self.reading.is_some() || !self.queue.is_empty()
     }
 
     /// What is kept in the document file besides the scenes, if anything.
@@ -360,10 +373,10 @@ impl Backdrop {
         &self.asked
     }
 
-    /// Following the writing: the passage waiting to be drawn.
+    /// Following the writing: what Claude is being asked about the sentences written.
     #[cfg(test)]
-    pub fn pending(&self) -> Option<&str> {
-        self.pending.as_ref().map(|(p, _, _)| p.as_str())
+    pub fn reading(&self) -> Option<&str> {
+        self.reading.as_ref().map(|r| r.prompt.as_str())
     }
 
     /// Render the drawing `svg` of `key` on a background thread, unless it is or has been already.
@@ -492,13 +505,13 @@ impl App {
         self.pin_painting("a test", self.doc.para_start(c).0).0
     }
 
-    /// Claude's reply to the passage being split, as if it had just come: which sentences
-    /// (numbered from 1) begin a scene. Its scenes are queued, not yet painted.
+    /// Claude's reply about the sentences being read, as if it had just come: which of them
+    /// (numbered from 1) begin a scene, or "0".
     #[cfg(test)]
-    pub fn fake_split(&mut self, reply: &str) {
-        let split = self.backdrop.split.take().expect("a passage being split");
-        let firsts = parse_split(reply, split.pins.len());
-        self.split_done(split, Ok(firsts));
+    pub fn fake_reading(&mut self, reply: &str) {
+        let reading = self.backdrop.reading.take().expect("sentences being read");
+        let firsts = parse_firsts(reply, reading.pins.len());
+        self.reading_done(reading, Ok(firsts));
     }
 
     /// The scenes waiting to be painted: where each is pinned, and its passage.
@@ -508,10 +521,10 @@ impl App {
         self.backdrop.queue.iter().filter_map(scene).collect()
     }
 
-    /// A finished passage is being split into scenes.
+    /// Where the scene being written begins.
     #[cfg(test)]
-    pub fn splitting(&self) -> bool {
-        self.backdrop.split.is_some()
+    pub fn open_scene_at(&self) -> Option<usize> {
+        self.backdrop.open.as_ref().and_then(|o| self.doc.scenes.iter().find(|s| s.id == o.scene)).map(|s| s.at)
     }
 
     /// A drawing is fading in on the page shown.
@@ -532,135 +545,151 @@ impl App {
         self.backdrop.on_target.and_then(|(page, key)| (page == self.target).then_some(key)?)
     }
 
-    /// A scene whose first drawing was never finished (stopped, failed) is no scene. Those of a
-    /// passage being split, or waiting to be painted, are kept.
+    /// A scene whose first drawing was never finished (stopped, failed) is no scene. Those of the
+    /// writing followed (being written, read or waiting to be painted) are kept.
     fn drop_unpainted_scenes(&mut self) {
         let b = &self.backdrop;
         let painting = b.job.as_ref().map(|j| j.scene);
-        let pinned = |id: u64| b.queue.contains(&id) || b.split.as_ref().is_some_and(|s| s.pins.iter().any(|&(p, _)| p == id));
+        let open = b.open.as_ref().map(|o| o.scene);
+        let pinned = |id: u64| b.queue.contains(&id) || open == Some(id) || b.reading.as_ref().is_some_and(|r| r.pins.contains(&id));
         self.doc.scenes.retain(|s| !s.versions.is_empty() || Some(s.id) == painting || pinned(s.id));
     }
 
-    /// Stop painting, and what was waiting to be painted.
+    /// Stop painting, and what was waiting to be painted. The scene being written stays open.
     fn stop_painting(&mut self) {
         let b = &mut self.backdrop;
-        (b.job, b.split) = (None, None);
+        (b.job, b.reading) = (None, None);
         b.queue.clear();
         self.drop_unpainted_scenes();
     }
 
-    /// Where each sentence of the text `a..b` starts. A sentence ends with a full stop, question or
-    /// exclamation mark or ellipsis (closing quotes may follow), or with its line.
-    fn sentence_starts(&self, a: usize, b: usize) -> Vec<usize> {
+    /// Where each sentence of the text `a..b` starts, and whether the last one has ended. A
+    /// sentence ends with its line, or with a full stop, question or exclamation mark or ellipsis
+    /// (closing quotes may follow) and a space, unless it goes on in lower case, as after
+    /// "Where is she?" in "\"Where is she?\" he asked."
+    fn sentence_starts(&self, a: usize, b: usize) -> (Vec<usize>, bool) {
         let text = &self.doc.flow.text[self.doc.char_to_byte(a)..self.doc.char_to_byte(b)];
-        let (mut starts, mut ended, mut closing) = (Vec::new(), true, false);
+        let (mut starts, mut ended, mut by_line, mut closing) = (Vec::new(), true, true, false);
         for (i, c) in text.chars().enumerate() {
             if is_terminator(c) {
-                ended = true;
+                (ended, by_line) = (true, true);
             } else if c.is_whitespace() || c == IMAGE_CHAR {
                 ended |= closing;
             } else {
-                if ended {
+                if ended && (by_line || !c.is_lowercase()) {
                     starts.push(a + i);
-                    ended = false;
                 }
+                (ended, by_line) = (false, false);
                 let quote = matches!(c, '"' | '\'' | '\u{201d}' | '\u{2019}' | '\u{bb}' | ')');
                 closing = matches!(c, '.' | '!' | '?' | '\u{2026}') || (closing && quote);
             }
         }
-        starts
+        (starts, ended)
     }
 
-    /// Have Claude split the finished passage `range` into the scenes it describes, a scene
-    /// pinned (not yet painted) to each sentence meanwhile. One sentence is one scene.
-    fn split_passage(&mut self, range: Range<usize>) {
-        let starts = self.sentence_starts(range.start, range.end);
-        let ends = starts.iter().skip(1).copied().chain([range.end]);
-        let sentence = |(&a, b)| (a, self.selected_passage(a, b).trim().to_owned());
-        let sentences: Vec<(usize, String)> = starts.iter().zip(ends).map(sentence).collect();
-        let mut pins = Vec::new();
-        for (at, sentence) in sentences {
-            let id = self.doc.next_scene_id;
-            self.doc.next_scene_id += 1;
-            self.doc.scenes.push(Scene { id, at, versions: Vec::new(), shown: 0, subject: String::new(), hidden: false, people: Vec::new(), chosen: false });
-            pins.push((id, sentence));
+    /// Following the writing, a scene is opened where the sentence written in begins: the one the
+    /// last edit began in, or the first after it if it began between sentences.
+    fn open_at_edit(&mut self) {
+        let p = self.doc.history.last_at().unwrap_or(self.caret).min(self.caret);
+        let line = self.doc.para_start(p).0;
+        let (before, between) = self.sentence_starts(line, p);
+        let at = match before.last() {
+            Some(&at) if !between => at,
+            _ => self.sentence_starts(line, self.caret).0.into_iter().find(|&s| s >= p).unwrap_or(p),
+        };
+        let id = self.unpainted_scene(at);
+        self.backdrop.open = Some(Open { scene: id, read: 0 });
+    }
+
+    /// A scene pinned at `at`, not yet painted.
+    fn unpainted_scene(&mut self, at: usize) -> u64 {
+        let id = self.doc.next_scene_id;
+        self.doc.next_scene_id += 1;
+        self.doc.scenes.push(Scene { id, at, versions: Vec::new(), shown: 0, subject: String::new(), hidden: false, people: Vec::new(), chosen: false });
+        id
+    }
+
+    /// Have Claude read the sentences finished since the scene being written was last read, up to
+    /// the caret, to say which begin a new scene. The scene's first sentence begins it unasked.
+    fn read_new_sentences(&mut self) {
+        let Some(open) = &self.backdrop.open else { return };
+        let (id, read) = (open.scene, open.read);
+        let Some(start) = self.doc.scenes.iter().find(|s| s.id == id).map(|s| s.at) else {
+            self.backdrop.open = None;
+            return;
+        };
+        if self.caret < start {
+            return;
         }
+        let (starts, ended) = self.sentence_starts(start, self.caret);
+        let done = if ended { starts.len() } else { starts.len().saturating_sub(1) };
+        let from = read.max(1);
+        if done <= from {
+            if let Some(o) = &mut self.backdrop.open {
+                o.read = o.read.max(done);
+            }
+            return;
+        }
+        let end = |k: usize| starts.get(k + 1).copied().unwrap_or(self.caret);
+        let scene = self.selected_passage(start, starts[from]).trim().to_owned();
+        let sentences: Vec<String> = (from..done).map(|k| self.selected_passage(starts[k], end(k)).trim().to_owned()).collect();
+        let pins: Vec<u64> = (from..done).map(|k| self.unpainted_scene(starts[k])).collect();
+        let prompt = reading_prompt(&scene, &sentences);
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        if pins.len() > 1 {
-            let texts: Vec<String> = pins.iter().map(|(_, t)| t.clone()).collect();
-            let (prompt, n, stop) = (split_prompt(&texts), pins.len(), cancel.clone());
-            std::thread::spawn(move || {
-                let _ = tx.send(split_scenes(&prompt, n, &stop));
-            });
-        } else {
-            let _ = tx.send(Ok(vec![0]));
+        let (ask, n, stop) = (prompt.clone(), sentences.len(), cancel.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(read_sentences(&ask, n, &stop));
+        });
+        if let Some(o) = &mut self.backdrop.open {
+            o.read = from;
         }
-        self.backdrop.split = Some(Split { rx, cancel, pins });
+        self.backdrop.reading = Some(Reading { rx, cancel, pins, prompt });
     }
 
-    /// Claude has split the passage (or could not): the sentences that begin a scene keep their
-    /// pins and are queued to be painted, each with the sentences up to the next. Could it not,
-    /// the whole passage is one scene.
-    fn split_done(&mut self, split: Split, firsts: Result<Vec<usize>, String>) {
-        let firsts = firsts.unwrap_or_else(|_| vec![0]);
-        for (k, &first) in firsts.iter().enumerate() {
-            let last = firsts.get(k + 1).copied().unwrap_or(split.pins.len());
-            let subject = split.pins[first..last].iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join(" ");
-            let id = split.pins[first].0;
-            if let Some(s) = self.doc.scene_mut(id) {
-                s.subject = subject;
-                self.backdrop.queue.push_back(id);
+    /// Claude has read the new sentences (or could not, and then they go on the scene being
+    /// written). At each that begins a new scene, the scene before it ends and is queued to be
+    /// painted, with its text up to there; the new one is the scene being written.
+    fn reading_done(&mut self, reading: Reading, firsts: Result<Vec<usize>, String>) {
+        let firsts = firsts.unwrap_or_default();
+        let pin_at = |app: &Self, id: u64| app.doc.scenes.iter().find(|s| s.id == id).map(|s| s.at);
+        for &k in &firsts {
+            let (Some(open), new) = (self.backdrop.open.take(), reading.pins[k]) else { break };
+            if let (Some(a), Some(b)) = (pin_at(self, open.scene), pin_at(self, new)) {
+                let subject = self.selected_passage(a, b).trim().to_owned();
+                if let Some(s) = self.doc.scene_mut(open.scene) {
+                    s.subject = subject;
+                    self.backdrop.queue.push_back(open.scene);
+                }
             }
+            self.backdrop.open = Some(Open { scene: new, read: 0 });
         }
-        drop(split);
+        let n = reading.pins.len();
+        if let Some(o) = &mut self.backdrop.open {
+            o.read = match firsts.last() {
+                Some(&k) => n - k,
+                None => o.read + n,
+            };
+        }
+        drop(reading);
         self.drop_unpainted_scenes();
     }
 
-    /// Take in how the passage was split, once Claude has said.
-    fn take_split(&mut self) {
-        let Some(split) = &self.backdrop.split else { return };
-        let firsts = match split.rx.try_recv() {
+    /// Take in what Claude said about the new sentences, once it has.
+    fn take_reading(&mut self) {
+        let Some(reading) = &self.backdrop.reading else { return };
+        let firsts = match reading.rx.try_recv() {
             Ok(firsts) => firsts,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the passage was not split".into()),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the sentences were not read".into()),
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
         };
-        let split = self.backdrop.split.take().unwrap();
-        self.split_done(split, firsts);
-    }
-
-    /// Following the writing, the passage finished last: the lines with text before the caret's
-    /// passage, ended by an empty line (Enter twice), where it starts and its text. Lines broken
-    /// by a single Enter go on the same passage. None if a scene is pinned in it already.
-    fn finished_paragraph(&self) -> Option<(Range<usize>, String)> {
-        // The line before the one starting at `start`: where it starts, and whether it is empty.
-        let line_before = |start: usize| {
-            let from = self.doc.para_start(start - 1).0;
-            (from, self.selected_passage(from, start - 1).trim().is_empty())
-        };
-        // Past the lines of the caret's own passage, then the empty lines that end the one before.
-        let mut end = self.doc.para_start(self.caret).0;
-        while end > 0 && !line_before(end).1 {
-            end = line_before(end).0;
-        }
-        let gap = end;
-        while end > 0 && line_before(end).1 {
-            end = line_before(end).0;
-        }
-        if end == 0 || end == gap {
-            return None;
-        }
-        let mut start = end;
-        while start > 0 && !line_before(start).1 {
-            start = line_before(start).0;
-        }
-        let text = self.selected_passage(start, end - 1).trim().to_owned();
-        (!self.doc.scenes.iter().any(|s| (start..end).contains(&s.at))).then_some((start..end - 1, text))
+        let reading = self.backdrop.reading.take().unwrap();
+        self.reading_done(reading, firsts);
     }
 
     /// Take in the scene settings of a document just opened (its scenes came with the `Doc`). An
     /// older file's one drawing becomes a scene pinned to the story's start. Following the
-    /// writing, what is already written counts as drawn, so only new paragraphs bring a picture.
+    /// writing, what is already written counts as drawn: only writing on brings pictures.
     pub fn open_scene(&mut self, file: Option<SceneFile>) {
         let file = file.unwrap_or_default();
         self.backdrop = Backdrop { mode: self.backdrop.mode, description: file.description, visible: !file.hidden, ..Backdrop::default() };
@@ -669,30 +698,21 @@ impl App {
             self.doc.next_scene_id += 1;
             self.doc.scenes.push(Scene { id, at: 0, versions: vec![svg], shown: 0, subject: String::new(), hidden: false, people: Vec::new(), chosen: false });
         }
-        if !self.doc.scenes.is_empty() {
-            self.backdrop.drawn_for = self.finished_paragraph().map(|(_, t)| t).unwrap_or_default();
-            self.backdrop.read_at = Some(self.doc.version);
-        }
     }
 
-    /// Following the writing: notice a finished passage, and after a pause have it split into the
-    /// scenes it describes, each painted in turn, pinned to its first sentence. A passage is
-    /// painted once; painting it again is up to the writer.
+    /// Following the writing: the first edit opens a scene at the sentence written in. After a
+    /// pause in the writing, Claude reads the sentences finished since and says which begin a new
+    /// scene; the scene before each is then painted, once. Scenes waiting are painted in turn.
     fn follow_writing(&mut self, ctx: &egui::Context, now: f64) {
-        if self.backdrop.read_at != Some(self.doc.version) {
-            self.backdrop.read_at = Some(self.doc.version);
-            let latest = self.finished_paragraph();
-            let b = &mut self.backdrop;
-            match latest {
-                Some((range, text)) if text != b.drawn_for => {
-                    // The same text (moved by an edit elsewhere) keeps its time.
-                    let seen = b.pending.as_ref().filter(|(p, _, _)| *p == text).map_or(now, |(_, _, seen)| *seen);
-                    b.pending = Some((text, range, seen));
-                }
-                _ => b.pending = None,
+        let version = self.doc.version;
+        if self.backdrop.seen != Some(version) {
+            let first = self.backdrop.seen.is_none();
+            (self.backdrop.seen, self.backdrop.edited_at) = (Some(version), now);
+            if !first && self.backdrop.open.is_none() {
+                self.open_at_edit();
             }
         }
-        self.take_split();
+        self.take_reading();
         if self.backdrop.job.is_none()
             && let Some(id) = self.backdrop.queue.pop_front()
             && let Some(s) = self.doc.scenes.iter().find(|s| s.id == id)
@@ -702,15 +722,15 @@ impl App {
             return;
         }
         let b = &self.backdrop;
-        let (Some((text, range, seen)), true) = (b.pending.clone(), !b.drawing()) else { return };
-        let wait = seen + PAUSE - now;
+        if b.reading.is_some() || b.open.is_none() || b.read_at == Some(version) {
+            return;
+        }
+        let wait = b.edited_at + PAUSE - now;
         if wait > 0.0 {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
         } else {
-            let b = &mut self.backdrop;
-            b.pending = None;
-            b.drawn_for = text;
-            self.split_passage(range);
+            self.backdrop.read_at = Some(version);
+            self.read_new_sentences();
         }
     }
 
@@ -721,10 +741,9 @@ impl App {
             return;
         }
         b.mode = mode;
-        b.pending = None;
-        // Following the writing starts with a picture of what is already written.
-        b.drawn_for.clear();
-        b.read_at = None;
+        // Following the writing starts with what is written next.
+        (b.seen, b.read_at, b.open) = (None, None, None);
+        b.queue.clear();
         self.stop_painting();
     }
 
@@ -838,7 +857,7 @@ impl App {
         egui::containers::menu::MenuButton::new(title).ui(ui, |ui| {
             ui.set_min_width(230.0);
             let mut follow = mode == Mode::Writing;
-            let follow_tip = "Each time you finish a paragraph, Claude paints the scene it describes";
+            let follow_tip = "As you write, Claude groups your sentences into scenes and paints each once the next begins";
             if ui.checkbox(&mut follow, "Follow my writing").on_hover_text(follow_tip).changed() {
                 mode = if follow { Mode::Writing } else { Mode::Described };
             }
@@ -1160,13 +1179,14 @@ mod tests {
     /// Asks the real Claude for a scene through the Claude Code CLI: `cargo test live_scene -- --ignored`.
     #[test]
     #[ignore]
-    fn live_split() {
+    fn live_reading() {
         crate::claude::allow_live();
-        let sentences = ["The harbour was full of boats.", "Gulls cried over the masts.", "Mara climbed up to the old house.",
-            "Inside, the fire was out.", "She lit a candle."].map(String::from);
-        let firsts = split_scenes(&split_prompt(&sentences), sentences.len(), &AtomicBool::new(false)).unwrap();
-        println!("scenes begin at sentences {firsts:?} (from 0)");
-        assert!(firsts.len() > 1 && firsts[0] == 0, "{firsts:?}");
+        let scene = "The harbour was full of boats. Gulls cried over the masts.";
+        let sentences = ["\"Where is Mara?\" asked the fisherman.", "\"Up at the house,\" said the boy, pointing at the hill.",
+            "Inside the old house, the fire was out.", "Mara lit a candle and sat down."].map(String::from);
+        let firsts = read_sentences(&reading_prompt(scene, &sentences), sentences.len(), &AtomicBool::new(false)).unwrap();
+        println!("new scenes begin at sentences {firsts:?} (from 0)");
+        assert_eq!(firsts, vec![2], "the dialogue stays on the harbour, the house is a new scene");
     }
 
     #[test]
