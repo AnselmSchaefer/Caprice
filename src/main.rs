@@ -2207,29 +2207,67 @@ mod tests {
     }
 
     #[test]
-    fn following_the_writing_paints_each_paragraph_once_it_is_finished() {
+    fn following_the_writing_paints_each_passage_once_an_empty_line_ends_it() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.app.set_scene_mode(backdrop::Mode::Writing);
         h.type_text("The valley lies between the mountains. Above it");
         assert_eq!(h.app.backdrop.pending(), None, "finished sentences alone are not painted");
-        h.type_text(" the clouds gather.\nThe");
-        assert_eq!(h.app.backdrop.pending(), Some("The valley lies between the mountains. Above it the clouds gather."));
-        // Moving the caret is no edit, so the queued paragraph stays as it was.
+        h.type_text(" the clouds gather.\nA river");
+        assert_eq!(h.app.backdrop.pending(), None, "nor is a line ended by a single Enter");
+        h.type_text(" runs through it.\n");
+        assert_eq!(h.app.backdrop.pending(), None);
+        let valley = "The valley lies between the mountains. Above it the clouds gather.\nA river runs through it.";
+        h.type_text("\nThe");
+        assert_eq!(h.app.backdrop.pending(), Some(valley), "an empty line ends the passage, all its lines");
+        // Moving the caret is no edit, so the queued passage stays as it was.
         h.key(Key::Home, Modifiers::COMMAND);
-        assert_eq!(h.app.backdrop.pending(), Some("The valley lies between the mountains. Above it the clouds gather."));
-        // Painted (here as if Claude had), it is pinned to its paragraph, and not painted again.
+        assert_eq!(h.app.backdrop.pending(), Some(valley));
+        // Painted (here as if Claude had), it is pinned to its passage, and not painted again.
         h.key(Key::End, Modifiers::COMMAND);
         h.app.fake_painting(0, BLUE);
         h.frames(2, vec![], Modifiers::NONE);
         h.type_text(" ship sails on.");
-        assert_eq!(h.app.backdrop.pending(), None, "the finished paragraph has its scene");
-        h.type_text("\nA storm");
-        assert_eq!(h.app.backdrop.pending(), Some("The ship sails on."), "the next finished one is painted");
+        assert_eq!(h.app.backdrop.pending(), None, "the finished passage has its scene");
+        h.type_text("\nA storm comes.");
+        assert_eq!(h.app.backdrop.pending(), None);
+        h.type_text("\n\n");
+        assert_eq!(h.app.backdrop.pending(), Some("The ship sails on.\nA storm comes."), "the next finished one is painted");
         // Back to describing: nothing is queued or drawn any more.
         h.app.set_scene_mode(backdrop::Mode::Described);
         assert_eq!(h.app.backdrop.pending(), None);
         assert!(!h.app.backdrop.drawing());
+    }
+
+    #[test]
+    fn a_finished_passage_is_painted_as_the_scenes_claude_splits_it_into_without_mixing_places() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.app.set_scene_mode(backdrop::Mode::Writing);
+        h.type_text("The harbour was full of boats. Gulls cried over the masts. Mara climbed up to the old house.\n");
+        h.type_text("Inside, the fire was out. She lit a candle.\n\n");
+        // After the pause, Claude is asked where the scenes change.
+        for _ in 0..200 {
+            h.frames(1, vec![], Modifiers::NONE);
+            if h.app.splitting() {
+                break;
+            }
+        }
+        assert!(h.app.splitting() && h.app.backdrop.drawing());
+        // Written on meanwhile, before the passage: the scenes still begin where they did.
+        let ctx = h.ctx.clone();
+        h.app.replace_range(&ctx, 0, 0, "At dawn. ");
+        h.app.fake_split("1, 3");
+        let mara = h.app.doc.visible_text().find("Mara").unwrap();
+        assert_eq!(h.app.queued(), vec![
+            (0, "The harbour was full of boats. Gulls cried over the masts.".to_owned()),
+            (mara, "Mara climbed up to the old house. Inside, the fire was out. She lit a candle.".to_owned()),
+        ], "one scene per place, the second from its sentence, partway into the line");
+        // They are painted one after the other, and the passage is not split again.
+        h.frames(1, vec![], Modifiers::NONE);
+        assert_eq!(h.app.queued().len(), 1);
+        h.frames(10, vec![], Modifiers::NONE);
+        assert!(!h.app.splitting() && h.app.backdrop.pending().is_none());
     }
 
     #[test]

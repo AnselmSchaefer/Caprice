@@ -1,16 +1,17 @@
 //! Scenes behind the pages. Claude paints a scene as SVG (through the Claude Code CLI), and it is
-//! kept with the story, pinned to the start of the paragraph it was painted for, like a note. It
-//! covers the story up to the next scene, and the page shown shows the one the caret is in, faintly
-//! behind its text, so the pictures change as the caret moves on through the story. A scene is one
-//! the writer describes, a passage they select, or follows the writing: each finished paragraph
-//! brings a picture of what it describes. Painting again for the same paragraph adds a version to its
-//! scene rather than replacing it. The list of scenes shows them all, to go to, show again, step
-//! through versions, hide or delete.
+//! kept with the story, pinned to where it begins, like a note. It covers the story up to the next
+//! scene, and the page shown shows the one the caret is in, faintly behind its text, so the
+//! pictures change as the caret moves on through the story. A scene is one the writer describes, a
+//! passage they select, or follows the writing: each finished passage (ended by an empty line) is
+//! split by Claude into the scenes it describes, a picture for each, so no picture mixes two places.
+//! Painting again for the same scene adds a version to it rather than replacing it. The list of
+//! scenes shows them all, to go to, show again, step through versions, hide or delete.
 //!
 //! Drawings are rendered on a background thread when a page near the one shown needs them, and
 //! only those near are kept as textures.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -19,7 +20,7 @@ use eframe::egui::{self, Color32, ColorImage, Id, Key, Modifiers, Pos2, Rect, Sh
 
 use crate::App;
 use crate::claude::{Outcome, run_claude};
-use crate::model::{Character, Doc, IMAGE_CHAR, PAGE_BREAK, Scene};
+use crate::model::{Character, Doc, IMAGE_CHAR, PAGE_BREAK, Scene, is_terminator};
 use crate::theme::TEXT_DIM;
 
 /// How strongly a scene shows through the paper.
@@ -64,6 +65,21 @@ impl Drop for Job {
     }
 }
 
+/// A finished passage Claude is splitting into the scenes it describes. Each sentence has a scene
+/// pinned to its start, not yet painted, so the starts move with edits made meanwhile.
+struct Split {
+    rx: Receiver<Result<Vec<usize>, String>>,
+    cancel: Arc<AtomicBool>,
+    /// The scene at each sentence's start, and the sentence.
+    pins: Vec<(u64, String)>,
+}
+
+impl Drop for Split {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
 /// A drawing rendered on a background thread, full size or small for the list.
 struct Rendered {
     key: DrawingKey,
@@ -77,7 +93,7 @@ pub enum Mode {
     /// The writer's description, drawn when they ask.
     #[default]
     Described,
-    /// Each finished paragraph, drawn after it is finished.
+    /// Each finished passage, split into the scenes it describes, each drawn.
     Writing,
 }
 
@@ -125,8 +141,12 @@ pub struct Backdrop {
     /// where it starts and when it was seen, and the document version they were read at (only
     /// edits count, not moving the caret).
     drawn_for: String,
-    pending: Option<(String, usize, f64)>,
+    pending: Option<(String, Range<usize>, f64)>,
     read_at: Option<u64>,
+    /// The passage finished last, being split into scenes, and the scenes it was split into,
+    /// waiting to be painted one after the other.
+    split: Option<Split>,
+    queue: VecDeque<u64>,
 }
 
 impl Default for Backdrop {
@@ -149,6 +169,8 @@ impl Default for Backdrop {
             drawn_for: String::new(),
             pending: None,
             read_at: None,
+            split: None,
+            queue: VecDeque::new(),
         }
     }
 }
@@ -207,6 +229,43 @@ fn draw_scene(prompt: &str, cancel: &AtomicBool) -> Result<Option<Painted>, Stri
             let svg = extract_svg(&reply).ok_or("Claude's reply held no picture")?;
             rasterize(svg, RENDER_WIDTH).map(|image| Some((svg.to_owned(), image)))
         }
+    }
+}
+
+pub const SPLIT_SYSTEM: &str = "You read stories closely, as an illustrator choosing what to paint.";
+
+/// What Claude is asked to split a passage into scenes with: its sentences, numbered from 1.
+fn split_prompt(sentences: &[String]) -> String {
+    let numbered: Vec<String> = sentences.iter().enumerate().map(|(i, t)| format!("{}. {}", i + 1, t.replace('\n', " "))).collect();
+    format!(
+        "<passage>\n{}\n</passage>\n\n\
+        This passage of a story is given one sentence per numbered line. Each scene in it will be \
+        painted as an illustration of its own. Group the sentences into scenes: a new scene begins \
+        where the story moves to another place, or to a moment that needs a picture of its own. \
+        Sentences about the same place stay together, so that no picture mixes two places.\n\
+        Reply with only the numbers of the sentences that begin a scene, separated by commas, \
+        starting with 1.",
+        numbered.join("\n")
+    )
+}
+
+/// The sentences (from 0) that begin a scene, from Claude's reply about `n` sentences. The first
+/// always does.
+fn parse_split(reply: &str, n: usize) -> Vec<usize> {
+    let numbers = reply.split(|c: char| !c.is_ascii_digit()).filter_map(|w| w.parse().ok());
+    let mut firsts: Vec<usize> = numbers.filter(|&k| (1..=n).contains(&k)).map(|k| k - 1).collect();
+    firsts.push(0);
+    firsts.sort_unstable();
+    firsts.dedup();
+    firsts
+}
+
+/// Ask Claude which sentences begin a scene.
+fn split_scenes(prompt: &str, n: usize, cancel: &AtomicBool) -> Result<Vec<usize>, String> {
+    let mut reply = String::new();
+    match run_claude(MODEL, SPLIT_SYSTEM, prompt, "low", cancel, &mut |t| reply.push_str(t))? {
+        Outcome::Finished => Ok(parse_split(&reply, n)),
+        _ => Err("the passage was not split".into()),
     }
 }
 
@@ -285,8 +344,9 @@ impl App {
 }
 
 impl Backdrop {
+    /// A painting is under way, or a passage being split or waiting to be painted.
     pub fn drawing(&self) -> bool {
-        self.job.is_some()
+        self.job.is_some() || self.split.is_some() || !self.queue.is_empty()
     }
 
     /// What is kept in the document file besides the scenes, if anything.
@@ -300,7 +360,7 @@ impl Backdrop {
         &self.asked
     }
 
-    /// Following the writing: the paragraph waiting to be drawn.
+    /// Following the writing: the passage waiting to be drawn.
     #[cfg(test)]
     pub fn pending(&self) -> Option<&str> {
         self.pending.as_ref().map(|(p, _, _)| p.as_str())
@@ -326,7 +386,8 @@ impl App {
     pub fn draw_backdrop(&mut self, ctx: &egui::Context) {
         let description = self.backdrop.description.trim().to_owned();
         if !description.is_empty() {
-            self.start_scene(ctx, Subject::Description(description), self.selection().0);
+            let at = self.doc.para_start(self.selection().0).0;
+            self.start_scene(ctx, Subject::Description(description), at);
         }
     }
 
@@ -334,7 +395,7 @@ impl App {
     pub fn paint_passage(&mut self, ctx: &egui::Context, a: usize, b: usize) {
         let passage = self.selected_passage(a, b);
         if !passage.trim().is_empty() {
-            self.start_scene(ctx, Subject::Passage(passage), a);
+            self.start_scene(ctx, Subject::Passage(passage), self.doc.para_start(a).0);
         }
     }
 
@@ -343,17 +404,17 @@ impl App {
         self.doc.flow.text[ba..bb].chars().filter(|&c| c != IMAGE_CHAR).map(|c| if c == PAGE_BREAK { '\n' } else { c }).collect()
     }
 
-    /// Paint `subject` for the paragraph char `c` is in (replacing a painting still in progress).
-    /// A scene already pinned to that paragraph gets another version; otherwise a new scene is
-    /// pinned there, which shows once its drawing is done.
-    fn start_scene(&mut self, ctx: &egui::Context, subject: Subject, c: usize) {
-        let people = self.people_for(&subject, c);
-        self.paint_with(ctx, subject, c, people);
+    /// Paint `subject` for the scene pinned at char `at` (replacing a painting still in progress).
+    /// A scene already pinned there gets another version; otherwise a new scene is pinned there,
+    /// which shows once its drawing is done.
+    fn start_scene(&mut self, ctx: &egui::Context, subject: Subject, at: usize) {
+        let people = self.people_for(&subject, at);
+        self.paint_with(ctx, subject, at, people);
     }
 
-    /// Paint `subject` for char `c`'s paragraph with these people of the cast.
-    fn paint_with(&mut self, ctx: &egui::Context, subject: Subject, c: usize, people: Vec<String>) {
-        let (tx, cancel) = self.pin_painting(subject.text(), c);
+    /// Paint `subject` for the scene pinned at char `at` with these people of the cast.
+    fn paint_with(&mut self, ctx: &egui::Context, subject: Subject, at: usize, people: Vec<String>) {
+        let (tx, cancel) = self.pin_painting(subject.text(), at);
         let prompt = scene_prompt(&subject, self.doc.setup.size(), &self.doc.cast_by_names(&people));
         if let Some(job) = &mut self.backdrop.job {
             job.people = people;
@@ -368,11 +429,10 @@ impl App {
         });
     }
 
-    /// The people of the cast a painting of `subject` for char `c`'s paragraph is about: those the
-    /// writer chose for its scene, else those it names. A passage that names no one carries on
-    /// those named just before it (`carried_people`); a description is all the writer wants.
-    fn people_for(&self, subject: &Subject, c: usize) -> Vec<String> {
-        let at = self.doc.para_start(c).0;
+    /// The people of the cast a painting of `subject` for the scene at char `at` is about: those
+    /// the writer chose for it, else those it names. A passage that names no one carries on those
+    /// named just before it (`carried_people`); a description is all the writer wants.
+    fn people_for(&self, subject: &Subject, at: usize) -> Vec<String> {
         if let Some(s) = self.doc.scenes.iter().find(|s| s.at == at && s.chosen) {
             return s.people.clone();
         }
@@ -383,12 +443,11 @@ impl App {
         }
     }
 
-    /// The scene a painting for char `c` goes to, made if need be, and the painting as the job
-    /// under way: where to send the result, and the flag that stops it.
-    fn pin_painting(&mut self, subject: &str, c: usize) -> (Sender<Result<Painted, String>>, Arc<AtomicBool>) {
+    /// The scene pinned at char `at` a painting goes to, made if need be, and the painting as the
+    /// job under way: where to send the result, and the flag that stops it.
+    fn pin_painting(&mut self, subject: &str, at: usize) -> (Sender<Result<Painted, String>>, Arc<AtomicBool>) {
         self.backdrop.job = None;
         self.drop_unpainted_scenes();
-        let at = self.doc.para_start(c).0;
         let id = match self.doc.scenes.iter_mut().find(|s| s.at == at) {
             Some(s) => {
                 s.subject = subject.to_owned();
@@ -410,7 +469,7 @@ impl App {
     /// A painting of `svg` for the paragraph of char `c`, as if Claude had just finished it.
     #[cfg(test)]
     pub fn fake_painting(&mut self, c: usize, svg: &str) {
-        let (tx, _) = self.pin_painting("a test", c);
+        let (tx, _) = self.pin_painting("a test", self.doc.para_start(c).0);
         tx.send(Ok((svg.to_owned(), rasterize(svg, RENDER_WIDTH).unwrap()))).unwrap();
     }
 
@@ -418,9 +477,9 @@ impl App {
     /// Claude had just finished it.
     #[cfg(test)]
     pub fn fake_painting_of(&mut self, a: usize, b: usize, svg: &str) {
-        let subject = Subject::Passage(self.selected_passage(a, b));
-        let people = self.people_for(&subject, a);
-        let (tx, _) = self.pin_painting(subject.text(), a);
+        let (subject, at) = (Subject::Passage(self.selected_passage(a, b)), self.doc.para_start(a).0);
+        let people = self.people_for(&subject, at);
+        let (tx, _) = self.pin_painting(subject.text(), at);
         if let Some(job) = &mut self.backdrop.job {
             job.people = people;
         }
@@ -430,7 +489,29 @@ impl App {
     /// Start painting for char `c` without finishing, as if Claude were still at it.
     #[cfg(test)]
     pub fn fake_painting_under_way(&mut self, c: usize) -> Sender<Result<Painted, String>> {
-        self.pin_painting("a test", c).0
+        self.pin_painting("a test", self.doc.para_start(c).0).0
+    }
+
+    /// Claude's reply to the passage being split, as if it had just come: which sentences
+    /// (numbered from 1) begin a scene. Its scenes are queued, not yet painted.
+    #[cfg(test)]
+    pub fn fake_split(&mut self, reply: &str) {
+        let split = self.backdrop.split.take().expect("a passage being split");
+        let firsts = parse_split(reply, split.pins.len());
+        self.split_done(split, Ok(firsts));
+    }
+
+    /// The scenes waiting to be painted: where each is pinned, and its passage.
+    #[cfg(test)]
+    pub fn queued(&self) -> Vec<(usize, String)> {
+        let scene = |id: &u64| self.doc.scenes.iter().find(|s| s.id == *id).map(|s| (s.at, s.subject.clone()));
+        self.backdrop.queue.iter().filter_map(scene).collect()
+    }
+
+    /// A finished passage is being split into scenes.
+    #[cfg(test)]
+    pub fn splitting(&self) -> bool {
+        self.backdrop.split.is_some()
     }
 
     /// A drawing is fading in on the page shown.
@@ -451,25 +532,130 @@ impl App {
         self.backdrop.on_target.and_then(|(page, key)| (page == self.target).then_some(key)?)
     }
 
-    /// A scene whose first drawing was never finished (stopped, failed) is no scene.
+    /// A scene whose first drawing was never finished (stopped, failed) is no scene. Those of a
+    /// passage being split, or waiting to be painted, are kept.
     fn drop_unpainted_scenes(&mut self) {
-        let painting = self.backdrop.job.as_ref().map(|j| j.scene);
-        self.doc.scenes.retain(|s| !s.versions.is_empty() || Some(s.id) == painting);
+        let b = &self.backdrop;
+        let painting = b.job.as_ref().map(|j| j.scene);
+        let pinned = |id: u64| b.queue.contains(&id) || b.split.as_ref().is_some_and(|s| s.pins.iter().any(|&(p, _)| p == id));
+        self.doc.scenes.retain(|s| !s.versions.is_empty() || Some(s.id) == painting || pinned(s.id));
     }
 
-    /// Following the writing, the paragraph finished last: the last one with text before the
-    /// caret's paragraph, where it starts and its text. None if it has a scene already.
-    fn finished_paragraph(&self) -> Option<(usize, String)> {
-        let mut end = self.doc.para_start(self.caret).0;
-        while end > 0 {
-            let start = self.doc.para_start(end - 1).0;
-            let text = self.selected_passage(start, end - 1).trim().to_owned();
-            if !text.is_empty() {
-                return (!self.doc.scenes.iter().any(|s| s.at == start)).then_some((start, text));
+    /// Stop painting, and what was waiting to be painted.
+    fn stop_painting(&mut self) {
+        let b = &mut self.backdrop;
+        (b.job, b.split) = (None, None);
+        b.queue.clear();
+        self.drop_unpainted_scenes();
+    }
+
+    /// Where each sentence of the text `a..b` starts. A sentence ends with a full stop, question or
+    /// exclamation mark or ellipsis (closing quotes may follow), or with its line.
+    fn sentence_starts(&self, a: usize, b: usize) -> Vec<usize> {
+        let text = &self.doc.flow.text[self.doc.char_to_byte(a)..self.doc.char_to_byte(b)];
+        let (mut starts, mut ended, mut closing) = (Vec::new(), true, false);
+        for (i, c) in text.chars().enumerate() {
+            if is_terminator(c) {
+                ended = true;
+            } else if c.is_whitespace() || c == IMAGE_CHAR {
+                ended |= closing;
+            } else {
+                if ended {
+                    starts.push(a + i);
+                    ended = false;
+                }
+                let quote = matches!(c, '"' | '\'' | '\u{201d}' | '\u{2019}' | '\u{bb}' | ')');
+                closing = matches!(c, '.' | '!' | '?' | '\u{2026}') || (closing && quote);
             }
-            end = start;
         }
-        None
+        starts
+    }
+
+    /// Have Claude split the finished passage `range` into the scenes it describes, a scene
+    /// pinned (not yet painted) to each sentence meanwhile. One sentence is one scene.
+    fn split_passage(&mut self, range: Range<usize>) {
+        let starts = self.sentence_starts(range.start, range.end);
+        let ends = starts.iter().skip(1).copied().chain([range.end]);
+        let sentence = |(&a, b)| (a, self.selected_passage(a, b).trim().to_owned());
+        let sentences: Vec<(usize, String)> = starts.iter().zip(ends).map(sentence).collect();
+        let mut pins = Vec::new();
+        for (at, sentence) in sentences {
+            let id = self.doc.next_scene_id;
+            self.doc.next_scene_id += 1;
+            self.doc.scenes.push(Scene { id, at, versions: Vec::new(), shown: 0, subject: String::new(), hidden: false, people: Vec::new(), chosen: false });
+            pins.push((id, sentence));
+        }
+        let (tx, rx) = channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        if pins.len() > 1 {
+            let texts: Vec<String> = pins.iter().map(|(_, t)| t.clone()).collect();
+            let (prompt, n, stop) = (split_prompt(&texts), pins.len(), cancel.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(split_scenes(&prompt, n, &stop));
+            });
+        } else {
+            let _ = tx.send(Ok(vec![0]));
+        }
+        self.backdrop.split = Some(Split { rx, cancel, pins });
+    }
+
+    /// Claude has split the passage (or could not): the sentences that begin a scene keep their
+    /// pins and are queued to be painted, each with the sentences up to the next. Could it not,
+    /// the whole passage is one scene.
+    fn split_done(&mut self, split: Split, firsts: Result<Vec<usize>, String>) {
+        let firsts = firsts.unwrap_or_else(|_| vec![0]);
+        for (k, &first) in firsts.iter().enumerate() {
+            let last = firsts.get(k + 1).copied().unwrap_or(split.pins.len());
+            let subject = split.pins[first..last].iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join(" ");
+            let id = split.pins[first].0;
+            if let Some(s) = self.doc.scene_mut(id) {
+                s.subject = subject;
+                self.backdrop.queue.push_back(id);
+            }
+        }
+        drop(split);
+        self.drop_unpainted_scenes();
+    }
+
+    /// Take in how the passage was split, once Claude has said.
+    fn take_split(&mut self) {
+        let Some(split) = &self.backdrop.split else { return };
+        let firsts = match split.rx.try_recv() {
+            Ok(firsts) => firsts,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the passage was not split".into()),
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+        };
+        let split = self.backdrop.split.take().unwrap();
+        self.split_done(split, firsts);
+    }
+
+    /// Following the writing, the passage finished last: the lines with text before the caret's
+    /// passage, ended by an empty line (Enter twice), where it starts and its text. Lines broken
+    /// by a single Enter go on the same passage. None if a scene is pinned in it already.
+    fn finished_paragraph(&self) -> Option<(Range<usize>, String)> {
+        // The line before the one starting at `start`: where it starts, and whether it is empty.
+        let line_before = |start: usize| {
+            let from = self.doc.para_start(start - 1).0;
+            (from, self.selected_passage(from, start - 1).trim().is_empty())
+        };
+        // Past the lines of the caret's own passage, then the empty lines that end the one before.
+        let mut end = self.doc.para_start(self.caret).0;
+        while end > 0 && !line_before(end).1 {
+            end = line_before(end).0;
+        }
+        let gap = end;
+        while end > 0 && line_before(end).1 {
+            end = line_before(end).0;
+        }
+        if end == 0 || end == gap {
+            return None;
+        }
+        let mut start = end;
+        while start > 0 && !line_before(start).1 {
+            start = line_before(start).0;
+        }
+        let text = self.selected_passage(start, end - 1).trim().to_owned();
+        (!self.doc.scenes.iter().any(|s| (start..end).contains(&s.at))).then_some((start..end - 1, text))
     }
 
     /// Take in the scene settings of a document just opened (its scenes came with the `Doc`). An
@@ -489,31 +675,42 @@ impl App {
         }
     }
 
-    /// Following the writing: notice a finished paragraph and draw it after a pause, pinned to it.
-    /// A paragraph gets one picture; painting it again is up to the writer.
+    /// Following the writing: notice a finished passage, and after a pause have it split into the
+    /// scenes it describes, each painted in turn, pinned to its first sentence. A passage is
+    /// painted once; painting it again is up to the writer.
     fn follow_writing(&mut self, ctx: &egui::Context, now: f64) {
         if self.backdrop.read_at != Some(self.doc.version) {
             self.backdrop.read_at = Some(self.doc.version);
             let latest = self.finished_paragraph();
             let b = &mut self.backdrop;
             match latest {
-                Some((at, text)) if text != b.drawn_for => {
+                Some((range, text)) if text != b.drawn_for => {
                     // The same text (moved by an edit elsewhere) keeps its time.
-                    let seen = b.pending.as_ref().filter(|(p, _, _)| *p == text).map_or(now, |&(_, _, seen)| seen);
-                    b.pending = Some((text, at, seen));
+                    let seen = b.pending.as_ref().filter(|(p, _, _)| *p == text).map_or(now, |(_, _, seen)| *seen);
+                    b.pending = Some((text, range, seen));
                 }
                 _ => b.pending = None,
             }
         }
-        let b = &mut self.backdrop;
-        let (Some((text, at, seen)), true) = (b.pending.clone(), b.job.is_none()) else { return };
+        self.take_split();
+        if self.backdrop.job.is_none()
+            && let Some(id) = self.backdrop.queue.pop_front()
+            && let Some(s) = self.doc.scenes.iter().find(|s| s.id == id)
+        {
+            let (subject, at) = (Subject::Passage(s.subject.clone()), s.at);
+            self.start_scene(ctx, subject, at);
+            return;
+        }
+        let b = &self.backdrop;
+        let (Some((text, range, seen)), true) = (b.pending.clone(), !b.drawing()) else { return };
         let wait = seen + PAUSE - now;
         if wait > 0.0 {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
         } else {
+            let b = &mut self.backdrop;
             b.pending = None;
-            b.drawn_for = text.clone();
-            self.start_scene(ctx, Subject::Passage(text), at);
+            b.drawn_for = text;
+            self.split_passage(range);
         }
     }
 
@@ -524,12 +721,11 @@ impl App {
             return;
         }
         b.mode = mode;
-        b.job = None;
         b.pending = None;
         // Following the writing starts with a picture of what is already written.
         b.drawn_for.clear();
         b.read_at = None;
-        self.drop_unpainted_scenes();
+        self.stop_painting();
     }
 
     /// Take in finished paintings and renderings, keep the drawings near the page shown rendered,
@@ -666,15 +862,14 @@ impl App {
                 save = true;
                 ui.close();
             }
-            if b.job.is_some() && ui.add(egui::Button::new("Stop painting").frame(false)).clicked() {
+            if b.drawing() && ui.add(egui::Button::new("Stop painting").frame(false)).clicked() {
                 stop = true;
             }
         })
         .0
         .on_hover_text(tip);
         if stop {
-            b.job = None;
-            self.drop_unpainted_scenes();
+            self.stop_painting();
         }
         if describe {
             let b = &mut self.backdrop;
@@ -963,6 +1158,17 @@ mod tests {
     }
 
     /// Asks the real Claude for a scene through the Claude Code CLI: `cargo test live_scene -- --ignored`.
+    #[test]
+    #[ignore]
+    fn live_split() {
+        crate::claude::allow_live();
+        let sentences = ["The harbour was full of boats.", "Gulls cried over the masts.", "Mara climbed up to the old house.",
+            "Inside, the fire was out.", "She lit a candle."].map(String::from);
+        let firsts = split_scenes(&split_prompt(&sentences), sentences.len(), &AtomicBool::new(false)).unwrap();
+        println!("scenes begin at sentences {firsts:?} (from 0)");
+        assert!(firsts.len() > 1 && firsts[0] == 0, "{firsts:?}");
+    }
+
     #[test]
     #[ignore]
     fn live_scene() {

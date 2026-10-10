@@ -92,12 +92,17 @@ impl Doc {
 }
 
 impl App {
-    /// For a passage at char `at` (a paragraph's start) that names no one: the people named in the
-    /// nearest paragraph before it that names anyone, `CARRY_BACK` paragraphs back at most. A break
-    /// in the story ends the search: a chapter title, a page break, or an empty or starred line
-    /// ("* * *"), after which "he" may well be someone else.
+    /// For a passage at char `at` that names no one: the people named in the nearest paragraph
+    /// before it that names anyone, `CARRY_BACK` paragraphs back at most, starting with the
+    /// sentences before it in its own (a scene may begin partway into one). A break in the story
+    /// ends the search: a chapter title, a page break, or an empty or starred line ("* * *"),
+    /// after which "he" may well be someone else.
     pub fn carried_people(&self, at: usize) -> Vec<String> {
         let mut end = self.doc.para_start(at).0;
+        let named = self.doc.named_in(&self.selected_passage(end, at));
+        if !named.is_empty() {
+            return named.iter().map(|c| c.name.trim().to_owned()).collect();
+        }
         for _ in 0..CARRY_BACK {
             if end == 0 || self.doc.char_at(end - 1) == Some(PAGE_BREAK) {
                 break;
