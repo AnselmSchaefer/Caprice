@@ -100,10 +100,12 @@ pub struct App {
     pub ctrl_down: bool,
     /// True while Ctrl is known from its own key events (then only its key release ends it).
     pub ctrl_via_key: bool,
-    /// Width the toolbar wants, and how far it is slid sideways (current and target).
-    pub toolbar_w: f32,
-    pub toolbar_scroll: f32,
-    pub toolbar_target: f32,
+    /// The width of each group of tools (`ui::GROUPS`) as last drawn.
+    pub tool_w: [f32; ui::GROUPS],
+    /// The second row of tools ("⋯") is open.
+    pub more_tools: bool,
+    /// Where the toolbar ends below, with its second row if open; the search bar goes under it.
+    pub tools_bottom: f32,
     pub path: Option<PathBuf>,
     /// A message to show briefly ("- saved"); the toast takes it from here when it shows it.
     pub status: String,
@@ -207,9 +209,9 @@ impl App {
             fit_settling: false,
             ctrl_down: false,
             ctrl_via_key: false,
-            toolbar_w: 0.0,
-            toolbar_scroll: 0.0,
-            toolbar_target: 0.0,
+            tool_w: [0.0; ui::GROUPS],
+            more_tools: false,
+            tools_bottom: 0.0,
             path: None,
             status: String::new(),
             pos: 0.0,
@@ -1209,19 +1211,16 @@ mod tests {
         let (at, room) = painted_name(&h);
         assert_eq!(at.len(), 1, "with room, the whole name, still");
         assert!(room.contains_rect(at[0]) && at[0].left() > file.right(), "{at:?} in {room:?}");
-        assert!(h.widget_rect("More tools").is_none(), "no arrows when everything fits");
+        assert!(h.widget_rect("More tools").is_none(), "no ⋯ when everything fits");
 
-        // In a narrow window the tools slide, with both arrows at the left, and the name keeps a few letters' room.
+        // In a narrow window some tools go into "⋯", and the name keeps a few letters' room after it.
         h.width = 700.0;
         h.app.path = Some(std::path::PathBuf::from("/tmp/The Lion Boy and the Hatch, second draft.caprice"));
         h.frames(3, vec![], Modifiers::NONE);
-        let earlier = h.widget_rect("Earlier tools").expect("arrows");
-        let more = h.widget_rect("More tools").expect("arrows");
-        let file = h.widget_rect("File").unwrap();
-        assert!(earlier.right() < more.left() && more.right() < file.left(), "{earlier:?} {more:?} {file:?}");
+        let more = h.widget_rect("More tools").expect("a ⋯ button");
         let (at, room) = painted_name(&h);
-        assert!(room.width() > 20.0 && room.width() < 60.0, "about four letters: {room:?}");
-        assert!(room.left() > file.right() && at[0].width() > room.width());
+        assert!(room.width() > 20.0, "at least about four letters: {room:?}");
+        assert!(room.left() > more.right() && at[0].width() > room.width(), "too little for all of it: {at:?} {room:?}");
 
         // It moves along, and comes round again without a gap in which nothing shows.
         let mut lefts = Vec::new();
@@ -1235,11 +1234,74 @@ mod tests {
         }
         assert!(lefts.windows(2).any(|w| w[1] < w[0]) && lefts.windows(2).any(|w| w[1] > w[0]), "moves, and starts over: {lefts:?}");
 
-        // Sliding the tools leaves the name where it is.
+        // Opening the second row leaves the name where it is.
         h.click_widget("More tools");
-        h.frames(30, vec![], Modifiers::NONE);
-        assert!(h.widget_rect("File").is_none_or(|f| f.left() < file.left()), "the tools slid");
+        assert!(h.app.more_tools);
         assert_eq!(painted_name(&h).1, room);
+    }
+
+    #[test]
+    fn tools_that_do_not_fit_open_in_a_second_row_under_the_toolbar() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Plain words and red words.");
+        assert!(h.widget_rect("More tools").is_none() && h.widget_rect("Scene").is_some(), "all fit in the usual window");
+
+        h.width = 520.0;
+        h.frames(3, vec![], Modifiers::NONE);
+        let file = h.widget_rect("File").expect("the first tools stay");
+        let more = h.widget_rect("More tools").expect("a ⋯ button");
+        assert!(more.left() > file.right());
+        assert!(h.widget_rect("Scene").is_none() && h.widget_rect("Text colour").is_none(), "the last tools are put away");
+
+        h.click_widget("More tools");
+        let scene = h.widget_rect("Scene").expect("in the second row");
+        let colour = h.widget_rect("Text colour").expect("in the second row");
+        assert!(scene.top() > more.bottom() && colour.top() > more.bottom(), "under the toolbar: {scene:?} {colour:?}");
+
+        // A menu opened from the row works, and the row stays open.
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, 16, false);
+        h.app.set_caret(&ctx, 19, true);
+        h.click_widget("Text colour");
+        h.click_widget("Red");
+        h.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(painted_look(&h, "red"), Some((false, egui::Color32::from_rgb(205, 40, 40))));
+        assert!(h.app.more_tools);
+
+        // A click on the page closes the row.
+        h.click_in_page(egui::vec2(10.0, 300.0));
+        assert!(!h.app.more_tools);
+        assert!(h.widget_rect("Scene").is_none());
+
+        // Wider, the row lies over the top of the page. A click between its tools stays on it.
+        h.width = 760.0;
+        h.frames(3, vec![], Modifiers::NONE);
+        h.click_widget("More tools");
+        let scene = h.widget_rect("Scene").expect("still put away");
+        // With a small top margin, so the row covers the first line of text.
+        let ctx = h.ctx.clone();
+        let mut setup = h.app.doc.setup.clone();
+        setup.margin_top = 12.0;
+        h.app.set_setup(&ctx, setup);
+        h.app.set_caret(&ctx, 0, false);
+        h.frames(2, vec![], Modifiers::NONE);
+        let caret = h.app.caret;
+        let note = h.widget_rect("Note").expect("put away too");
+        assert!(note.top() > h.widget_rect("More tools").unwrap().bottom());
+        let gap = egui::pos2(note.left() - 5.0, note.center().y);
+        assert!(h.app.last_page_rect.contains(gap), "over the page: {gap:?} {:?}", h.app.last_page_rect);
+        h.press_at(gap, true);
+        h.press_at(gap, false);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(h.app.caret, caret, "the click did not reach the page");
+        assert!(h.app.more_tools);
+
+        // Find opens the search bar under the row, not over it.
+        h.app.open_search();
+        h.frames(2, vec![], Modifiers::NONE);
+        let field = h.widget_rect("Find in document").expect("the search bar");
+        assert!(field.top() > scene.bottom(), "{field:?} under {scene:?}");
     }
 
     #[test]

@@ -425,11 +425,21 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   frame, without end. Lay such a row out right to left inside `horizontal` (the button first, then
   the field at `f32::INFINITY`); `with_layout` alone takes all the height left and centres the row
   in it. (Found in the Cast window, guarded by `someone_can_keep_several_looks_and_scenes_get_the_one_in_use`.)
-- The toolbar is full: about 1050 points of tools since italic and colour, so in a window
-  narrower than about 1150 it slides sideways (both arrows at its left end), and its last menus
-  (Claude, Scene) are out of view until slid to. A new toggle goes in the page bar (like Fit and
-  Scratchpad) or into a menu. The test window (`Harness`) is 1200 wide so that the tests reach
-  every menu; `Harness::width` narrows it.
+- **Anything that takes clicks over the page is on a layer of its own** (a window, or an egui
+  `Area` like the second row of tools). The editor takes a press whenever the pointer is in its
+  rect on the background layer (`contains_pointer`), whatever else was drawn over it there: a
+  click on the second row's tools, drawn on the background, also moved the caret in the text
+  under it. Guarded by `tools_that_do_not_fit_open_in_a_second_row_under_the_toolbar`. The search
+  bar is still drawn on the background; it lies over the top margin, which takes no clicks, unless
+  the margin is very small.
+- **The toolbar is in groups (`ui::GROUPS`), and those that do not fit go into "⋯"**, the last
+  first, which opens them in a second dock under the toolbar (rows as needed). Each group is
+  measured as drawn (`tool_w`) and the fit is worked out from last frame's widths, so a group
+  only ever put away is measured when the second row is open. The second row closes on a click on
+  the pages, but not on one in a menu opened from it (a popup is on a higher layer); the search bar
+  goes under it (`tools_bottom`). All the tools take about 1000 points, so they fit in the test
+  window (`Harness`, 1200 wide) and the tests reach every menu; `Harness::width` narrows it. A new
+  toggle goes in the page bar (like Fit and Scratchpad) or into a menu.
 - **The document's name is always at the toolbar's right end.** The tools get the room first, but
   the name keeps about four of its characters' width; when it has less than it needs it runs past
   in a loop (`NAME_SPEED`), which repaints about 30 times a second while it does. Guarded by
@@ -530,6 +540,10 @@ hit-testing and caret (`PageLayout`).
 on the contents pages with `Harness::long_contents`.
 
 **The file format:** `serde(default)`, a migration in `into_doc` that moves notes and scenes, an old-file test.
+
+**A new tool in the toolbar:** into a group in `tool_group` (`ui.rs`), what it does recorded in
+`Tools` and done in `apply_tools` after all the tools are drawn, since a group can be drawn in
+either row. The order of `GROUPS` is the order they go into "⋯", the last first.
 
 **A new window over the pages:** a toggle in the page bar or a menu, not the toolbar (R16); its
 scrolling must not move the pages (R16); its stored text in `Doc` and `DocFile` (R9).

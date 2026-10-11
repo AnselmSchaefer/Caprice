@@ -139,7 +139,7 @@ impl App {
         let dock_w = (area.width() - 48.0).min(crate::ui::DOCK_MAX_W);
         let width = 430.0_f32.min(dock_w);
         let rect = Rect::from_min_size(
-            pos2(area.center().x + dock_w / 2.0 - width, area.top() + DOCK_GAP + DOCK_H + 8.0),
+            pos2(area.center().x + dock_w / 2.0 - width, self.tools_bottom.max(area.top() + DOCK_GAP + DOCK_H) + 8.0),
             vec2(width, 42.0),
         );
         let p = ui.painter();

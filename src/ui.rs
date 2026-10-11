@@ -14,6 +14,17 @@ pub const DOCK_GAP: f32 = 14.0;
 pub const RESERVED: f32 = DOCK_GAP + DOCK_H + 10.0;
 /// Widest the docks get.
 pub const DOCK_MAX_W: f32 = 1180.0;
+/// The toolbar's groups of tools, in the order they show; the last ones go into "⋯" first.
+/// File, font, letters, paragraph, page and image, note and find, Claude and scenes.
+pub const GROUPS: usize = 7;
+/// Room between two tools, or two groups.
+const TOOL_GAP: f32 = 8.0;
+/// The width of the font list.
+const FONT_W: f32 = 128.0;
+/// The "⋯" button's width.
+const MORE_W: f32 = 30.0;
+/// The height of a row in the second dock.
+const MORE_LINE: f32 = 40.0;
 /// Room between the tools and the document's name.
 const NAME_GAP: f32 = 16.0;
 /// How fast a name too long for its room runs past, in points a second.
@@ -171,6 +182,36 @@ enum FileAction {
     ExportDocx,
 }
 
+/// What was clicked in the tools this frame, done once they are all drawn.
+#[derive(Default)]
+struct Tools {
+    file: Option<FileAction>,
+    font: Option<String>,
+    size: Option<f32>,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    color: Option<Option<[u8; 3]>>,
+    para: Option<ParaChange>,
+    setup: Option<crate::model::PageSetup>,
+    image: Option<ImageAction>,
+    add_note: bool,
+    find: bool,
+}
+
+/// The "⋯" button that opens the second row of tools.
+fn more_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(MORE_W, 30.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "More tools"));
+    let fill = if open { ACCENT } else if resp.hovered() { BTN_HOVER } else { BTN };
+    let ink = if open { Color32::from_rgb(20, 22, 30) } else { TEXT };
+    ui.painter().rect_filled(rect, 8.0, fill);
+    for k in [-1.0, 0.0, 1.0] {
+        ui.painter().circle_filled(rect.center() + vec2(k * 5.5, 0.0), 1.7, ink);
+    }
+    resp.on_hover_text("More tools")
+}
+
 impl App {
     pub fn dock_rect(area: Rect, top: bool) -> Rect {
         let width = (area.width() - 48.0).min(DOCK_MAX_W);
@@ -188,9 +229,10 @@ impl App {
         p.rect_stroke(rect, 16.0, Stroke::new(1.0, DOCK_EDGE), egui::StrokeKind::Inside);
     }
 
-    /// The formatting dock: one row of tools that slides sideways when the window is too narrow, with
-    /// both arrows at its left end, and the document's name always at its right end.
+    /// The formatting dock: one row of tools in groups, the document's name at its right end. Groups
+    /// that do not fit, the last first, go into a second row that "⋯" opens under it.
     pub fn format_bar(&mut self, ui: &mut egui::Ui, area: Rect) {
+        let ctx = ui.ctx().clone();
         let rect = Self::dock_rect(area, true);
         Self::paint_dock(ui, rect);
         let inner = rect.shrink2(vec2(14.0, 0.0));
@@ -199,51 +241,93 @@ impl App {
         // The name is never hidden: when the tools need the room, it keeps about four characters.
         let name_w = galley.size().x;
         let four = (name_w / name.chars().count().max(1) as f32 * 4.0).min(name_w);
-        let overflow = self.toolbar_w + NAME_GAP + four > inner.width() + 0.5;
-        let arrow_w = 28.0;
-        let arrows_w = 2.0 * arrow_w + 4.0 + 8.0;
-        let view = if overflow {
-            Rect::from_min_max(pos2(inner.left() + arrows_w, inner.top()), pos2(inner.right() - four - NAME_GAP, inner.bottom()))
-        } else {
-            inner
-        };
-        let max_scroll = (self.toolbar_w - view.width()).max(0.0);
 
-        if overflow {
-            // Wheel / two-finger scrolling over the bar slides it too.
-            let over_bar = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| rect.contains(p));
-            if over_bar {
-                let d = ui.input(|i| i.smooth_scroll_delta);
-                let step = if d.x.abs() > d.y.abs() { d.x } else { d.y };
-                self.toolbar_target = (self.toolbar_target - step).clamp(0.0, max_scroll);
+        // Which groups fit, by their widths as last drawn.
+        let w = self.tool_w;
+        let room = inner.width() - NAME_GAP - four;
+        let all = w.iter().sum::<f32>() + TOOL_GAP * (GROUPS - 1) as f32;
+        let shown = if all <= room + 0.5 {
+            GROUPS
+        } else {
+            let mut used = MORE_W;
+            w.iter().take_while(|&&g| { used += g + TOOL_GAP; used <= room + 0.5 }).count()
+        };
+        if shown == GROUPS {
+            self.more_tools = false;
+        }
+
+        let mut tools = Tools::default();
+        let mut end = inner.left();
+        let mut more = None;
+        ui.scope_builder(
+            UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing = vec2(TOOL_GAP, 8.0);
+                for g in 0..shown {
+                    self.tool_group(ui, g, g == 0, &mut tools);
+                }
+                if shown < GROUPS {
+                    more = Some(more_button(ui, self.more_tools));
+                }
+                end = ui.min_rect().right();
+            },
+        );
+        let more_rect = more.as_ref().map(|r| r.rect);
+        if more.is_some_and(|r| r.clicked()) {
+            self.more_tools = !self.more_tools;
+        }
+
+        // The rest, in a second dock under the first, in as many rows as they need.
+        let mut bottom = rect.bottom();
+        if self.more_tools {
+            let width = rect.width() - 28.0;
+            let mut lines: Vec<Vec<usize>> = vec![vec![]];
+            let mut x = 0.0;
+            for (g, &gw) in w.iter().enumerate().skip(shown) {
+                if x > 0.0 && x + TOOL_GAP + gw > width {
+                    lines.push(vec![]);
+                    x = 0.0;
+                }
+                x += if x > 0.0 { TOOL_GAP } else { 0.0 } + gw;
+                lines.last_mut().unwrap().push(g);
             }
-            for (k, left) in [(0.0, true), (1.0, false)] {
-                let btn = Rect::from_min_size(pos2(inner.left() + k * (arrow_w + 4.0), rect.center().y - 15.0), vec2(arrow_w, 30.0));
-                let can = if left { self.toolbar_target > 0.5 } else { self.toolbar_target < max_scroll - 0.5 };
-                let resp = ui.interact(btn, Id::new(("toolbar_arrow", left)), if can { Sense::click() } else { Sense::hover() });
-                let tip = if left { "Earlier tools" } else { "More tools" };
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, can, tip));
-                let fill = if can && resp.hovered() { BTN_HOVER } else { BTN };
-                let ink = if can { TEXT } else { TEXT_DIM.gamma_multiply(0.5) };
-                let p = ui.painter();
-                p.rect_filled(btn, 8.0, fill);
-                let c = btn.center();
-                let dx = if left { -1.0 } else { 1.0 };
-                let s = Stroke::new(1.8, ink);
-                p.line_segment([pos2(c.x - 2.5 * dx, c.y - 5.0), pos2(c.x + 2.5 * dx, c.y)], s);
-                p.line_segment([pos2(c.x + 2.5 * dx, c.y), pos2(c.x - 2.5 * dx, c.y + 5.0)], s);
-                if can && resp.clicked() {
-                    let by = view.width() * 0.6 * if left { -1.0 } else { 1.0 };
-                    self.toolbar_target = (self.toolbar_target + by).clamp(0.0, max_scroll);
+            let line_w = |l: &Vec<usize>| l.iter().map(|&g| w[g]).sum::<f32>() + TOOL_GAP * (l.len().max(1) - 1) as f32;
+            let widest = lines.iter().map(line_w).fold(0.0, f32::max);
+            let panel = Rect::from_min_size(
+                // Under "⋯", as far as the toolbar reaches.
+                pos2((more_rect.map_or(rect.left(), |r| r.left() - 14.0)).min(rect.right() - widest - 28.0).max(rect.left()), rect.bottom() + 8.0),
+                vec2(widest + 28.0, lines.len() as f32 * MORE_LINE + 8.0),
+            );
+            // On a layer of its own, like the windows, so the page under it takes no clicks (R16).
+            egui::Area::new(Id::new("more_tools")).order(egui::Order::Middle).fixed_pos(panel.min).show(&ctx, |ui| {
+                Self::paint_dock(ui, panel);
+                ui.allocate_rect(panel, Sense::click_and_drag());
+                for (k, line) in lines.iter().enumerate() {
+                    let row = Rect::from_min_size(pos2(panel.left() + 14.0, panel.top() + 4.0 + k as f32 * MORE_LINE), vec2(widest, MORE_LINE));
+                    ui.scope_builder(UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+                        ui.spacing_mut().item_spacing = vec2(TOOL_GAP, 8.0);
+                        for (j, &g) in line.iter().enumerate() {
+                            self.tool_group(ui, g, j == 0, &mut tools);
+                        }
+                    });
+                }
+            });
+            bottom = panel.bottom();
+            // A click on the pages closes it; one in a menu opened from it does not.
+            let pressed = ui.input(|i| if i.pointer.primary_pressed() { i.pointer.interact_pos() } else { None });
+            if let Some(at) = pressed {
+                let elsewhere = !panel.contains(at) && !rect.contains(at);
+                if elsewhere && ctx.layer_id_at(at).is_none_or(|l| l.order == egui::Order::Background) {
+                    self.more_tools = false;
                 }
             }
-        } else {
-            self.toolbar_target = 0.0;
         }
+        self.tools_bottom = bottom;
+        self.apply_tools(&ctx, tools);
 
         // The name takes the room right of the tools, no more than it needs; if that is too little
         // for all of it, it runs past slowly, over and over.
-        let slot_left = if overflow { view.right() + NAME_GAP } else { inner.left() + self.toolbar_w + NAME_GAP };
+        let slot_left = more_rect.map_or(end, |r| r.right()) + NAME_GAP;
         let slot = Rect::from_min_max(pos2(slot_left.max(inner.right() - name_w), inner.top()), inner.max);
         let y = rect.center().y - galley.size().y / 2.0;
         let p = ui.painter().with_clip_rect(ui.clip_rect().intersect(slot.expand2(vec2(0.0, 6.0))));
@@ -255,36 +339,7 @@ impl App {
             let x = slot.left() - (ui.input(|i| i.time) as f32 * NAME_SPEED) % lap;
             p.galley(pos2(x, y), galley.clone(), TEXT_DIM);
             p.galley(pos2(x + lap, y), galley, TEXT_DIM);
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
-        }
-
-        // Ease towards the target offset.
-        let dt = ui.input(|i| i.stable_dt).min(0.05);
-        let diff = self.toolbar_target - self.toolbar_scroll;
-        if diff.abs() > 0.3 {
-            self.toolbar_scroll += diff * (1.0 - (-dt * 16.0).exp());
-            ui.ctx().request_repaint();
-        } else {
-            self.toolbar_scroll = self.toolbar_target;
-        }
-        self.toolbar_scroll = self.toolbar_scroll.clamp(0.0, max_scroll);
-
-        // The tools themselves, laid out on a very wide strip and clipped to the visible window.
-        let strip = Rect::from_min_size(pos2(view.left() - self.toolbar_scroll, view.top()), vec2(4000.0, view.height()));
-        let mut used = 0.0;
-        ui.scope_builder(
-            UiBuilder::new().max_rect(strip).layout(egui::Layout::left_to_right(egui::Align::Center)),
-            |ui| {
-                ui.set_clip_rect(ui.clip_rect().intersect(view.expand2(vec2(0.0, 6.0))));
-                ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
-                self.toolbox(ui);
-                used = ui.min_rect().width();
-            },
-        );
-        // Measured this frame, used the next; a changed width asks for one more frame.
-        if (used - self.toolbar_w).abs() > 0.5 {
-            self.toolbar_w = used;
-            ui.ctx().request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
     }
 
@@ -294,14 +349,43 @@ impl App {
         self.scrollbar(ui, rect.shrink2(vec2(18.0, 0.0)));
     }
 
-    fn toolbox(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        let mut font_pick = None;
-        let t = &self.typing;
-        let (mut bold, mut italic, mut underline, mut size) = (t.bold, t.italic, t.underline, t.size);
-        let small = vec2(28.0, 30.0);
+    /// Draw tool group `g` (see `GROUPS`), noting what was clicked in `out`, and measure it.
+    fn tool_group(&mut self, ui: &mut egui::Ui, g: usize, first: bool, out: &mut Tools) {
+        let r = ui.scope(|ui| {
+            // The paragraph and page groups are set apart by a line, unless they start a row.
+            if !first && (g == 3 || g == 4) {
+                ui.add_space(2.0);
+                ui.separator();
+                ui.add_space(2.0);
+            }
+            match g {
+                0 => self.file_tools(ui, out),
+                1 => self.font_tools(ui, out),
+                2 => self.letter_tools(ui, out),
+                3 => self.paragraph_tools(ui, out),
+                4 => {
+                    out.setup = self.page_menu(ui);
+                    self.image_menu(ui, out);
+                }
+                5 => {
+                    out.add_note |= ui.button("Note").on_hover_text("Attach a note to the selection or line (Ctrl+Alt+N)").clicked();
+                    out.find |= ui.button("Find").on_hover_text("Search (Ctrl+F)").clicked();
+                }
+                _ => {
+                    self.claude_menu(ui);
+                    self.scene_menu(ui);
+                }
+            }
+        });
+        // Measured this frame, used the next; a changed width asks for one more frame.
+        let width = r.response.rect.width();
+        if (width - self.tool_w[g]).abs() > 0.5 {
+            self.tool_w[g] = width;
+            ui.ctx().request_repaint();
+        }
+    }
 
-        let mut file_action = None;
+    fn file_tools(&mut self, ui: &mut egui::Ui, out: &mut Tools) {
         egui::containers::menu::MenuButton::new("File").ui(ui, |ui| {
             ui.set_min_width(210.0);
             let items = [
@@ -313,48 +397,52 @@ impl App {
             for (label, shortcut, action) in items {
                 let button = egui::Button::new(label).shortcut_text(shortcut).frame(false);
                 if ui.add(button).clicked() {
-                    file_action = Some(action);
+                    out.file = Some(action);
                 }
             }
         });
+    }
 
-        ui.add_space(2.0);
-
+    fn font_tools(&mut self, ui: &mut egui::Ui, out: &mut Tools) {
         egui::ComboBox::from_id_salt("font")
             .selected_text(self.typing.font.to_string())
-            .width(150.0)
+            .width(FONT_W)
             .show_ui(ui, |ui| {
                 for (f, _) in &self.fonts.families {
                     if ui.selectable_label(*f == *self.typing.font, f).clicked() {
-                        font_pick = Some(f.clone());
+                        out.font = Some(f.clone());
                     }
                 }
             });
+        let mut size = self.typing.size;
         ui.add_sized(
             [58.0, 30.0],
             egui::DragValue::new(&mut size).range(6.0..=96.0).speed(0.15).max_decimals(1).suffix(" pt"),
         );
-        // The look of the letters, close together as one group.
-        let mut color = None;
-        ui.scope(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            let b = egui::Button::new(egui::RichText::new("B").strong()).selected(bold).min_size(small);
-            bold ^= ui.add(b).on_hover_text("Bold (Ctrl+B)").clicked();
-            let i = egui::Button::new(egui::RichText::new("I").italics()).selected(italic).min_size(small);
-            italic ^= ui.add(i).on_hover_text("Italic (Ctrl+I)").clicked();
-            let u = egui::Button::new(egui::RichText::new("U").underline()).selected(underline).min_size(small);
-            underline ^= ui.add(u).on_hover_text("Underline (Ctrl+U)").clicked();
-            color = color_dropdown(ui, self.typing.color);
-        });
+        if size != self.typing.size {
+            out.size = Some(size);
+        }
+    }
 
-        ui.add_space(2.0);
-        ui.separator();
-        ui.add_space(2.0);
+    /// The look of the letters, close together as one group.
+    fn letter_tools(&mut self, ui: &mut egui::Ui, out: &mut Tools) {
+        let t = &self.typing;
+        let small = vec2(28.0, 30.0);
+        ui.spacing_mut().item_spacing.x = 3.0;
+        let b = egui::Button::new(egui::RichText::new("B").strong()).selected(t.bold).min_size(small);
+        out.bold ^= ui.add(b).on_hover_text("Bold (Ctrl+B)").clicked();
+        let i = egui::Button::new(egui::RichText::new("I").italics()).selected(t.italic).min_size(small);
+        out.italic ^= ui.add(i).on_hover_text("Italic (Ctrl+I)").clicked();
+        let u = egui::Button::new(egui::RichText::new("U").underline()).selected(t.underline).min_size(small);
+        out.underline ^= ui.add(u).on_hover_text("Underline (Ctrl+U)").clicked();
+        out.color = color_dropdown(ui, t.color).or(out.color);
+    }
 
-        // Paragraph format of the paragraph the caret is in. Alignment (with line spacing) and
-        // lists are one dropdown each, to save room.
+    /// Paragraph format of the paragraph the caret is in. Alignment (with line spacing) and lists
+    /// are one dropdown each, to save room.
+    fn paragraph_tools(&mut self, ui: &mut egui::Ui, out: &mut Tools) {
         let attrs = self.doc.para_attrs_at(self.caret);
-        let mut para_change = None;
+        let para_change = &mut out.para;
         icon_dropdown(ui, Icon::Align(attrs.align), false, "Alignment and line spacing", |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
@@ -366,7 +454,7 @@ impl App {
                 ];
                 for (a, tip) in aligns {
                     if icon_button(ui, Icon::Align(a), attrs.align == a, tip).clicked() {
-                        para_change = Some(ParaChange::Align(a));
+                        *para_change = Some(ParaChange::Align(a));
                     }
                 }
             });
@@ -377,7 +465,7 @@ impl App {
                 for s in [1.0_f32, 1.15, 1.5, 2.0, 3.0] {
                     let label = format!("{s:.2}").trim_end_matches('0').trim_end_matches('.').to_owned();
                     if ui.add(egui::Button::new(label).selected((attrs.spacing - s).abs() < 0.01).min_size(vec2(34.0, 28.0))).clicked() {
-                        para_change = Some(ParaChange::Spacing(s));
+                        *para_change = Some(ParaChange::Spacing(s));
                     }
                 }
             });
@@ -387,99 +475,97 @@ impl App {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 if icon_button(ui, Icon::Bullets, attrs.list == ListKind::Bullet, "Bulleted list (Ctrl+Shift+L)").clicked() {
-                    para_change = Some(ParaChange::List(ListKind::Bullet));
+                    *para_change = Some(ParaChange::List(ListKind::Bullet));
                 }
                 if icon_button(ui, Icon::Numbers, attrs.list == ListKind::Numbered, "Numbered list").clicked() {
-                    para_change = Some(ParaChange::List(ListKind::Numbered));
+                    *para_change = Some(ParaChange::List(ListKind::Numbered));
                 }
             });
         });
 
         let chapter = egui::Button::new("Chapter").selected(attrs.is_chapter_title()).min_size(vec2(0.0, 30.0));
         if ui.add(chapter).on_hover_text("Chapter title: starts a new chapter").clicked() {
-            para_change = Some(ParaChange::ChapterTitle(!attrs.is_chapter_title()));
+            *para_change = Some(ParaChange::ChapterTitle(!attrs.is_chapter_title()));
         }
+    }
 
-        ui.add_space(2.0);
-        ui.separator();
-        ui.add_space(2.0);
-        let new_setup = self.page_menu(ui);
-
-        let mut image_action = None;
+    fn image_menu(&mut self, ui: &mut egui::Ui, out: &mut Tools) {
         let selected_image = self.selected_image().is_some();
         egui::containers::menu::MenuButton::new("Image").ui(ui, |ui| {
             ui.set_min_width(190.0);
             if ui.add(egui::Button::new("Insert picture…").frame(false)).clicked() {
-                image_action = Some(ImageAction::Insert);
+                out.image = Some(ImageAction::Insert);
             }
             ui.add_enabled_ui(selected_image, |ui| {
                 ui.separator();
                 for (label, fraction) in [("Small  (25% of width)", 0.25), ("Medium  (50%)", 0.5), ("Large  (75%)", 0.75), ("Full width", 1.0)] {
                     if ui.add(egui::Button::new(label).frame(false)).clicked() {
-                        image_action = Some(ImageAction::Width(fraction));
+                        out.image = Some(ImageAction::Width(fraction));
                     }
                 }
             });
         });
-        let add_note = ui.button("Note").on_hover_text("Attach a note to the selection or line (Ctrl+Alt+N)").clicked();
-        let find = ui.button("Find").on_hover_text("Search (Ctrl+F)").clicked();
-        self.claude_menu(ui);
-        self.scene_menu(ui);
+    }
 
-        if let Some(f) = font_pick {
-            self.fonts.ensure(&ctx, &f, false);
+    /// Do what was clicked in the tools, after they are all drawn.
+    fn apply_tools(&mut self, ctx: &egui::Context, out: Tools) {
+        if let Some(f) = out.font {
+            self.fonts.ensure(ctx, &f, false);
             let f: Arc<str> = f.into();
-            self.apply_style(&ctx, |s| s.font = f.clone());
+            self.apply_style(ctx, |s| s.font = f.clone());
         }
-        if size != self.typing.size {
-            self.apply_style(&ctx, |s| s.size = size);
+        if let Some(size) = out.size {
+            self.apply_style(ctx, |s| s.size = size);
         }
-        if bold != self.typing.bold {
-            self.apply_style(&ctx, |s| s.bold = bold);
+        if out.bold {
+            let bold = !self.typing.bold;
+            self.apply_style(ctx, |s| s.bold = bold);
         }
-        if italic != self.typing.italic {
-            self.apply_style(&ctx, |s| s.italic = italic);
+        if out.italic {
+            let italic = !self.typing.italic;
+            self.apply_style(ctx, |s| s.italic = italic);
         }
-        if underline != self.typing.underline {
-            self.apply_style(&ctx, |s| s.underline = underline);
+        if out.underline {
+            let underline = !self.typing.underline;
+            self.apply_style(ctx, |s| s.underline = underline);
         }
-        if let Some(color) = color {
-            self.apply_style(&ctx, |s| s.color = color);
+        if let Some(color) = out.color {
+            self.apply_style(ctx, |s| s.color = color);
         }
-        match para_change {
-            Some(ParaChange::Align(a)) => self.set_para(&ctx, |p| p.align = a),
-            Some(ParaChange::Spacing(s)) => self.set_para(&ctx, |p| p.spacing = s),
+        match out.para {
+            Some(ParaChange::Align(a)) => self.set_para(ctx, |p| p.align = a),
+            Some(ParaChange::Spacing(s)) => self.set_para(ctx, |p| p.spacing = s),
             Some(ParaChange::List(kind)) => {
                 // Clicking the active kind turns the list off.
-                let kind = if attrs.list == kind { ListKind::None } else { kind };
-                self.set_para(&ctx, |p| p.list = kind);
+                let kind = if self.doc.para_attrs_at(self.caret).list == kind { ListKind::None } else { kind };
+                self.set_para(ctx, |p| p.list = kind);
             }
-            Some(ParaChange::ChapterTitle(on)) => self.set_para(&ctx, |p| p.set_chapter_title(on)),
+            Some(ParaChange::ChapterTitle(on)) => self.set_para(ctx, |p| p.set_chapter_title(on)),
             None => {}
         }
-        if let Some(setup) = new_setup {
-            self.set_setup(&ctx, setup);
+        if let Some(setup) = out.setup {
+            self.set_setup(ctx, setup);
         }
-        if add_note {
-            self.add_note(&ctx);
+        if out.add_note {
+            self.add_note(ctx);
         }
-        if find {
+        if out.find {
             self.open_search();
         }
-        match image_action {
+        match out.image {
             Some(ImageAction::Insert) => {
-                self.ask_path(&ctx, crate::fileio::DialogFor::Picture, || {
+                self.ask_path(ctx, crate::fileio::DialogFor::Picture, || {
                     rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg"]).pick_file()
                 });
             }
-            Some(ImageAction::Width(f)) => self.set_image_width_fraction(&ctx, f),
+            Some(ImageAction::Width(f)) => self.set_image_width_fraction(ctx, f),
             None => {}
         }
-        match file_action {
-            Some(FileAction::Open) => self.open(&ctx),
-            Some(FileAction::Save) => self.save(&ctx, false),
-            Some(FileAction::SaveAs) => self.save(&ctx, true),
-            Some(FileAction::ExportDocx) => self.export_docx(&ctx),
+        match out.file {
+            Some(FileAction::Open) => self.open(ctx),
+            Some(FileAction::Save) => self.save(ctx, false),
+            Some(FileAction::SaveAs) => self.save(ctx, true),
+            Some(FileAction::ExportDocx) => self.export_docx(ctx),
             None => {}
         }
     }
