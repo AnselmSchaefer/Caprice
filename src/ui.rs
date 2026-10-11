@@ -14,6 +14,10 @@ pub const DOCK_GAP: f32 = 14.0;
 pub const RESERVED: f32 = DOCK_GAP + DOCK_H + 10.0;
 /// Widest the docks get.
 pub const DOCK_MAX_W: f32 = 1180.0;
+/// Room between the tools and the document's name.
+const NAME_GAP: f32 = 16.0;
+/// How fast a name too long for its room runs past, in points a second.
+const NAME_SPEED: f32 = 18.0;
 /// A paragraph-format change picked in the toolbar.
 #[derive(Clone, Copy)]
 enum ParaChange {
@@ -184,15 +188,25 @@ impl App {
         p.rect_stroke(rect, 16.0, Stroke::new(1.0, DOCK_EDGE), egui::StrokeKind::Inside);
     }
 
-    /// The formatting dock: one row of tools that slides sideways when the window is too narrow,
-    /// with an arrow at each end.
+    /// The formatting dock: one row of tools that slides sideways when the window is too narrow, with
+    /// both arrows at its left end, and the document's name always at its right end.
     pub fn format_bar(&mut self, ui: &mut egui::Ui, area: Rect) {
         let rect = Self::dock_rect(area, true);
         Self::paint_dock(ui, rect);
         let inner = rect.shrink2(vec2(14.0, 0.0));
-        let overflow = self.toolbar_w > inner.width() + 0.5;
+        let name = self.doc_name();
+        let galley = ui.painter().layout_no_wrap(name.clone(), FontId::proportional(13.0), TEXT_DIM);
+        // The name is never hidden: when the tools need the room, it keeps about four characters.
+        let name_w = galley.size().x;
+        let four = (name_w / name.chars().count().max(1) as f32 * 4.0).min(name_w);
+        let overflow = self.toolbar_w + NAME_GAP + four > inner.width() + 0.5;
         let arrow_w = 28.0;
-        let view = if overflow { inner.shrink2(vec2(arrow_w + 6.0, 0.0)) } else { inner };
+        let arrows_w = 2.0 * arrow_w + 4.0 + 8.0;
+        let view = if overflow {
+            Rect::from_min_max(pos2(inner.left() + arrows_w, inner.top()), pos2(inner.right() - four - NAME_GAP, inner.bottom()))
+        } else {
+            inner
+        };
         let max_scroll = (self.toolbar_w - view.width()).max(0.0);
 
         if overflow {
@@ -203,11 +217,12 @@ impl App {
                 let step = if d.x.abs() > d.y.abs() { d.x } else { d.y };
                 self.toolbar_target = (self.toolbar_target - step).clamp(0.0, max_scroll);
             }
-            for (left, ar) in [(true, Rect::from_min_size(inner.min, vec2(arrow_w, inner.height()))),
-                               (false, Rect::from_min_size(pos2(inner.right() - arrow_w, inner.top()), vec2(arrow_w, inner.height())))] {
+            for (k, left) in [(0.0, true), (1.0, false)] {
+                let btn = Rect::from_min_size(pos2(inner.left() + k * (arrow_w + 4.0), rect.center().y - 15.0), vec2(arrow_w, 30.0));
                 let can = if left { self.toolbar_target > 0.5 } else { self.toolbar_target < max_scroll - 0.5 };
-                let btn = Rect::from_center_size(ar.center(), vec2(arrow_w, 30.0));
                 let resp = ui.interact(btn, Id::new(("toolbar_arrow", left)), if can { Sense::click() } else { Sense::hover() });
+                let tip = if left { "Earlier tools" } else { "More tools" };
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, can, tip));
                 let fill = if can && resp.hovered() { BTN_HOVER } else { BTN };
                 let ink = if can { TEXT } else { TEXT_DIM.gamma_multiply(0.5) };
                 let p = ui.painter();
@@ -224,6 +239,22 @@ impl App {
             }
         } else {
             self.toolbar_target = 0.0;
+        }
+
+        // The name takes the room right of the tools, no more than it needs; if that is too little
+        // for all of it, it runs past slowly, over and over.
+        let slot_left = if overflow { view.right() + NAME_GAP } else { inner.left() + self.toolbar_w + NAME_GAP };
+        let slot = Rect::from_min_max(pos2(slot_left.max(inner.right() - name_w), inner.top()), inner.max);
+        let y = rect.center().y - galley.size().y / 2.0;
+        let p = ui.painter().with_clip_rect(ui.clip_rect().intersect(slot.expand2(vec2(0.0, 6.0))));
+        if name_w <= slot.width() + 0.5 {
+            p.galley(pos2(inner.right() - name_w, y), galley, TEXT_DIM);
+        } else {
+            let lap = name_w + NAME_GAP * 2.0;
+            let x = slot.left() - (ui.input(|i| i.time) as f32 * NAME_SPEED) % lap;
+            p.galley(pos2(x, y), galley.clone(), TEXT_DIM);
+            p.galley(pos2(x + lap, y), galley, TEXT_DIM);
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
         }
 
         // Ease towards the target offset.
@@ -249,28 +280,6 @@ impl App {
                 used = ui.min_rect().width();
             },
         );
-        // The document name sits at the right end, but only in room the tools leave over, so it can
-        // never be the reason for the arrows (it is shortened, and hidden if there is hardly any room).
-        if !overflow {
-            let spare = inner.right() - (view.left() + self.toolbar_w) - 24.0;
-            if spare > 70.0 {
-                let name = self
-                    .path
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned());
-                let mut job = egui::text::LayoutJob::simple_singleline(name, FontId::proportional(13.0), TEXT_DIM);
-                job.wrap.max_width = spare;
-                job.wrap.max_rows = 1;
-                job.wrap.break_anywhere = true;
-                job.wrap.overflow_character = Some('\u{2026}');
-                job.halign = egui::Align::RIGHT;
-                let galley = ui.painter().layout_job(job);
-                let at = pos2(inner.right(), rect.center().y - galley.size().y / 2.0);
-                ui.painter().galley(at, galley, TEXT_DIM);
-            }
-        }
-
         // Measured this frame, used the next; a changed width asks for one more frame.
         if (used - self.toolbar_w).abs() > 0.5 {
             self.toolbar_w = used;

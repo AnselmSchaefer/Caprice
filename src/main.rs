@@ -258,10 +258,15 @@ impl App {
         app
     }
 
+    /// The file's name, or "Untitled".
+    pub fn doc_name(&self) -> String {
+        self.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned())
+    }
+
     /// The document name goes in the window title; messages ("saved", errors) show briefly above the page bar.
     fn update_title_and_toast(&mut self, ui: &egui::Ui, area: Rect) {
         let ctx = ui.ctx();
-        let name = self.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned());
+        let name = self.doc_name();
         let title = format!("{name} \u{2014} Caprice");
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -588,6 +593,8 @@ mod tests {
         access: Option<egui::accesskit::TreeUpdate>,
         /// What the last frame painted.
         painted: Vec<egui::epaint::ClippedShape>,
+        /// The window's width.
+        width: f32,
     }
 
     impl Harness {
@@ -595,16 +602,17 @@ mod tests {
             let ctx = egui::Context::default();
             apply_theme(&ctx);
             let app = App::new(&ctx);
-            Self { ctx, app, time: 0.0, mods: Modifiers::NONE, access: None, painted: Vec::new() }
+            Self { ctx, app, time: 0.0, mods: Modifiers::NONE, access: None, painted: Vec::new(), width: 1200.0 }
         }
 
         fn frames(&mut self, n: usize, events: Vec<egui::Event>, modifiers: Modifiers) {
             for k in 0..n {
                 self.time += 1.0 / 60.0;
-                // Wide enough for the whole toolbar, so its menus are there to click without sliding it.
+                // Wide enough for the whole toolbar unless a test says otherwise, so its menus are there to
+                // click without sliding it.
                 let mut input = egui::RawInput {
                     time: Some(self.time),
-                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0))),
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(self.width, 900.0))),
                     ..Default::default()
                 };
                 if modifiers != self.mods {
@@ -1177,6 +1185,60 @@ mod tests {
         h.click_widget("Close (Esc)");
         assert!(!h.app.search.open);
         assert!(h.widget_rect("Find in document").is_none());
+    }
+
+    /// Where the document's name was last painted (each copy of it), and the room it was clipped to.
+    fn painted_name(h: &Harness) -> (Vec<egui::Rect>, egui::Rect) {
+        let name = h.app.doc_name();
+        let shown: Vec<_> = h.painted.iter().filter_map(|cs| {
+            let egui::Shape::Text(t) = &cs.shape else { return None };
+            (t.galley.job.text == name).then(|| (t.visual_bounding_rect(), cs.clip_rect))
+        }).collect();
+        assert!(!shown.is_empty(), "the name {name:?} is shown");
+        (shown.iter().map(|s| s.0).collect(), shown[0].1)
+    }
+
+    #[test]
+    fn the_file_name_is_always_in_the_toolbar_and_runs_past_when_there_is_little_room() {
+        let mut h = Harness::new();
+        h.app.path = Some(std::path::PathBuf::from("/tmp/Hatch.caprice"));
+        h.width = 1400.0;
+        h.frames(3, vec![], Modifiers::NONE);
+        let file = h.widget_rect("File").unwrap();
+        let (at, room) = painted_name(&h);
+        assert_eq!(at.len(), 1, "with room, the whole name, still");
+        assert!(room.contains_rect(at[0]) && at[0].left() > file.right(), "{at:?} in {room:?}");
+        assert!(h.widget_rect("More tools").is_none(), "no arrows when everything fits");
+
+        // In a narrow window the tools slide, with both arrows at the left, and the name keeps a few letters' room.
+        h.width = 700.0;
+        h.app.path = Some(std::path::PathBuf::from("/tmp/The Lion Boy and the Hatch, second draft.caprice"));
+        h.frames(3, vec![], Modifiers::NONE);
+        let earlier = h.widget_rect("Earlier tools").expect("arrows");
+        let more = h.widget_rect("More tools").expect("arrows");
+        let file = h.widget_rect("File").unwrap();
+        assert!(earlier.right() < more.left() && more.right() < file.left(), "{earlier:?} {more:?} {file:?}");
+        let (at, room) = painted_name(&h);
+        assert!(room.width() > 20.0 && room.width() < 60.0, "about four letters: {room:?}");
+        assert!(room.left() > file.right() && at[0].width() > room.width());
+
+        // It moves along, and comes round again without a gap in which nothing shows.
+        let mut lefts = Vec::new();
+        for _ in 0..30 {
+            h.time += 1.0; // a second later
+            h.frames(1, vec![], Modifiers::NONE);
+            let (at, now) = painted_name(&h);
+            assert_eq!(now, room, "the room stays put");
+            assert!(at.iter().any(|r| r.intersects(room)), "some of the name shows: {at:?}");
+            lefts.push(at[0].left());
+        }
+        assert!(lefts.windows(2).any(|w| w[1] < w[0]) && lefts.windows(2).any(|w| w[1] > w[0]), "moves, and starts over: {lefts:?}");
+
+        // Sliding the tools leaves the name where it is.
+        h.click_widget("More tools");
+        h.frames(30, vec![], Modifiers::NONE);
+        assert!(h.widget_rect("File").is_none_or(|f| f.left() < file.left()), "the tools slid");
+        assert_eq!(painted_name(&h).1, room);
     }
 
     #[test]

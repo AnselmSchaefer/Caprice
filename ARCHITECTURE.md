@@ -426,9 +426,14 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   the field at `f32::INFINITY`); `with_layout` alone takes all the height left and centres the row
   in it. (Found in the Cast window, guarded by `someone_can_keep_several_looks_and_scenes_get_the_one_in_use`.)
 - The toolbar is full: about 1050 points of tools since italic and colour, so in a window
-  narrower than about 1100 it slides sideways (arrows), and its last menus (Claude, Scene) are
-  out of view until slid to. A new toggle goes in the page bar (like Fit and Scratchpad) or into
-  a menu. The test window (`Harness`) is 1200 wide so that the tests reach every menu.
+  narrower than about 1150 it slides sideways (both arrows at its left end), and its last menus
+  (Claude, Scene) are out of view until slid to. A new toggle goes in the page bar (like Fit and
+  Scratchpad) or into a menu. The test window (`Harness`) is 1200 wide so that the tests reach
+  every menu; `Harness::width` narrows it.
+- **The document's name is always at the toolbar's right end.** The tools get the room first, but
+  the name keeps about four of its characters' width; when it has less than it needs it runs past
+  in a loop (`NAME_SPEED`), which repaints about 30 times a second while it does. Guarded by
+  `the_file_name_is_always_in_the_toolbar_and_runs_past_when_there_is_little_room`.
 - **A popup that needs more input (a colour picker) holds it in itself**, never in a popup of its
   own: a click in a popup opened from a popup counts as outside the first, which closes both (the
   "Other colour" picker did nothing). Guarded by
