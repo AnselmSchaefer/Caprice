@@ -258,15 +258,15 @@ impl App {
         app
     }
 
-    /// The file's name, or "Untitled".
+    /// The file's name without its ending, or "Untitled".
     pub fn doc_name(&self) -> String {
-        self.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned())
+        self.path.as_ref().and_then(|p| p.file_stem()).map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned())
     }
 
     /// The document name goes in the window title; messages ("saved", errors) show briefly above the page bar.
     fn update_title_and_toast(&mut self, ui: &egui::Ui, area: Rect) {
         let ctx = ui.ctx();
-        let name = self.doc_name();
+        let name = self.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned());
         let title = format!("{name} \u{2014} Caprice");
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -1205,6 +1205,7 @@ mod tests {
         h.width = 1400.0;
         h.frames(3, vec![], Modifiers::NONE);
         let file = h.widget_rect("File").unwrap();
+        assert_eq!(h.app.doc_name(), "Hatch", "without the file's ending");
         let (at, room) = painted_name(&h);
         assert_eq!(at.len(), 1, "with room, the whole name, still");
         assert!(room.contains_rect(at[0]) && at[0].left() > file.right(), "{at:?} in {room:?}");

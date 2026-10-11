@@ -250,7 +250,8 @@ impl App {
         if name_w <= slot.width() + 0.5 {
             p.galley(pos2(inner.right() - name_w, y), galley, TEXT_DIM);
         } else {
-            let lap = name_w + NAME_GAP * 2.0;
+            // The gap between one pass and the next is narrower than the room, so the room is never empty.
+            let lap = name_w + (NAME_GAP * 2.0).min(slot.width() * 0.6);
             let x = slot.left() - (ui.input(|i| i.time) as f32 * NAME_SPEED) % lap;
             p.galley(pos2(x, y), galley.clone(), TEXT_DIM);
             p.galley(pos2(x + lap, y), galley, TEXT_DIM);
