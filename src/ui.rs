@@ -29,6 +29,8 @@ const MORE_LINE: f32 = 40.0;
 const NAME_GAP: f32 = 16.0;
 /// How fast a name too long for its room runs past, in points a second.
 const NAME_SPEED: f32 = 18.0;
+/// How long a name too long for its room stands still between passes, in seconds.
+const NAME_PAUSE: f32 = 3.0;
 /// A paragraph-format change picked in the toolbar.
 #[derive(Clone, Copy)]
 enum ParaChange {
@@ -336,10 +338,13 @@ impl App {
         } else {
             // The gap between one pass and the next is narrower than the room, so the room is never empty.
             let lap = name_w + (NAME_GAP * 2.0).min(slot.width() * 0.6);
-            let x = slot.left() - (ui.input(|i| i.time) as f32 * NAME_SPEED) % lap;
+            // Each pass begins with the start of the name standing still for a while.
+            let t = ui.input(|i| i.time) as f32 % (NAME_PAUSE + lap / NAME_SPEED);
+            let x = slot.left() - (t - NAME_PAUSE).max(0.0) * NAME_SPEED;
             p.galley(pos2(x, y), galley.clone(), TEXT_DIM);
             p.galley(pos2(x + lap, y), galley, TEXT_DIM);
-            ctx.request_repaint_after(std::time::Duration::from_millis(33));
+            let wait = if t < NAME_PAUSE { NAME_PAUSE - t } else { 0.033 };
+            ctx.request_repaint_after(std::time::Duration::from_secs_f32(wait));
         }
     }
 

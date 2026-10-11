@@ -1233,6 +1233,8 @@ mod tests {
             lefts.push(at[0].left());
         }
         assert!(lefts.windows(2).any(|w| w[1] < w[0]) && lefts.windows(2).any(|w| w[1] > w[0]), "moves, and starts over: {lefts:?}");
+        let rests = |w: &[f32]| w[0] == w[1] && (w[0] - room.left()).abs() < 1.0;
+        assert!(lefts.windows(2).any(rests), "between passes it rests, its start showing: {lefts:?}");
 
         // Opening the second row leaves the name where it is.
         h.click_widget("More tools");

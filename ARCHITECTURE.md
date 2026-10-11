@@ -442,7 +442,8 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   toggle goes in the page bar (like Fit and Scratchpad) or into a menu.
 - **The document's name is always at the toolbar's right end.** The tools get the room first, but
   the name keeps about four of its characters' width; when it has less than it needs it runs past
-  in a loop (`NAME_SPEED`), which repaints about 30 times a second while it does. Guarded by
+  in a loop (`NAME_SPEED`), resting with its start showing between passes (`NAME_PAUSE`); it
+  repaints about 30 times a second while it moves. Guarded by
   `the_file_name_is_always_in_the_toolbar_and_runs_past_when_there_is_little_room`.
 - **A popup that needs more input (a colour picker) holds it in itself**, never in a popup of its
   own: a click in a popup opened from a popup counts as outside the first, which closes both (the
