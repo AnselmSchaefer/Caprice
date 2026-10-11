@@ -262,6 +262,7 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
 | `TextEdit` caret height from its own font | Pass the post-it font | `notes.rs` |
 | No bending of text | Tessellate galleys, move vertices | `render.rs`, `book.rs`, `notes.rs` |
 | Modifiers unreliable on Hyprland | Track Ctrl from key events | `view.rs` |
+| The UI font has no symbols like ✕ (drawn as an empty box) | Draw icons with lines, labelled for tests | `ui.rs::paint_icon`, `search.rs::bar_button` |
 
 Re-check every one after upgrading egui.
 

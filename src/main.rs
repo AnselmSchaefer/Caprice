@@ -1156,6 +1156,30 @@ mod tests {
     }
 
     #[test]
+    fn the_search_field_is_as_tall_as_its_buttons_which_stay_put_and_close_it() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("a needle in a haystack");
+        h.app.open_search();
+        h.frames(3, vec![], Modifiers::NONE);
+        let field = h.widget_rect("Find in document").expect("the field shows");
+        let close = h.widget_rect("Close (Esc)").expect("a close button");
+        let next = h.widget_rect("Next (Enter)").expect("a next button");
+        assert_eq!(field.height(), close.height(), "field {field:?}, button {close:?}");
+        assert!((field.center().y - close.center().y).abs() < 0.5, "on one line: {field:?} {close:?}");
+        assert!(field.right() < next.left() - 40.0, "room for the count between them: {field:?} {next:?}");
+
+        h.type_text("needle");
+        assert_eq!(h.app.search.matches.len(), 1);
+        assert_eq!(h.widget_rect("Close (Esc)"), Some(close), "the count does not push the buttons");
+        assert_eq!(h.widget_rect("Find in document"), Some(field));
+
+        h.click_widget("Close (Esc)");
+        assert!(!h.app.search.open);
+        assert!(h.widget_rect("Find in document").is_none());
+    }
+
+    #[test]
     fn a_note_on_a_line_stays_put_while_typing_next_to_it() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);

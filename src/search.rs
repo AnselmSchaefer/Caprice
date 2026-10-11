@@ -1,11 +1,48 @@
 //! Find: highlights every match, and the page flips to the current one.
 
-use eframe::egui::{self, Color32, Id, Key, Modifiers, Rect, Stroke, TextEdit, UiBuilder, pos2, vec2};
+use eframe::egui::{self, Color32, Id, Key, Modifiers, Rect, Sense, Stroke, TextEdit, UiBuilder, pos2, vec2};
 
 use crate::App;
 use crate::notes::SEARCH_FIELD;
-use crate::theme::{DOCK, DOCK_EDGE, TEXT_DIM};
+use crate::theme::{BTN, BTN_HOVER, DOCK, DOCK_EDGE, TEXT, TEXT_DIM};
 use crate::ui::{DOCK_GAP, DOCK_H};
+
+/// The side of the bar's square buttons, and the field's height.
+const BAR_BTN: f32 = 30.0;
+/// Room for "No results" or "12 / 340".
+const COUNT_W: f32 = 64.0;
+
+#[derive(Clone, Copy)]
+enum Glyph {
+    Previous,
+    Next,
+    Close,
+}
+
+/// A square button with a drawn glyph: the font has no ✕, and its ‹ › are too small to hit.
+fn bar_button(ui: &mut egui::Ui, glyph: Glyph, tip: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(BAR_BTN, BAR_BTN), Sense::click());
+    let enabled = ui.is_enabled();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tip));
+    let p = ui.painter();
+    p.rect_filled(rect, 8.0, if resp.hovered() && enabled { BTN_HOVER } else { BTN });
+    let ink = if !enabled { TEXT_DIM.gamma_multiply(0.6) } else if resp.hovered() { Color32::WHITE } else { TEXT };
+    let s = Stroke::new(1.6, ink);
+    let c = rect.center();
+    match glyph {
+        Glyph::Previous | Glyph::Next => {
+            let dx = if matches!(glyph, Glyph::Next) { 1.0 } else { -1.0 };
+            p.line_segment([pos2(c.x - 2.5 * dx, c.y - 5.0), pos2(c.x + 2.5 * dx, c.y)], s);
+            p.line_segment([pos2(c.x + 2.5 * dx, c.y), pos2(c.x - 2.5 * dx, c.y + 5.0)], s);
+        }
+        Glyph::Close => {
+            let d = 4.5;
+            p.line_segment([c - vec2(d, d), c + vec2(d, d)], s);
+            p.line_segment([c + vec2(-d, d), c + vec2(d, -d)], s);
+        }
+    }
+    resp.on_hover_text(tip)
+}
 
 #[derive(Default)]
 pub struct Search {
@@ -116,12 +153,15 @@ impl App {
         ui.scope_builder(
             UiBuilder::new().max_rect(rect.shrink2(vec2(10.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.spacing_mut().item_spacing.x = 6.0;
+                // The field takes what the count and the three buttons leave, and is as tall as they are.
+                let field_w = ui.available_width() - COUNT_W - 3.0 * BAR_BTN - 4.0 * 6.0;
                 let field = TextEdit::singleline(&mut self.search.query)
                     .id(Id::new(SEARCH_FIELD))
                     .hint_text("Find in document")
-                    .desired_width(width - 190.0);
-                let resp = ui.add(field);
+                    .vertical_align(egui::Align::Center)
+                    .desired_width(f32::INFINITY);
+                let resp = ui.add_sized(vec2(field_w, BAR_BTN), field);
                 if std::mem::take(&mut self.search.want_focus) {
                     resp.request_focus();
                 }
@@ -145,12 +185,16 @@ impl App {
                     (false, 0) => "No results".to_owned(),
                     (false, _) => format!("{} / {}", self.search.current + 1, n),
                 };
-                ui.label(egui::RichText::new(label).size(12.5).color(TEXT_DIM));
-                ui.add_enabled_ui(n > 0, |ui| {
-                    backward |= ui.button("‹").on_hover_text("Previous (Shift+Enter)").clicked();
-                    forward |= ui.button("›").on_hover_text("Next (Enter)").clicked();
+                // A slot of its own, so the buttons stay put whatever it says.
+                ui.allocate_ui_with_layout(vec2(COUNT_W, BAR_BTN), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.set_min_size(vec2(COUNT_W, BAR_BTN));
+                    ui.label(egui::RichText::new(label).size(12.5).color(TEXT_DIM));
                 });
-                close |= ui.button("✕").on_hover_text("Close (Esc)").clicked();
+                ui.add_enabled_ui(n > 0, |ui| {
+                    backward |= bar_button(ui, Glyph::Previous, "Previous (Shift+Enter)").clicked();
+                    forward |= bar_button(ui, Glyph::Next, "Next (Enter)").clicked();
+                });
+                close |= bar_button(ui, Glyph::Close, "Close (Esc)").clicked();
             },
         );
         self.refresh_matches();
