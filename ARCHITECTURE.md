@@ -447,12 +447,13 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   `the_file_name_is_always_in_the_toolbar_and_runs_past_when_there_is_little_room`.
 - **Nothing in a dock is drawn over anything else or past the dock's edge, at any window width.**
   The page bar lays out from the right (Scratchpad, Fit, the zoom, New page) and, as it gets
-  shorter, drops the track, shrinks New page to "+", drops the page count, then the zoom; the
-  sums in `scrollbar` must match the widths drawn. The window cannot get narrower than
-  `ui::MIN_WINDOW`, where the toolbar still holds File and "⋯" and the page bar its buttons and
-  the zoom. Something new in either dock needs room in these sums or a place in the order it
-  goes. (Buttons used to slide out past the bar's left end.) Guarded by
-  `in_a_narrow_window_the_docks_hold_their_buttons_without_overlap`.
+  shorter, drops the track, shrinks New page to "+", drops the page count, the zoom, Scratchpad,
+  "+" and Fit; the sums in `scrollbar` must match the widths drawn. The toolbar drops "⋯" too when
+  there is no room for it. `ui::MIN_WINDOW` keeps a floating window wide enough for the usual
+  buttons, but a tiling window manager ignores it, so the docks must give way at any width. Something
+  new in either dock needs room in these sums and a place in the order things go. (Buttons used to
+  slide out past the bar's left end, and Scratchpad stayed in a window narrower than the bar.)
+  Guarded by `in_a_narrow_window_the_docks_hold_their_buttons_without_overlap`.
 - **A popup that needs more input (a colour picker) holds it in itself**, never in a popup of its
   own: a click in a popup opened from a popup counts as outside the first, which closes both (the
   "Other colour" picker did nothing). Guarded by

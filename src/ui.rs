@@ -219,12 +219,16 @@ fn more_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
 
 impl App {
     pub fn dock_rect(area: Rect, top: bool) -> Rect {
-        let width = (area.width() - 48.0).min(DOCK_MAX_W);
+        let width = (area.width() - 48.0).clamp(0.0, DOCK_MAX_W);
         let y = if top { area.top() + DOCK_GAP + DOCK_H / 2.0 } else { area.bottom() - DOCK_GAP - DOCK_H / 2.0 };
         Rect::from_center_size(pos2(area.center().x, y), vec2(width, DOCK_H))
     }
 
     fn paint_dock(ui: &egui::Ui, rect: Rect) {
+        // Too narrow to hold anything, it would be only a blob.
+        if rect.width() < 40.0 {
+            return;
+        }
         let p = ui.painter();
         for k in 1..=5 {
             let g = rect.expand(k as f32 * 2.0).translate(vec2(0.0, 4.0));
@@ -257,7 +261,9 @@ impl App {
             let mut used = MORE_W;
             w.iter().take_while(|&&g| { used += g + TOOL_GAP; used <= room + 0.5 }).count()
         };
-        if shown == GROUPS {
+        // With no room even for "⋯", the tools are put away until the window is wider.
+        let more_fits = shown == GROUPS || MORE_W <= room + 0.5;
+        if shown == GROUPS || !more_fits {
             self.more_tools = false;
         }
 
@@ -271,7 +277,7 @@ impl App {
                 for g in 0..shown {
                     self.tool_group(ui, g, g == 0, &mut tools);
                 }
-                if shown < GROUPS {
+                if shown < GROUPS && more_fits {
                     more = Some(more_button(ui, self.more_tools));
                 }
                 end = ui.min_rect().right();
@@ -336,7 +342,9 @@ impl App {
         let slot = Rect::from_min_max(pos2(slot_left.max(inner.right() - name_w), inner.top()), inner.max);
         let y = rect.center().y - galley.size().y / 2.0;
         let p = ui.painter().with_clip_rect(ui.clip_rect().intersect(slot.expand2(vec2(0.0, 6.0))));
-        if name_w <= slot.width() + 0.5 {
+        if slot.width() <= 0.0 {
+            // No room for any of it.
+        } else if name_w <= slot.width() + 0.5 {
             p.galley(pos2(inner.right() - name_w, y), galley, TEXT_DIM);
         } else {
             // The gap between one pass and the next is narrower than the room, so the room is never empty.
@@ -653,13 +661,17 @@ impl App {
 
         // From the right: Scratchpad, Fit, the zoom, New page; the page count at the left, the track
         // between. When the bar is short, the track goes first, then New page shrinks to "+", then
-        // the page count goes, then the zoom, so nothing is drawn over anything or past the bar.
+        // the page count goes, then the zoom, Scratchpad, "+" and Fit, so nothing is drawn over
+        // anything or past the bar however narrow the window is.
         let label_w = 92.0;
         let zoom_w = 68.0;
         let tools_w = |new_w: f32, zoom: bool| 100.0 + 8.0 + 48.0 + if zoom { zoom_w } else { 8.0 } + new_w;
         let new_w = if r.width() >= label_w + 20.0 + tools_w(104.0, true) { 104.0 } else { 30.0 };
         let show_label = r.width() >= label_w + 20.0 + tools_w(new_w, true);
         let show_zoom = r.width() >= tools_w(new_w, true);
+        let show_scratch = r.width() >= tools_w(30.0, false);
+        let show_new = r.width() >= 48.0 + 8.0 + 30.0;
+        let show_fit = r.width() >= 48.0;
         if show_label {
             ui.painter().text(
                 pos2(r.left(), cy),
@@ -669,12 +681,13 @@ impl App {
                 TEXT_DIM,
             );
         }
-        let scratch_btn = Rect::from_center_size(pos2(r.right() - 50.0, cy), vec2(100.0, 30.0));
-        let fit_btn = Rect::from_center_size(pos2(scratch_btn.left() - 8.0 - 24.0, cy), vec2(48.0, 30.0));
+        let scratch_btn = Rect::from_min_max(pos2(r.right() - 100.0, cy - 15.0), pos2(r.right(), cy + 15.0));
+        let fit_right = if show_scratch { scratch_btn.left() - 8.0 } else { r.right() };
+        let fit_btn = Rect::from_min_max(pos2(fit_right - 48.0, cy - 15.0), pos2(fit_right, cy + 15.0));
         let new_right = fit_btn.left() - if show_zoom { zoom_w } else { 8.0 };
         let btn = Rect::from_min_max(pos2(new_right - new_w, cy - 15.0), pos2(new_right, cy + 15.0));
         let new_page = if new_w > 30.0 { egui::Button::new("+ New page") } else { egui::Button::new("+") };
-        if ui.put(btn, new_page).on_hover_text("New page").clicked() {
+        if show_new && ui.put(btn, new_page).on_hover_text("New page").clicked() {
             let cur = self.target;
             let ctx = ui.ctx().clone();
             self.insert_page_after(&ctx, cur);
@@ -682,12 +695,12 @@ impl App {
         // With the view's other controls: it is beside the pages, not on them.
         let scratch_tip = "Plain notes on the right, beside the pages, saved with the document";
         let scratch = egui::Button::new("Scratchpad").selected(self.scratchpad_open);
-        if ui.put(scratch_btn, scratch).on_hover_text(scratch_tip).clicked() {
+        if show_scratch && ui.put(scratch_btn, scratch).on_hover_text(scratch_tip).clicked() {
             self.toggle_scratchpad();
         }
 
         let fit_tip = "Show the full page (Ctrl+0). Ctrl+drag moves the page.";
-        if ui.put(fit_btn, egui::Button::new("Fit").selected(self.fit)).on_hover_text(fit_tip).clicked() {
+        if show_fit && ui.put(fit_btn, egui::Button::new("Fit").selected(self.fit)).on_hover_text(fit_tip).clicked() {
             self.fit = true;
             self.fit_settling = true;
         }

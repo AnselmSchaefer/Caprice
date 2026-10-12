@@ -1311,24 +1311,23 @@ mod tests {
     #[test]
     fn in_a_narrow_window_the_docks_hold_their_buttons_without_overlap() {
         let mut h = Harness::new();
-        for width in [1200.0, 560.0, 450.0, 390.0, 360.0, ui::MIN_WINDOW[0]] {
+        // A tiling window manager makes the window as narrow as it likes, whatever its smallest size.
+        for width in [1200.0, 560.0, 450.0, 390.0, 360.0, ui::MIN_WINDOW[0], 300.0, 250.0, 200.0, 150.0, 100.0, 40.0] {
             h.width = width;
             h.frames(3, vec![], Modifiers::NONE);
             let window = Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 900.0));
             let (top, bottom) = (App::dock_rect(window, true), App::dock_rect(window, false));
 
             // Each button and each word in a dock is inside it, clear of the others.
-            let new_page = h.widget_rect("+ New page").or_else(|| h.widget_rect("+")).expect("New page, maybe as \"+\"");
-            let mut parts = vec![new_page, h.widget_rect("Fit").unwrap(), h.widget_rect("Scratchpad").unwrap()];
+            let new_page = h.widget_rect("+ New page").or_else(|| h.widget_rect("+"));
+            let mut parts: Vec<_> = [new_page, h.widget_rect("Fit"), h.widget_rect("Scratchpad")].into_iter().flatten().collect();
             let words: Vec<_> = h.painted.iter().filter_map(|cs| {
                 let egui::Shape::Text(t) = &cs.shape else { return None };
                 let at = t.visual_bounding_rect();
-                (bottom.contains(at.center()) && !parts.iter().any(|b| b.contains(at.center()))).then_some(at)
+                (at.center().y > bottom.top() - 20.0 && !parts.iter().any(|b| b.contains(at.center()))).then_some(at)
             }).collect();
             parts.extend(words);
-            assert!(parts.len() >= 4, "at {width}: the zoom at least, beside the buttons");
-            let mut top_parts = vec![h.widget_rect("File").expect("File stays")];
-            top_parts.extend(h.widget_rect("More tools"));
+            let top_parts: Vec<_> = [h.widget_rect("File"), h.widget_rect("More tools")].into_iter().flatten().collect();
             for (dock, parts) in [(bottom, &parts), (top, &top_parts)] {
                 for (i, a) in parts.iter().enumerate() {
                     assert!(dock.contains_rect(*a), "at {width}: {a:?} is outside its dock {dock:?}");
@@ -1337,8 +1336,18 @@ mod tests {
                     }
                 }
             }
+            if width >= ui::MIN_WINDOW[0] {
+                assert!(h.widget_rect("Scratchpad").is_some() && h.widget_rect("File").is_some(), "at {width}");
+                assert!(parts.len() >= 4, "at {width}: the zoom at least, beside the buttons");
+            }
+            if width == 340.0 {
+                assert!(h.widget_rect("+ New page").is_none() && h.widget_rect("+").is_some(), "short for its name");
+            }
         }
-        assert!(h.widget_rect("+ New page").is_none() && h.widget_rect("+").is_some(), "short for its name");
+        // Too narrow, the Scratchpad goes before New page and Fit.
+        h.width = 200.0;
+        h.frames(3, vec![], Modifiers::NONE);
+        assert!(h.widget_rect("Scratchpad").is_none() && h.widget_rect("Fit").is_some() && h.widget_rect("+").is_some());
     }
 
     #[test]
