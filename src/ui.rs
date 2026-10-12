@@ -12,6 +12,9 @@ pub const DOCK_H: f32 = 48.0;
 pub const DOCK_GAP: f32 = 14.0;
 /// Space at the top/bottom of the window taken by the two docks.
 pub const RESERVED: f32 = DOCK_GAP + DOCK_H + 10.0;
+/// The smallest the window gets: the docks then still hold File, "⋯" and a little of the name on
+/// top, and Scratchpad, Fit, the zoom and "+" below.
+pub const MIN_WINDOW: [f32; 2] = [340.0, 400.0];
 /// Widest the docks get.
 pub const DOCK_MAX_W: f32 = 1180.0;
 /// The toolbar's groups of tools, in the order they show; the last ones go into "⋯" first.
@@ -648,18 +651,30 @@ impl App {
         let n = self.doc.pages();
         let cy = r.center().y;
 
+        // From the right: Scratchpad, Fit, the zoom, New page; the page count at the left, the track
+        // between. When the bar is short, the track goes first, then New page shrinks to "+", then
+        // the page count goes, then the zoom, so nothing is drawn over anything or past the bar.
         let label_w = 92.0;
-        ui.painter().text(
-            pos2(r.left(), cy),
-            egui::Align2::LEFT_CENTER,
-            format!("Page {} of {}", self.scrub_page().filter(|_| self.appearance == Appearance::Paperstack).unwrap_or(self.pos.round() as usize) + 1, n),
-            FontId::proportional(13.0),
-            TEXT_DIM,
-        );
+        let zoom_w = 68.0;
+        let tools_w = |new_w: f32, zoom: bool| 100.0 + 8.0 + 48.0 + if zoom { zoom_w } else { 8.0 } + new_w;
+        let new_w = if r.width() >= label_w + 20.0 + tools_w(104.0, true) { 104.0 } else { 30.0 };
+        let show_label = r.width() >= label_w + 20.0 + tools_w(new_w, true);
+        let show_zoom = r.width() >= tools_w(new_w, true);
+        if show_label {
+            ui.painter().text(
+                pos2(r.left(), cy),
+                egui::Align2::LEFT_CENTER,
+                format!("Page {} of {}", self.scrub_page().filter(|_| self.appearance == Appearance::Paperstack).unwrap_or(self.pos.round() as usize) + 1, n),
+                FontId::proportional(13.0),
+                TEXT_DIM,
+            );
+        }
         let scratch_btn = Rect::from_center_size(pos2(r.right() - 50.0, cy), vec2(100.0, 30.0));
         let fit_btn = Rect::from_center_size(pos2(scratch_btn.left() - 8.0 - 24.0, cy), vec2(48.0, 30.0));
-        let btn = Rect::from_center_size(pos2(fit_btn.left() - 56.0 - 12.0 - 52.0, cy), vec2(104.0, 30.0));
-        if ui.put(btn, egui::Button::new("+ New page")).clicked() {
+        let new_right = fit_btn.left() - if show_zoom { zoom_w } else { 8.0 };
+        let btn = Rect::from_min_max(pos2(new_right - new_w, cy - 15.0), pos2(new_right, cy + 15.0));
+        let new_page = if new_w > 30.0 { egui::Button::new("+ New page") } else { egui::Button::new("+") };
+        if ui.put(btn, new_page).on_hover_text("New page").clicked() {
             let cur = self.target;
             let ctx = ui.ctx().clone();
             self.insert_page_after(&ctx, cur);
@@ -676,13 +691,15 @@ impl App {
             self.fit = true;
             self.fit_settling = true;
         }
-        ui.painter().text(
-            pos2(fit_btn.left() - 8.0, cy),
-            egui::Align2::RIGHT_CENTER,
-            format!("{:.0}%", self.zoom * 100.0),
-            FontId::proportional(13.0),
-            TEXT_DIM,
-        );
+        if show_zoom {
+            ui.painter().text(
+                pos2(fit_btn.left() - 8.0, cy),
+                egui::Align2::RIGHT_CENTER,
+                format!("{:.0}%", self.zoom * 100.0),
+                FontId::proportional(13.0),
+                TEXT_DIM,
+            );
+        }
 
         let track = Rect::from_min_max(pos2(r.left() + label_w + 8.0, cy - 4.0), pos2(btn.left() - 20.0, cy + 4.0));
         if track.width() < 60.0 {

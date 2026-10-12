@@ -47,6 +47,8 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 900.0])
+            // Narrower, the docks have no room for their first tools (`ui::MIN_WINDOW`).
+            .with_min_inner_size(ui::MIN_WINDOW)
             .with_title("Caprice")
             .with_app_id("Caprice")
             .with_icon(window_icon()),
@@ -1304,6 +1306,39 @@ mod tests {
         h.frames(2, vec![], Modifiers::NONE);
         let field = h.widget_rect("Find in document").expect("the search bar");
         assert!(field.top() > scene.bottom(), "{field:?} under {scene:?}");
+    }
+
+    #[test]
+    fn in_a_narrow_window_the_docks_hold_their_buttons_without_overlap() {
+        let mut h = Harness::new();
+        for width in [1200.0, 560.0, 450.0, 390.0, 360.0, ui::MIN_WINDOW[0]] {
+            h.width = width;
+            h.frames(3, vec![], Modifiers::NONE);
+            let window = Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 900.0));
+            let (top, bottom) = (App::dock_rect(window, true), App::dock_rect(window, false));
+
+            // Each button and each word in a dock is inside it, clear of the others.
+            let new_page = h.widget_rect("+ New page").or_else(|| h.widget_rect("+")).expect("New page, maybe as \"+\"");
+            let mut parts = vec![new_page, h.widget_rect("Fit").unwrap(), h.widget_rect("Scratchpad").unwrap()];
+            let words: Vec<_> = h.painted.iter().filter_map(|cs| {
+                let egui::Shape::Text(t) = &cs.shape else { return None };
+                let at = t.visual_bounding_rect();
+                (bottom.contains(at.center()) && !parts.iter().any(|b| b.contains(at.center()))).then_some(at)
+            }).collect();
+            parts.extend(words);
+            assert!(parts.len() >= 4, "at {width}: the zoom at least, beside the buttons");
+            let mut top_parts = vec![h.widget_rect("File").expect("File stays")];
+            top_parts.extend(h.widget_rect("More tools"));
+            for (dock, parts) in [(bottom, &parts), (top, &top_parts)] {
+                for (i, a) in parts.iter().enumerate() {
+                    assert!(dock.contains_rect(*a), "at {width}: {a:?} is outside its dock {dock:?}");
+                    for b in &parts[i + 1..] {
+                        assert!(!a.intersects(*b), "at {width}: {a:?} over {b:?}");
+                    }
+                }
+            }
+        }
+        assert!(h.widget_rect("+ New page").is_none() && h.widget_rect("+").is_some(), "short for its name");
     }
 
     #[test]
