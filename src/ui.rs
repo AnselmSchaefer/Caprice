@@ -24,6 +24,8 @@ pub const GROUPS: usize = 7;
 const TOOL_GAP: f32 = 8.0;
 /// The width of the font list.
 const FONT_W: f32 = 128.0;
+/// The width of the line before the paragraph and page groups.
+const LINE_W: f32 = 5.0;
 /// The "⋯" button's width.
 const MORE_W: f32 = 30.0;
 /// The height of a row in the second dock.
@@ -204,6 +206,11 @@ struct Tools {
     find: bool,
 }
 
+/// Whether group `g` has a line before it (see `tool_group`).
+fn has_line(g: usize) -> bool {
+    g == 3 || g == 4
+}
+
 /// The "⋯" button that opens the second row of tools.
 fn more_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(MORE_W, 30.0), Sense::click());
@@ -253,13 +260,15 @@ impl App {
 
         // Which groups fit, by their widths as last drawn.
         let w = self.tool_w;
+        // A group's width with the room before it, which holds a line unless the group starts a row.
+        let cost = |g: usize, first: bool| w[g] + if first { 0.0 } else { TOOL_GAP + if has_line(g) { LINE_W + TOOL_GAP } else { 0.0 } };
         let room = inner.width() - NAME_GAP - four;
-        let all = w.iter().sum::<f32>() + TOOL_GAP * (GROUPS - 1) as f32;
+        let all = (0..GROUPS).map(|g| cost(g, g == 0)).sum::<f32>();
         let shown = if all <= room + 0.5 {
             GROUPS
         } else {
             let mut used = MORE_W;
-            w.iter().take_while(|&&g| { used += g + TOOL_GAP; used <= room + 0.5 }).count()
+            (0..GROUPS).take_while(|&g| { used += cost(g, false); used <= room + 0.5 }).count()
         };
         // With no room even for "⋯", the tools are put away until the window is wider.
         let more_fits = shown == GROUPS || MORE_W <= room + 0.5;
@@ -294,15 +303,15 @@ impl App {
             let width = rect.width() - 28.0;
             let mut lines: Vec<Vec<usize>> = vec![vec![]];
             let mut x = 0.0;
-            for (g, &gw) in w.iter().enumerate().skip(shown) {
-                if x > 0.0 && x + TOOL_GAP + gw > width {
+            for g in shown..GROUPS {
+                if x > 0.0 && x + cost(g, false) > width {
                     lines.push(vec![]);
                     x = 0.0;
                 }
-                x += if x > 0.0 { TOOL_GAP } else { 0.0 } + gw;
+                x += cost(g, x == 0.0);
                 lines.last_mut().unwrap().push(g);
             }
-            let line_w = |l: &Vec<usize>| l.iter().map(|&g| w[g]).sum::<f32>() + TOOL_GAP * (l.len().max(1) - 1) as f32;
+            let line_w = |l: &Vec<usize>| l.iter().enumerate().map(|(j, &g)| cost(g, j == 0)).sum::<f32>();
             let widest = lines.iter().map(line_w).fold(0.0, f32::max);
             let panel = Rect::from_min_size(
                 // Under "⋯", as far as the toolbar reaches.
@@ -367,13 +376,14 @@ impl App {
 
     /// Draw tool group `g` (see `GROUPS`), noting what was clicked in `out`, and measure it.
     fn tool_group(&mut self, ui: &mut egui::Ui, g: usize, first: bool, out: &mut Tools) {
+        // The paragraph and page groups are set apart by a line, unless they start a row. It is not
+        // measured with the group, so a group is as wide wherever it is; one whose width changed
+        // with its place moved back and forth between two rows, every frame.
+        if !first && has_line(g) {
+            let (rect, _) = ui.allocate_exact_size(vec2(LINE_W, 30.0), Sense::hover());
+            ui.painter().vline(rect.center().x, rect.y_range(), ui.visuals().widgets.noninteractive.bg_stroke);
+        }
         let r = ui.scope(|ui| {
-            // The paragraph and page groups are set apart by a line, unless they start a row.
-            if !first && (g == 3 || g == 4) {
-                ui.add_space(2.0);
-                ui.separator();
-                ui.add_space(2.0);
-            }
             match g {
                 0 => self.file_tools(ui, out),
                 1 => self.font_tools(ui, out),
@@ -660,14 +670,17 @@ impl App {
         let cy = r.center().y;
 
         // From the right: Scratchpad, Fit, the zoom, New page; the page count at the left, the track
-        // between. When the bar is short, the track goes first, then New page shrinks to "+", then
-        // the page count goes, then the zoom, Scratchpad, "+" and Fit, so nothing is drawn over
-        // anything or past the bar however narrow the window is.
+        // between. When the bar is short, the page count goes first, then New page shrinks to "+",
+        // then the track goes, then the zoom, Scratchpad, "+" and Fit, so nothing is drawn over
+        // anything or past the bar however narrow the window is, and the track takes the room
+        // left over rather than leaving it empty.
         let label_w = 92.0;
         let zoom_w = 68.0;
+        let track_min = 60.0 + 20.0;
         let tools_w = |new_w: f32, zoom: bool| 100.0 + 8.0 + 48.0 + if zoom { zoom_w } else { 8.0 } + new_w;
-        let new_w = if r.width() >= label_w + 20.0 + tools_w(104.0, true) { 104.0 } else { 30.0 };
-        let show_label = r.width() >= label_w + 20.0 + tools_w(new_w, true);
+        let show_label = r.width() >= label_w + 8.0 + track_min + tools_w(104.0, true);
+        let new_w = if r.width() >= track_min + tools_w(104.0, true) { 104.0 } else { 30.0 };
+        let show_track = r.width() >= track_min + tools_w(new_w, true);
         let show_zoom = r.width() >= tools_w(new_w, true);
         let show_scratch = r.width() >= tools_w(30.0, false);
         let show_new = r.width() >= 48.0 + 8.0 + 30.0;
@@ -714,8 +727,9 @@ impl App {
             );
         }
 
-        let track = Rect::from_min_max(pos2(r.left() + label_w + 8.0, cy - 4.0), pos2(btn.left() - 20.0, cy + 4.0));
-        if track.width() < 60.0 {
+        let track_left = if show_label { r.left() + label_w + 8.0 } else { r.left() };
+        let track = Rect::from_min_max(pos2(track_left, cy - 4.0), pos2(btn.left() - 20.0, cy + 4.0));
+        if !show_track {
             return;
         }
         ui.painter().rect_filled(track, 4.0, Color32::from_rgb(30, 32, 38));

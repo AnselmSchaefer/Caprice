@@ -1351,6 +1351,51 @@ mod tests {
     }
 
     #[test]
+    fn the_toolbar_settles_at_every_width_and_its_second_row_holds_its_tools() {
+        let labels = ["File", "Chapter", "Page", "Image", "Note", "Find", "Claude", "Scene", "Text colour", "More tools"];
+        let tools = |h: &mut Harness| -> Vec<Option<egui::Rect>> {
+            h.ctx.enable_accesskit();
+            h.frames(1, vec![], Modifiers::NONE);
+            let nodes = h.access.as_ref().map_or(&[][..], |t| &t.nodes[..]);
+            labels.iter().map(|l| find_widget(nodes, l).map(|r| {
+                egui::Rect::from_min_max(egui::pos2(r.x0 as f32, r.y0 as f32), egui::pos2(r.x1 as f32, r.y1 as f32))
+            })).collect()
+        };
+        let mut h = Harness::new();
+        for width in (300..=1200).step_by(3).map(|w| w as f32) {
+            h.width = width;
+            h.app.more_tools = true;
+            h.frames(4, vec![], Modifiers::NONE);
+            let (before, after) = (tools(&mut h), tools(&mut h));
+            assert_eq!(before, after, "at {width} the tools stay put");
+            let top = App::dock_rect(Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 900.0)), true);
+            for (label, at) in labels.iter().zip(&after) {
+                assert!(at.is_none_or(|r| r.right() <= top.right() - 13.5), "at {width}, {label} {at:?} sticks out of {top:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_page_bar_leaves_no_empty_room_left_of_its_buttons() {
+        let mut h = Harness::new();
+        for width in (340..=1200).step_by(10).map(|w| w as f32) {
+            h.width = width;
+            h.frames(3, vec![], Modifiers::NONE);
+            let bottom = App::dock_rect(Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 900.0)), false);
+            // The page count, the track or a button: whatever is leftmost in the bar.
+            let left = h.painted.iter().filter_map(|cs| {
+                let at = match &cs.shape {
+                    egui::Shape::Text(t) => t.visual_bounding_rect(),
+                    egui::Shape::Rect(r) => r.rect,
+                    _ => return None,
+                };
+                (bottom.contains(at.center()) && at.width() < bottom.width() - 20.0).then_some(at.left())
+            }).fold(f32::INFINITY, f32::min);
+            assert!(left - bottom.left() < 18.0 + 80.0, "at {width} the bar starts at {left}, its dock at {}", bottom.left());
+        }
+    }
+
+    #[test]
     fn a_note_on_a_line_stays_put_while_typing_next_to_it() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);

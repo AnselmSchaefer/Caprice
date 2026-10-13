@@ -434,12 +434,18 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   the margin is very small.
 - **The toolbar is in groups (`ui::GROUPS`), and those that do not fit go into "⋯"**, the last
   first, which opens them in a second dock under the toolbar (rows as needed). Each group is
-  measured as drawn (`tool_w`) and the fit is worked out from last frame's widths, so a group
-  only ever put away is measured when the second row is open. The second row closes on a click on
-  the pages, but not on one in a menu opened from it (a popup is on a higher layer); the search bar
-  goes under it (`tools_bottom`). All the tools take about 1000 points, so they fit in the test
-  window (`Harness`, 1200 wide) and the tests reach every menu; `Harness::width` narrows it. A new
-  toggle goes in the page bar (like Fit and Scratchpad) or into a menu.
+  measured as drawn (`tool_w`) and the fit is worked out from last frame's widths, so a group only
+  ever put away is measured when the second row is open. **A group's measured width must not
+  depend on where it is drawn**: the line before the paragraph and page groups (`has_line`,
+  `LINE_W`) is drawn outside the measured scope and added in the sums (`cost`). When the line was
+  measured with its group, a group starting a row was narrower than the same group inside one: it
+  ran past the second row's edge, and at some widths it moved back and forth between two rows
+  every frame. Guarded by `the_toolbar_settles_at_every_width_and_its_second_row_holds_its_tools`.
+  The second row closes on a click on the pages, but not on one in a menu opened from it (a popup
+  is on a higher layer); the search bar goes under it (`tools_bottom`). All the tools take about
+  1000 points, so they fit in the test window (`Harness`, 1200 wide) and the tests reach every
+  menu; `Harness::width` narrows it. A new toggle goes in the page bar (like Fit and Scratchpad)
+  or into a menu.
 - **The document's name is always at the toolbar's right end.** The tools get the room first, but
   the name keeps about four of its characters' width; when it has less than it needs it runs past
   in a loop (`NAME_SPEED`), resting with its start showing between passes (`NAME_PAUSE`); it
@@ -447,13 +453,15 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   `the_file_name_is_always_in_the_toolbar_and_runs_past_when_there_is_little_room`.
 - **Nothing in a dock is drawn over anything else or past the dock's edge, at any window width.**
   The page bar lays out from the right (Scratchpad, Fit, the zoom, New page) and, as it gets
-  shorter, drops the track, shrinks New page to "+", drops the page count, the zoom, Scratchpad,
-  "+" and Fit; the sums in `scrollbar` must match the widths drawn. The toolbar drops "⋯" too when
-  there is no room for it. `ui::MIN_WINDOW` keeps a floating window wide enough for the usual
-  buttons, but a tiling window manager ignores it, so the docks must give way at any width. Something
-  new in either dock needs room in these sums and a place in the order things go. (Buttons used to
-  slide out past the bar's left end, and Scratchpad stayed in a window narrower than the bar.)
-  Guarded by `in_a_narrow_window_the_docks_hold_their_buttons_without_overlap`.
+  shorter, drops the page count, shrinks New page to "+", drops the track, the zoom, Scratchpad,
+  "+" and Fit, the track taking whatever room is left (guarded too by
+  `the_page_bar_leaves_no_empty_room_left_of_its_buttons`); the sums in `scrollbar` must match the
+  widths drawn. The toolbar drops "⋯" too when there is no room for it. `ui::MIN_WINDOW` keeps a
+  floating window wide enough for the usual buttons, but a tiling window manager ignores it, so
+  the docks must give way at any width. Something new in either dock needs room in these sums and
+  a place in the order things go. (Buttons used to slide out past the bar's left end, and
+  Scratchpad stayed in a window narrower than the bar.) Guarded by
+  `in_a_narrow_window_the_docks_hold_their_buttons_without_overlap`.
 - **A popup that needs more input (a colour picker) holds it in itself**, never in a popup of its
   own: a click in a popup opened from a popup counts as outside the first, which closes both (the
   "Other colour" picker did nothing). Guarded by
