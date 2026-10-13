@@ -300,10 +300,13 @@ impl App {
         // The rest, in a second dock under the first, in as many rows as they need.
         let mut bottom = rect.bottom();
         if self.more_tools {
+            // Rows as wide as the toolbar, but a group wider than that has a row of its own reaching
+            // nearly across the window; one wider still is left out until the window is wider.
             let width = rect.width() - 28.0;
+            let (outer_l, outer_r) = (area.left() + 8.0, area.right() - 8.0);
             let mut lines: Vec<Vec<usize>> = vec![vec![]];
             let mut x = 0.0;
-            for g in shown..GROUPS {
+            for g in (shown..GROUPS).filter(|&g| w[g] <= outer_r - outer_l - 28.0) {
                 if x > 0.0 && x + cost(g, false) > width {
                     lines.push(vec![]);
                     x = 0.0;
@@ -313,11 +316,10 @@ impl App {
             }
             let line_w = |l: &Vec<usize>| l.iter().enumerate().map(|(j, &g)| cost(g, j == 0)).sum::<f32>();
             let widest = lines.iter().map(line_w).fold(0.0, f32::max);
-            let panel = Rect::from_min_size(
-                // Under "⋯", as far as the toolbar reaches.
-                pos2((more_rect.map_or(rect.left(), |r| r.left() - 14.0)).min(rect.right() - widest - 28.0).max(rect.left()), rect.bottom() + 8.0),
-                vec2(widest + 28.0, lines.len() as f32 * MORE_LINE + 8.0),
-            );
+            // Under "⋯", as far as the toolbar reaches, or the window if it must.
+            let left = more_rect.map_or(rect.left(), |r| r.left() - 14.0).min(rect.right() - widest - 28.0).max(rect.left());
+            let left = left.min(outer_r - widest - 28.0).max(outer_l);
+            let panel = Rect::from_min_size(pos2(left, rect.bottom() + 8.0), vec2(widest + 28.0, lines.len() as f32 * MORE_LINE + 8.0));
             // On a layer of its own, like the windows, so the page under it takes no clicks (R16).
             egui::Area::new(Id::new("more_tools")).order(egui::Order::Middle).fixed_pos(panel.min).show(&ctx, |ui| {
                 Self::paint_dock(ui, panel);

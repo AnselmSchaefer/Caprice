@@ -460,8 +460,13 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   floating window wide enough for the usual buttons, but a tiling window manager ignores it, so
   the docks must give way at any width. Something new in either dock needs room in these sums and
   a place in the order things go. (Buttons used to slide out past the bar's left end, and
-  Scratchpad stayed in a window narrower than the bar.) Guarded by
-  `in_a_narrow_window_the_docks_hold_their_buttons_without_overlap`.
+  Scratchpad stayed in a window narrower than the bar.) The second row's rows are as wide as the
+  toolbar, but a group wider than that gets a row reaching nearly across the window, and one wider
+  still is left out. Guarded by `in_a_narrow_window_the_docks_hold_their_buttons_without_overlap`
+  and, for everything that takes clicks in both docks and the second row at every width from 40 to
+  1300 with a short and a long name, `at_any_width_the_docks_settle_and_hold_their_tools_apart`
+  (in place, inside its dock, clear of the others, the same from one frame to the next). A new
+  tool is covered by it without a change.
 - **A popup that needs more input (a colour picker) holds it in itself**, never in a popup of its
   own: a click in a popup opened from a popup counts as outside the first, which closes both (the
   "Other colour" picker did nothing). Guarded by
@@ -562,6 +567,11 @@ on the contents pages with `Harness::long_contents`.
 **A new tool in the toolbar:** into a group in `tool_group` (`ui.rs`), what it does recorded in
 `Tools` and done in `apply_tools` after all the tools are drawn, since a group can be drawn in
 either row. The order of `GROUPS` is the order they go into "⋯", the last first.
+
+**A new tool in a dock:** in the toolbar, inside a group in `tool_group`, nothing in it depending on
+where the group is (R: the toolbar's groups); in the page bar, room in the sums in `scrollbar` and a
+place in the order things go. `at_any_width_the_docks_settle_and_hold_their_tools_apart` then checks
+it at every width.
 
 **A new window over the pages:** a toggle in the page bar or a menu, not the toolbar (R16); its
 scrolling must not move the pages (R16); its stored text in `Doc` and `DocFile` (R9).

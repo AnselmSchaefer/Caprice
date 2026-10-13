@@ -1375,6 +1375,50 @@ mod tests {
         }
     }
 
+    /// Everything that takes clicks in the docks and the second row of tools, by name, as last drawn.
+    fn dock_widgets(h: &mut Harness) -> Vec<(String, egui::Rect)> {
+        use egui::accesskit::Role;
+        h.ctx.enable_accesskit();
+        h.frames(1, vec![], Modifiers::NONE);
+        let window = Rect::from_min_size(Pos2::ZERO, egui::vec2(h.width, 900.0));
+        let bottom = App::dock_rect(window, false);
+        let nodes = h.access.as_ref().map_or(&[][..], |t| &t.nodes[..]);
+        let all: Vec<_> = nodes.iter().filter(|(_, n)| !matches!(n.role(), Role::Label | Role::Window | Role::GenericContainer)).filter_map(|(_, n)| {
+            let b = n.bounds()?;
+            let r = egui::Rect::from_min_max(egui::pos2(b.x0 as f32, b.y0 as f32), egui::pos2(b.x1 as f32, b.y1 as f32));
+            let in_docks = r.center().y < h.app.tools_bottom || r.center().y > bottom.top();
+            in_docks.then(|| (n.label().unwrap_or_default().to_string(), r))
+        }).collect();
+        // Not the second row's own ground, which takes clicks only so the page under it does not.
+        all.iter().filter(|(_, r)| !all.iter().any(|(_, o)| o != r && r.contains_rect(*o))).cloned().collect()
+    }
+
+    #[test]
+    fn at_any_width_the_docks_settle_and_hold_their_tools_apart() {
+        let mut h = Harness::new();
+        for name in ["/tmp/Hatch.caprice", "/tmp/The Lion Boy and the Hatch, second draft, with all the notes.caprice"] {
+            h.app.path = Some(std::path::PathBuf::from(name));
+            for width in (40..=1300).step_by(3).map(|w| w as f32) {
+                h.width = width;
+                h.app.more_tools = true;
+                h.frames(4, vec![], Modifiers::NONE);
+                let (before, after) = (dock_widgets(&mut h), dock_widgets(&mut h));
+                assert_eq!(before, after, "at {width} the docks settle, nothing moves from frame to frame");
+                let window = Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 900.0));
+                let (top, bottom) = (App::dock_rect(window, true), App::dock_rect(window, false));
+                // The second row of tools reaches down to `tools_bottom`, and across the window at most.
+                let second = Rect::from_min_max(egui::pos2(8.0, top.bottom()), egui::pos2(width - 8.0, h.app.tools_bottom));
+                for (i, (label, at)) in after.iter().enumerate() {
+                    let dock = if at.center().y > bottom.top() { bottom } else if at.center().y < top.bottom() { top } else { second };
+                    assert!(dock.shrink(4.0).contains_rect(*at), "at {width}, {label:?} {at:?} sticks out of {dock:?}");
+                    for (other, b) in &after[i + 1..] {
+                        assert!(!at.intersects(*b), "at {width}, {label:?} {at:?} is over {other:?} {b:?}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_page_bar_leaves_no_empty_room_left_of_its_buttons() {
         let mut h = Harness::new();
