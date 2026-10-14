@@ -15,7 +15,9 @@ the pages before and after it as piles, and turns pages with an animation ("Book
 book; "Paperstack": sliding into the pile). Post-its stick out of the page's edge. Chapters get
 titles, drop caps and contents pages. It saves `.caprice` (JSON) and exports `.docx`. Claude Code
 (the CLI) can review a passage drawn around with the pen or selected with the cursor, and paint scenes that show faintly behind the pages, each
-for its part of the story, drawing the people of the story's cast the same in every scene.
+for its part of the story, drawing the people of the story's cast the same in every scene. On the
+left, Claude can review a chapter (mistakes, style, too thin, too wordy) and propose what could
+happen next.
 
 ---
 
@@ -72,6 +74,8 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `backdrop.rs` | Scenes Claude paints (SVG), pinned to the story, faintly behind the pages; the Scene menu and list |
 | `cast.rs` | The cast: people found by name in what is painted, their looks and model sheets in the scene's prompt; the Cast window and its example |
 | `scratchpad.rs` | The scratchpad: plain text saved with the document, in a window on the right |
+| `review.rs` | The Review window (upper left): a chapter or the selection read for mistakes, style, detail, wordiness; findings found again by their quote |
+| `ideas.rs` | The What next window (lower left): ways the story could go on from the caret, kept in the scratchpad |
 | `fonts.rs`, `theme.rs` | Installed fonts loaded on demand; colours and egui visuals |
 
 ---
@@ -289,7 +293,8 @@ Claude menu:
   another step (Connect the scenes → `bridging`) must stop drawing the menu that frame (`return`),
   or a field further down takes the focus and is gone the next frame.
 - **Claude is sent only the marked passage**, never other text of the document: the writer
-  decides what Claude sees by what they circle or select. Added to it are only what the writer
+  decides what Claude sees by what they circle or select. The Review and What next windows (R19)
+  are the one exception, and keep its point: their button names what it sends before it is sent. Added to it are only what the writer
   wrote for Claude: the note typed for Connect the scenes, and the story notes (`Doc::story_notes`)
   with every command about the story (`knows_story`), not with corrections (Fix, Grammar). It is
   built in one place, `App::prompt`, and kept in `Answer::first`. Connecting the scenes
@@ -411,7 +416,7 @@ many as fit the text area above the counter), and two drawings must agree with i
 
 ### R16 — Windows float over the pages, and what happens over them is theirs
 
-The scratchpad, Claude's answer, the story notes, the scene panels and the cast are egui windows
+The scratchpad, the review, the ideas, Claude's answer, the story notes, the scene panels and the cast are egui windows
 over the pages. They belong to the window, not to a page, so turning pages leaves them as they are. The
 scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it shows is the app's.
 
@@ -544,6 +549,33 @@ this one.
 - Tests: `up_and_down_from_the_start_of_a_wrapped_line_move_one_line`,
   `arrow_keys_treat_a_drop_cap_and_the_line_beside_it_as_one_line`.
 
+### R19 — Review and What next: the button names what is read; findings are found again by their words
+
+Two windows on the left (`review::left_dock`: the review above, the ideas below), opened from the
+Claude menu, not saved as open, their results not saved either.
+
+- **What is sent is named on the button that sends it**, so the writer still decides what Claude
+  reads (R13). Review: the selection, else the caret's chapter (from its title to the next), else
+  the whole story, at most `review::MOST` chars (whole paragraphs around the caret beyond that), in
+  `review_stretch`, which both the label and `start_review` use. What next: the story before the
+  caret (`ideas_from`, at most `ideas::BACK`, from a paragraph's start; the tip says how many
+  words), the story notes, the writer's wish, and the scratchpad while "Use the scratchpad" is
+  ticked. Never text after the caret.
+- **A finding holds the words it is about, not a range.** The text is edited while the findings
+  show, so `find_quote` looks for the quote each frame, the place nearest where the stretch began
+  if it is there more than once; a finding whose words are gone cannot be shown or applied.
+  Applying goes through `replace_range` (R1: one undo step). The review asks for a quote short
+  enough to be found, and copied exactly.
+- **Both read Claude's whole reply as a JSON array** (`claude::json_list`, tolerant of words or a
+  code fence around it), through `claude::Pending`, a request on a thread that stops when dropped.
+  Unknown kinds and empty entries are left out (`parse`).
+- An idea is kept by adding it to the end of the scratchpad (saved, R9), not on a post-it: it is
+  about where the story goes, not about a passage.
+- Tests: `the_review_reads_the_carets_chapter_shows_what_it_found_and_applies_a_fix_in_one_undo_step`,
+  `what_next_reads_the_story_before_the_caret_and_keeps_an_idea_in_the_scratchpad`, and in
+  `review.rs` / `ideas.rs` the parsing (`findings_are_read_from_the_reply_whatever_is_around_it`,
+  `ideas_are_read_from_the_reply_whatever_is_around_it`).
+
 ---
 
 ## 5. Checklists for common changes
@@ -633,5 +665,10 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
   instead start at a paragraph, like a scene, so repainting chapter 1 later still finds the girl.
   Switching by hand came first as what the writer asked for, and is simpler; pinning a look to
   where it starts can come on top (a look pinned is in use from there on).
+- **2026-10-14 — Review and What next read more than a marked passage.** A writer asking for a
+  chapter's mistakes or for where the story could go next wants Claude to read the chapter, or the
+  story so far; making them select it first would be busywork. The writer still decides: the
+  button says what it sends (R13, R19). The scratchpad goes with the ideas only while ticked, as it
+  is notes to oneself.
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

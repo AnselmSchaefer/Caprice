@@ -269,6 +269,58 @@ fn ask(prompt: &str, tx: &Sender<Msg>, ctx: &egui::Context, cancel: &AtomicBool)
     Ok(())
 }
 
+/// A whole reply from Claude, asked for on a thread, for windows that read it once it is all there
+/// (the review, the ideas). Dropped, it stops the request.
+pub struct Pending {
+    rx: Receiver<Result<String, String>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Pending {
+    pub fn start(ctx: &egui::Context, system: &'static str, prompt: String, effort: &'static str) -> Self {
+        let (tx, rx) = channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (ctx, stop) = (ctx.clone(), cancel.clone());
+        std::thread::spawn(move || {
+            let mut reply = String::new();
+            let result = match run_claude(MODEL, system, &prompt, effort, &stop, &mut |t| reply.push_str(t)) {
+                Ok(Outcome::Finished) => Ok(reply),
+                Ok(Outcome::Refused) => Err("Claude declined to answer this request.".into()),
+                Ok(Outcome::Cancelled) => return,
+                Err(e) => Err(e),
+            };
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+        Pending { rx, cancel }
+    }
+
+    /// The reply, once it has come (or why there is none).
+    pub fn poll(&self) -> Option<Result<String, String>> {
+        self.rx.try_recv().ok()
+    }
+
+    /// A reply that has already come, as if from Claude.
+    #[cfg(test)]
+    pub fn answered(reply: &str) -> Self {
+        let (tx, rx) = channel();
+        tx.send(Ok(reply.to_owned())).unwrap();
+        Pending { rx, cancel: Arc::new(AtomicBool::new(false)) }
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The JSON array in Claude's reply, which may come with words or a code fence around it.
+pub fn json_list(reply: &str) -> Vec<Value> {
+    let (Some(a), Some(b)) = (reply.find('['), reply.rfind(']')) else { return Vec::new() };
+    serde_json::from_str::<Vec<Value>>(reply.get(a..=b).unwrap_or_default()).unwrap_or_default()
+}
+
 /// The Claude Code CLI: on the PATH, or where installers put it (the app launcher's PATH is often short).
 fn find_cli() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
@@ -421,7 +473,7 @@ fn diff_job(old: &str, new: &str, font: FontId, ink: Color32) -> Option<LayoutJo
 
 impl App {
     /// The text of the flow chars `a..b`, as sent to Claude: pictures left out, page breaks as line breaks.
-    fn passage(&self, a: usize, b: usize) -> String {
+    pub fn passage(&self, a: usize, b: usize) -> String {
         let (ba, bb) = (self.doc.char_to_byte(a), self.doc.char_to_byte(b));
         self.doc.flow.text[ba..bb].chars().filter(|&c| c != IMAGE_CHAR).map(|c| if c == PAGE_BREAK { '\n' } else { c }).collect()
     }
@@ -454,7 +506,7 @@ impl App {
 
     /// The toolbar's Claude menu: ask by circling passages with the pen, or by selecting them.
     pub fn claude_menu(&mut self, ui: &mut egui::Ui) {
-        let (mut chosen, mut notes) = (None, false);
+        let (mut chosen, mut notes, mut review, mut ideas) = (None, false, false, false);
         let tip = "Ask Claude about a passage: circle it, or select it with the cursor (Ctrl+Shift+P, Esc to stop)";
         egui::containers::menu::MenuButton::from_button(egui::Button::new("Claude").selected(self.pen)).ui(ui, |ui| {
             ui.set_min_width(230.0);
@@ -476,11 +528,24 @@ impl App {
                 notes = true;
                 ui.close();
             }
+            let tip = "A window on the left where Claude finds mistakes, clumsy wording, and places that want more \
+                detail or say too much";
+            if ui.selectable_label(self.review.open, "Review").on_hover_text(tip).clicked() {
+                review = true;
+                ui.close();
+            }
+            let tip = "A window on the left where Claude proposes ways the story could go on from the caret";
+            if ui.selectable_label(self.ideas.open, "What next").on_hover_text(tip).clicked() {
+                ideas = true;
+                ui.close();
+            }
         })
         .0
         .on_hover_text(tip);
         match chosen {
             _ if notes => self.story_notes_open = true,
+            _ if review => self.toggle_review(),
+            _ if ideas => self.toggle_ideas(),
             Some(Some(picking)) => self.pick_by(picking),
             Some(None) => (self.pen, self.lasso) = (false, None),
             None => {}

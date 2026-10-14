@@ -9,12 +9,14 @@ mod editor;
 mod export;
 mod fileio;
 mod fonts;
+mod ideas;
 mod images;
 mod layout;
 mod model;
 mod notes;
 mod paginate;
 mod render;
+mod review;
 mod scratchpad;
 mod search;
 mod theme;
@@ -170,6 +172,9 @@ pub struct App {
     pub story_notes_open: bool,
     /// The scratchpad shows, on the right.
     pub scratchpad_open: bool,
+    /// The review and the ideas for what comes next, on the left.
+    pub review: review::Review,
+    pub ideas: ideas::Ideas,
     /// The scene Claude paints behind the pages, and the panel to describe it.
     pub backdrop: backdrop::Backdrop,
     /// The cast window, and the model sheet being drawn.
@@ -250,6 +255,8 @@ impl App {
             answer: None,
             story_notes_open: false,
             scratchpad_open: false,
+            review: review::Review::default(),
+            ideas: ideas::Ideas::default(),
             backdrop: backdrop::Backdrop::default(),
             cast_panel: cast::CastPanel::default(),
             dialog: None,
@@ -577,6 +584,8 @@ impl App {
         self.answer_panel(&ctx);
         self.story_notes_window(&ctx);
         self.scratchpad(&ctx);
+        self.review_window(&ctx);
+        self.ideas_window(&ctx);
         self.scene_panel(&ctx);
         self.scene_list(&ctx);
         self.cast_window(&ctx);
@@ -2438,6 +2447,80 @@ mod tests {
         h.click_widget("Scratchpad");
         assert!(h.widget_rect(SCRATCHPAD_HINT).is_none());
         assert_eq!(h.app.doc.scratchpad, "Ask about the boy's name.\n- the hatch\n- the church");
+    }
+
+    #[test]
+    fn the_review_reads_the_carets_chapter_shows_what_it_found_and_applies_a_fix_in_one_undo_step() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("The zebra chapter\nNothing here.\nThe quokka chapter\nShe walked into teh room.");
+        let ctx = h.ctx.clone();
+        for title in [0, 32] {
+            h.app.set_caret(&ctx, title, false);
+            h.app.set_para(&ctx, |p| p.set_chapter_title(true));
+        }
+        h.app.set_caret(&ctx, 60, false);
+        h.click_widget("Claude");
+        h.click_widget("Review");
+        let at = h.widget_rect("Check this chapter").expect("the review shows");
+        assert!(at.left() < 1200.0 / 2.0 && at.top() < 900.0 / 2.0, "on the upper left: {at:?}");
+        h.click_widget("Check this chapter");
+        let asked = &h.app.review.asked;
+        assert!(asked.contains("The quokka chapter\nShe walked into teh room.") && !asked.contains("zebra"), "{asked}");
+
+        let reply = r#"[{"kind": "spelling", "quote": "teh", "fix": "the", "why": "A typo."},
+            {"kind": "detail", "quote": "She walked into", "fix": "", "why": "How does she walk in?"}]"#;
+        h.app.fake_review(reply);
+        h.frames(2, vec![], Modifiers::NONE);
+        h.click_widget("Apply");
+        assert_eq!(h.app.doc.visible_text(), "The zebra chapter\nNothing here.\nThe quokka chapter\nShe walked into the room.");
+        assert_eq!(h.app.review.issues.len(), 1, "the one applied is gone");
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert!(h.app.doc.visible_text().ends_with("into teh room."), "one undo takes it back");
+
+        // A finding without a correction shows its words in the text.
+        h.click_widget("“She walked into”");
+        assert_eq!(h.app.selection(), (51, 66));
+        assert_eq!(h.app.selected_text(), "She walked into");
+        // With a selection, the selection is what is read.
+        assert!(h.widget_rect("Check the selection").is_some());
+    }
+
+    #[test]
+    fn what_next_reads_the_story_before_the_caret_and_keeps_an_idea_in_the_scratchpad() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Mia found the hatch open. Edwin called up, but nobody answered.\nLater, at the church, the grandfather spoke.");
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, 63, false);
+        h.app.doc.story_notes = "Edwin and Mia hide a boy in the attic.".into();
+        h.app.doc.scratchpad = "- the hatch\n- the church".into();
+        let story = h.app.doc.visible_text().to_owned();
+        h.click_widget("Claude");
+        h.click_widget("What next");
+        let at = h.widget_rect("Ideas for what comes next").expect("the ideas show");
+        assert!(at.left() < 1200.0 / 2.0 && at.top() > 900.0 / 2.0 - 60.0, "on the lower left: {at:?}");
+        h.click_widget("Where should it go? (optional: darker, more about Mia, a twist…)");
+        h.type_text("darker");
+        assert_eq!(h.app.doc.visible_text(), story, "the wish is not typed into the story");
+        h.click_widget("Ideas for what comes next");
+        let asked = &h.app.ideas.asked;
+        assert!(asked.contains("Mia found the hatch open. Edwin called up, but nobody answered."), "{asked}");
+        assert!(asked.contains("hide a boy") && asked.contains("- the church") && asked.contains("darker"));
+        assert!(!asked.contains("grandfather"), "nothing after the caret");
+
+        let reply = r#"[{"title": "The empty attic", "what": "The boy is gone.", "hook": "Where to?"}]"#;
+        h.app.fake_ideas(reply);
+        h.frames(2, vec![], Modifiers::NONE);
+        h.click_widget("To scratchpad");
+        assert_eq!(h.app.doc.scratchpad, "- the hatch\n- the church\n\nIdea: The empty attic\nThe boy is gone.\n");
+        assert_eq!(h.app.doc.visible_text(), story);
+
+        // Asked again in an idea's direction, without the scratchpad once it is unticked.
+        h.click_widget("Use the scratchpad");
+        h.click_widget("More like this");
+        let asked = &h.app.ideas.asked;
+        assert!(asked.contains("More in this direction: The empty attic") && !asked.contains("- the church"), "{asked}");
     }
 
     #[test]
