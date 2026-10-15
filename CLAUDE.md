@@ -5,11 +5,12 @@ behaviour**: its rules (§4) say what depends on what, and which tests guard eac
 
 ## Commands
 
-- `cargo build`, `cargo test` (headless, about 6 s), `cargo clippy --all-targets`
+- `cargo build`, `cargo test` (headless, about 12 s), `cargo clippy --all-targets`
 - `./install.sh`: release build, installed to `~/.local/bin/caprice` with a launcher entry
 - `cargo mutants` for untested code. `/tmp` is a small tmpfs here: set `TMPDIR` to a dir on disk.
 - Word output check: `CAPRICE_SAMPLE_OUT=out.docx cargo test sample_docx`, then
   `soffice --headless --convert-to pdf out.docx`
+- Print output check: `CAPRICE_SAMPLE_PDF=out.pdf cargo test sample_pdf`, then `pdftoppm -png out.pdf page`
 
 ## Done means
 
@@ -67,6 +68,8 @@ Full list with reasons and tests in `ARCHITECTURE.md` §4.
    in `DocFile::into_doc`.
 9. **Every formatting feature needs a Word mapping** in `export.rs`, or a decision that it has none.
 10. **Tests never call Claude** unless marked `#[ignore]` and calling `claude::allow_live()`.
+11. **Print draws `PageLayout::ink`.** Anything new drawn on a page goes there, or it is not printed.
+    Tests never reach the system's printers: they set `App::print.spooler`.
 
 ## Files
 

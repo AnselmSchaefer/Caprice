@@ -7,7 +7,7 @@ use egui::output::IMEOutput;
 use crate::App;
 use crate::edit::{Edit, Piece};
 use crate::images::{Handle, PicDrag, ResizeDrag};
-use crate::layout::{PageLayout, RowRef};
+use crate::layout::{Ink, PageLayout, RowRef};
 use crate::model::{Align, CONTENTS_CHAR, IMAGE_CHAR, ImageData, ListKind, PAGE_BREAK, PageSetup, ParaAttrs, Style, is_terminator};
 use crate::theme::INK;
 
@@ -949,19 +949,14 @@ impl App {
     }
 
     pub fn paint_layout(&self, painter: &egui::Painter, layout: &PageLayout, origin: egui::Pos2) {
-        for p in &layout.paras {
-            if let (Some(img), Some(tex)) = (p.image, p.image.and_then(|i| self.textures.get(&i.id))) {
-                let rect = img.rect.translate(origin.to_vec2() + vec2(0.0, p.y));
-                painter.add(egui::Shape::mesh(crate::images::picture_mesh(tex.id(), rect, img.rotation, egui::Color32::WHITE)));
-            }
-            if let Some((g, at)) = &p.marker {
-                painter.galley(origin + vec2(at.x, p.y + at.y), g.clone(), INK);
-            }
-            if p.block().is_none() {
-                painter.galley(origin + vec2(p.x, p.y), p.galley.clone(), INK);
-            }
-            for (g, at) in p.contents.iter().flat_map(|c| &c.texts) {
-                painter.galley(origin + vec2(p.x + at.x, p.y + at.y), g.clone(), INK);
+        for ink in layout.ink(origin) {
+            match ink {
+                Ink::Picture(img) => {
+                    if let Some(tex) = self.textures.get(&img.id) {
+                        painter.add(egui::Shape::mesh(crate::images::picture_mesh(tex.id(), img.rect, img.rotation, egui::Color32::WHITE)));
+                    }
+                }
+                Ink::Text(g, at) => painter.galley(at, g, INK),
             }
         }
     }

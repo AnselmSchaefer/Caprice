@@ -115,6 +115,11 @@ impl FontBook {
         }
     }
 
+    /// The font files egui draws with, by face key, and each family's chain of faces to fall back on.
+    pub fn defs(&self) -> &egui::FontDefinitions {
+        &self.defs
+    }
+
     pub fn activate_pending(&mut self) {
         if !self.pending.is_empty() {
             LOADED.lock().unwrap().append(&mut self.pending);

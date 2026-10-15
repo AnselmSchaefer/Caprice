@@ -15,6 +15,7 @@ mod layout;
 mod model;
 mod notes;
 mod paginate;
+mod print;
 mod render;
 mod review;
 mod scratchpad;
@@ -181,6 +182,8 @@ pub struct App {
     pub cast_panel: cast::CastPanel,
     /// A file dialog waiting for the user to choose.
     pub dialog: Option<fileio::PendingDialog>,
+    /// The Print window and what it has chosen.
+    pub print: print::Print,
     /// What saving last wrote (or opening read), to notice unsaved changes.
     pub saved_hash: u64,
     /// Opening or closing that waits on the "Save changes?" question, and what to do once saved.
@@ -260,6 +263,7 @@ impl App {
             backdrop: backdrop::Backdrop::default(),
             cast_panel: cast::CastPanel::default(),
             dialog: None,
+            print: print::Print::new(),
             saved_hash: 0,
             leaving: None,
             after_save: None,
@@ -475,6 +479,10 @@ impl App {
             if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)) {
                 self.open(&ctx);
             }
+            // Not with Shift: Ctrl+Shift+P takes up the pen.
+            if ctx.input_mut(|i| !i.modifiers.shift && i.consume_key(Modifiers::COMMAND, Key::P)) {
+                self.open_print(&ctx);
+            }
         }
 
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
@@ -584,6 +592,7 @@ impl App {
         self.answer_panel(&ctx);
         self.story_notes_window(&ctx);
         self.scratchpad(&ctx);
+        self.print_window(&ctx);
         self.review_window(&ctx);
         self.ideas_window(&ctx);
         self.scene_panel(&ctx);
@@ -1896,7 +1905,9 @@ mod tests {
     /// is not it.
     fn find_widget(nodes: &[(egui::accesskit::NodeId, egui::accesskit::Node)], label: &str) -> Option<egui::accesskit::Rect> {
         use egui::accesskit::Role;
-        let named = |n: &egui::accesskit::Node| n.label() == Some(label) || n.placeholder() == Some(label);
+        let named = |n: &egui::accesskit::Node| {
+            n.label() == Some(label) || n.placeholder() == Some(label) || (n.role() == Role::ComboBox && n.value() == Some(label))
+        };
         let takes_input = |n: &egui::accesskit::Node| !matches!(n.role(), Role::Label | Role::Window | Role::GenericContainer);
         nodes.iter().find(|(_, n)| named(n) && takes_input(n)).and_then(|(_, n)| n.bounds())
     }
@@ -3837,5 +3848,179 @@ mod tests {
         h.click_in_page(pic.center().to_vec2());
         h.key(Key::Delete, Modifiers::NONE);
         assert_eq!(h.text(), "top text\nbottom text");
+    }
+
+    /// A printing system that keeps what it is sent.
+    struct Spool {
+        printers: print::Printers,
+        jobs: std::sync::Mutex<Vec<(print::Job, Vec<u8>)>>,
+    }
+
+    impl print::Spooler for Spool {
+        fn printers(&self) -> Result<print::Printers, String> {
+            Ok(self.printers.clone())
+        }
+
+        fn print(&self, job: &print::Job, file: &std::path::Path) -> Result<String, String> {
+            self.jobs.lock().unwrap().push((job.clone(), std::fs::read(file).map_err(|e| e.to_string())?));
+            Ok("request id is Home-1 (1 file(s))".into())
+        }
+    }
+
+    impl Harness {
+        /// Print through a spool with these printers rather than the system's.
+        fn spool(&mut self, names: &[&str], default: Option<&str>) -> std::sync::Arc<Spool> {
+            let printers = print::Printers { names: names.iter().map(|n| n.to_string()).collect(), default: default.map(Into::into) };
+            let spool = std::sync::Arc::new(Spool { printers, jobs: Default::default() });
+            self.app.print.spooler = spool.clone();
+            spool
+        }
+
+        /// Draw frames until `done`, as an answer from another thread comes.
+        fn frames_until(&mut self, what: &str, done: impl Fn(&App) -> bool) {
+            for _ in 0..400 {
+                if done(&self.app) {
+                    return;
+                }
+                self.frames(1, vec![], Modifiers::NONE);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            panic!("no {what} (status {:?}, print window {})", self.app.shown_status, self.app.print.open);
+        }
+    }
+
+    /// How many pages a PDF has, from its page tree.
+    fn pdf_pages(pdf: &[u8]) -> usize {
+        let text = String::from_utf8_lossy(pdf);
+        let at = text.find("/Count ").expect("a page tree");
+        text[at + 7..].chars().take_while(char::is_ascii_digit).collect::<String>().parse().unwrap()
+    }
+
+    #[test]
+    fn ctrl_p_prints_the_page_shown_on_the_default_printer() {
+        let mut h = Harness::new();
+        pages_of_text(&mut h);
+        let spool = h.spool(&["Office_Laser", "Home"], Some("Home"));
+        let ctx = h.ctx.clone();
+        h.app.go_to_page(&ctx, 2);
+        h.frames(120, vec![], Modifiers::NONE);
+        h.key(Key::P, Modifiers::COMMAND);
+        h.frames_until("printers", |app| app.print.to.is_some());
+        assert_eq!(h.app.print.to.as_deref(), Some("Home"), "the system's default printer");
+        let at = h.widget_rect("Print");
+        h.frames(30, vec![], Modifiers::NONE);
+        assert_eq!(h.widget_rect("Print"), at, "the window keeps its size");
+        h.click_widget("This page (3)");
+        h.click_widget("Print");
+        h.frames_until("answer from the printer", |app| app.shown_status.contains("sent"));
+        assert_eq!(h.app.shown_status, "- sent to Home");
+        assert!(!h.app.print.open, "the window closes");
+        let jobs = spool.jobs.lock().unwrap();
+        let (job, pdf) = &jobs[0];
+        assert_eq!((job.printer.as_str(), job.copies, job.two_sided, job.media), ("Home", 1, false, Some("A4")));
+        assert_eq!(pdf_pages(pdf), 1);
+    }
+
+    #[test]
+    fn print_sends_copies_of_some_pages_to_the_printer_chosen_from_the_menu() {
+        let mut h = Harness::new();
+        pages_of_text(&mut h);
+        let spool = h.spool(&["Office_Laser", "Home"], Some("Home"));
+        h.key(Key::P, Modifiers::COMMAND);
+        h.frames_until("printers", |app| app.print.to.is_some());
+        h.click_widget("Home");
+        h.click_widget("Office Laser");
+        assert_eq!(h.app.print.to.as_deref(), Some("Office_Laser"));
+        (h.app.print.from, h.app.print.upto, h.app.print.copies) = (2, 3, 2);
+        h.click_widget("From");
+        h.click_widget("Both sides of the paper");
+        h.click_widget("Print");
+        h.frames_until("answer from the printer", |app| app.shown_status.contains("sent"));
+        let jobs = spool.jobs.lock().unwrap();
+        let (job, pdf) = &jobs[0];
+        assert_eq!((job.printer.as_str(), job.copies, job.two_sided), ("Office_Laser", 2, true));
+        assert_eq!(pdf_pages(pdf), 2);
+        // Asked again when it opens next, the writer's choice stays.
+        drop(jobs);
+        h.key(Key::P, Modifiers::COMMAND);
+        h.frames_until("printers", |app| app.print.asking_done());
+        assert_eq!(h.app.print.to.as_deref(), Some("Office_Laser"));
+    }
+
+    #[test]
+    fn with_no_printer_set_up_print_says_so_and_saves_every_page_as_a_pdf() {
+        let mut h = Harness::new();
+        pages_of_text(&mut h);
+        h.spool(&[], None);
+        h.click_widget("File");
+        h.click_widget("Print… Ctrl+P");
+        h.frames_until("printers", |app| app.print.asking_done());
+        assert_eq!(h.app.print.to, None, "a PDF file");
+        assert!(h.widget_rect("Printer settings…").is_some(), "the way to add one");
+        assert!(h.widget_rect("Save PDF…").is_some());
+        let path = std::env::temp_dir().join(format!("caprice-print-test-{}.pdf", std::process::id()));
+        let ctx = h.ctx.clone();
+        h.app.print_pdf_to(&ctx, path.clone());
+        let pdf = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(pdf.starts_with(b"%PDF"));
+        assert_eq!(pdf_pages(&pdf), h.app.doc.pages());
+        assert_eq!(h.app.status, format!("- saved {}", path.file_name().unwrap().to_string_lossy()));
+    }
+
+    #[test]
+    fn each_printed_page_holds_the_text_of_that_page_and_its_number() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Plain words, ");
+        h.key(Key::B, Modifiers::COMMAND);
+        h.type_text("bold words");
+        h.key(Key::B, Modifiers::COMMAND);
+        h.type_text(&format!(" and more. {}", "It was nearly midnight and the Prime Minister sat alone. ".repeat(160)));
+        let ctx = h.ctx.clone();
+        let mut setup = h.app.doc.setup.clone();
+        setup.page_numbers = true;
+        h.app.set_setup(&ctx, setup);
+        assert!(h.app.doc.pages() >= 3);
+        let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        for i in 0..h.app.doc.pages() {
+            let span = h.app.doc.spans[i];
+            let page: String = h.app.doc.flow.text[span.bstart..span.bend].chars().filter(|c| !model::is_terminator(*c)).collect();
+            assert_eq!(squeeze(&h.app.printed_text(&ctx, i)), squeeze(&format!("{page}{}", i + 1)), "page {}", i + 1);
+        }
+    }
+
+    #[test]
+    fn a_picture_is_printed_with_its_page() {
+        let mut h = Harness::new();
+        h.with_picture_between_text();
+        let ctx = h.ctx.clone();
+        let pdf = h.app.pdf(&ctx, 0..=0).unwrap();
+        assert!(String::from_utf8_lossy(&pdf).contains("/Subtype/Image"));
+        assert_eq!(squeeze_ws(&h.app.printed_text(&ctx, 0)), "toptextbottomtext");
+    }
+
+    fn squeeze_ws(s: &str) -> String {
+        s.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    /// Writes a sample PDF for checking by eye:
+    /// `CAPRICE_SAMPLE_PDF=/some/file.pdf cargo test sample_pdf`, then `pdftoppm -png` it.
+    #[test]
+    fn sample_pdf() {
+        let Some(out) = std::env::var_os("CAPRICE_SAMPLE_PDF") else { return };
+        // Laid out first: the fonts an App loads are known to every egui context after it.
+        let doc = export::sample::sample_doc();
+        let mut h = Harness::new();
+        h.app.doc = doc;
+        let mut h = h.reopened("sample-pdf");
+        h.frames(3, vec![], Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, 0, false);
+        h.app.insert_image_bytes(&ctx, images::test_png(200, 100, [9, 99, 199])).unwrap();
+        let typing = h.app.typing.clone();
+        h.app.doc.full_paginate(&ctx, &typing);
+        let pdf = h.app.pdf(&ctx, 0..=h.app.last()).unwrap();
+        std::fs::write(out, pdf).unwrap();
     }
 }

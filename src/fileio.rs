@@ -285,6 +285,7 @@ pub enum DialogFor {
     Open,
     Save,
     ExportDocx,
+    PrintPdf,
     Picture,
     ScenePicture,
 }
@@ -425,6 +426,7 @@ impl App {
                 }
             }
             DialogFor::ExportDocx => self.export_docx_to(path),
+            DialogFor::PrintPdf => self.print_pdf_to(ctx, path),
             DialogFor::Picture => {
                 self.status = match self.insert_image(ctx, &path) {
                     Ok(()) => "- picture added".into(),

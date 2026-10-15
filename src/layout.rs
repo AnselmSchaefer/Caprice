@@ -150,6 +150,35 @@ pub struct PageLayout {
     pub scale: f32,
 }
 
+/// One thing drawn on a page: text with its top-left, or a picture in its box (on the page).
+pub enum Ink {
+    Text(Arc<egui::Galley>, egui::Pos2),
+    Picture(ImageBox),
+}
+
+impl PageLayout {
+    /// Everything drawn on the page, its writing area's top-left at `origin`, bottom first. The
+    /// screen (`paint_layout`) and print (`print.rs`) both draw from this, so they show the same.
+    pub fn ink(&self, origin: egui::Pos2) -> Vec<Ink> {
+        let mut ink = Vec::new();
+        for p in &self.paras {
+            if let Some(img) = p.image {
+                ink.push(Ink::Picture(ImageBox { rect: img.rect.translate(origin.to_vec2() + vec2(0.0, p.y)), ..img }));
+            }
+            if let Some((g, at)) = &p.marker {
+                ink.push(Ink::Text(g.clone(), origin + vec2(at.x, p.y + at.y)));
+            }
+            if p.block().is_none() {
+                ink.push(Ink::Text(p.galley.clone(), origin + vec2(p.x, p.y)));
+            }
+            for (g, at) in p.contents.iter().flat_map(|c| &c.texts) {
+                ink.push(Ink::Text(g.clone(), origin + vec2(p.x + at.x, p.y + at.y)));
+            }
+        }
+        ink
+    }
+}
+
 /// What the layout of a piece is built from.
 pub struct PieceSpec<'a> {
     pub text: &'a str,

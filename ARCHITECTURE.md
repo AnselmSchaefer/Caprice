@@ -4,7 +4,7 @@ How Caprice is put together, and the rules that hold it together. The rules (§4
 read before changing anything: each says what depends on what, what to check when touching it, and
 which tests guard it. Keep this file true: a change that alters a rule updates it in the same commit.
 
-*Last brought up to date: 2026-10-06 (commit `8604a5b`).*
+*Last brought up to date: 2026-10-15 (printing).*
 
 ---
 
@@ -13,7 +13,8 @@ which tests guard it. Keep this file true: a change that alters a rule updates i
 A desktop word processor in Rust on egui/eframe 0.36. It shows one page at a time on a desk, with
 the pages before and after it as piles, and turns pages with an animation ("Book": hinged like a
 book; "Paperstack": sliding into the pile). Post-its stick out of the page's edge. Chapters get
-titles, drop caps and contents pages. It saves `.caprice` (JSON) and exports `.docx`. Claude Code
+titles, drop caps and contents pages. It saves `.caprice` (JSON), exports `.docx`, and prints, to a
+printer or a PDF file, the pages as it shows them. Claude Code
 (the CLI) can review a passage drawn around with the pen or selected with the cursor, and paint scenes that show faintly behind the pages, each
 for its part of the story, drawing the people of the story's cast the same in every scene. On the
 left, Claude can review a chapter (mistakes, style, too thin, too wordy) and propose what could
@@ -37,6 +38,7 @@ notes (char ranges + text)                                   hit-testing, caret)
 scenes (a char + drawings)   ──scene_at(caret) / page_scene(i)──▶ the drawing behind a page
 cast (names, looks, sheets)  ──named_in(what is painted, or just before)──▶ the people sent with a scene
                              export::to_docx(&Doc) ─▶ .docx (Word lays it out again itself)
+                             layout_page(i, 1) ─▶ PageLayout::ink ─▶ PDF ─▶ a file, or lp (CUPS)
 ```
 
 - **`Flow`** (`model.rs`) is one `String` plus one `Style` per char (font, size, bold, italic,
@@ -70,6 +72,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `ui.rs` | Top toolbar (formatting, Page menu), bottom page bar and scrollbar |
 | `fileio.rs` | `.caprice` format (`DocFile`), open/save/export commands, unsaved-changes detection |
 | `export.rs` | Hand-written Office Open XML for `.docx` |
+| `print.rs` | The Print window; pages drawn into a PDF (krilla) from `PageLayout::ink`; printers and jobs through CUPS (`Spooler`) |
 | `claude.rs` | Pen loop or cursor selection → passage → `claude -p` → streamed answer panel, a conversation; story notes |
 | `backdrop.rs` | Scenes Claude paints (SVG), pinned to the story, faintly behind the pages; the Scene menu and list |
 | `cast.rs` | The cast: people found by name in what is painted, their looks and model sheets in the scene's prompt; the Cast window and its example |
@@ -416,7 +419,7 @@ many as fit the text area above the counter), and two drawings must agree with i
 
 ### R16 — Windows float over the pages, and what happens over them is theirs
 
-The scratchpad, the review, the ideas, Claude's answer, the story notes, the scene panels and the cast are egui windows
+The scratchpad, the review, the ideas, Claude's answer, the story notes, the scene panels, the cast and Print are egui windows
 over the pages. They belong to the window, not to a page, so turning pages leaves them as they are. The
 scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it shows is the app's.
 
@@ -576,6 +579,37 @@ Claude menu, not saved as open, their results not saved either.
   `review.rs` / `ideas.rs` the parsing (`findings_are_read_from_the_reply_whatever_is_around_it`,
   `ideas_are_read_from_the_reply_whatever_is_around_it`).
 
+### R20 — Print draws what the screen draws, from the same layout
+
+`App::pdf` lays every page out at page size (`layout_page(i, 1.0)`, no highlights) and draws
+`PageLayout::ink`, the list `paint_layout` draws on screen, plus the page number (`footer`). So a
+printed page breaks, wraps and justifies where the page shown does.
+
+- **Anything new drawn on a page goes into `PageLayout::ink`**, not straight onto the painter in
+  `paint_layout`, or it shows on screen and not on paper. A new kind of `Ink` needs drawing in both.
+  Text is printed from the galleys' own sections (font, colour, underline, slant), so new character
+  formatting done through `run_format` prints without more work; one drawn by other shapes does not.
+- **Fonts are embedded from `FontBook::defs`**, the same files egui draws with, each char in the
+  first face of its family's chain that has it, as egui picks. A font loaded some other way must
+  go into `defs` too.
+- **Letters follow their own widths** (`places`): at page size egui puts each glyph on a whole
+  point, which printed looked like "bul let". Lines keep egui's start and, justified, its end.
+  Chars egui shaped into one glyph (a ligature) are printed one by one, sharing its width.
+- Not printed (decided): the scene behind the page, post-its, search and note highlights, the
+  paper's colour. Pictures are printed turned, from `export_media`.
+- **Printers are CUPS's** (`lpstat`, `lp`, the same on macOS and Linux) behind the `Spooler` trait;
+  setting one up is the system's (the window opens its printer settings). Asked on a thread each
+  time the window opens; a job is written to a temporary PDF that `lp` reads before it answers.
+  **Tests never reach the system's printers**: they put a `Spool` in `App::print.spooler`.
+- Ctrl+P opens it, but not with Shift: Ctrl+Shift+P takes up the pen (guarded by
+  `a_loop_drawn_with_the_pen_selects_the_text_inside_it`).
+- Tests: `ctrl_p_prints_the_page_shown_on_the_default_printer`,
+  `print_sends_copies_of_some_pages_to_the_printer_chosen_from_the_menu`,
+  `with_no_printer_set_up_print_says_so_and_saves_every_page_as_a_pdf`,
+  `each_printed_page_holds_the_text_of_that_page_and_its_number`, `a_picture_is_printed_with_its_page`,
+  and in `print.rs` the reading of `lpstat` and `places`. Check the output by eye:
+  `CAPRICE_SAMPLE_PDF=out.pdf cargo test sample_pdf`, then `pdftoppm -png out.pdf page`.
+
 ---
 
 ## 5. Checklists for common changes
@@ -589,7 +623,7 @@ it changes drop caps (`has_drop_cap`) or the contents (`chapters`).
 
 **Something new drawn on a page:** size at page size (R4) → pagination (`next_span`) and layout
 (`layout_page`) agree → incremental equals full (R3) → both looks (`render.rs` and `book.rs`) →
-hit-testing and caret (`PageLayout`).
+hit-testing and caret (`PageLayout`) → into `PageLayout::ink`, so it prints (R20).
 
 **Page navigation or a new way to move between pages:** use `turn_to` / `go_to_page` (R5); test it
 on the contents pages with `Harness::long_contents`.
@@ -618,7 +652,7 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
 
 ## 6. Tests
 
-- `cargo test` runs everything headlessly (about 130 tests, ~6 s). They drive the real `App`
+- `cargo test` runs everything headlessly (about 200 tests, ~12 s). They drive the real `App`
   through an egui `Context`: `layout::with_ctx` for model/layout tests, `Harness` (in `main.rs`)
   for app-level ones (`frames`, `key`, `type_text`, `click_in_page`, `scrub_to`, `long_contents`,
   `shown`, and `click_widget`, which finds a button by its label or a field by its hint through
@@ -670,5 +704,11 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
   story so far; making them select it first would be busywork. The writer still decides: the
   button says what it sends (R13, R19). The scratchpad goes with the ideas only while ticked, as it
   is notes to oneself.
+- **2026-10-15 — Printing makes its own PDF and hands it to CUPS.** The system print dialogs
+  (GTK's, macOS's `NSPrintOperation`) would each need their own bindings and lay the pages out
+  again by their rules. Drawing the PDF from Caprice's own page layouts prints exactly the pages
+  shown, the same PDF serves "Save as PDF", and `lp` is there on both macOS and Linux. The cost: the
+  window offers only what Caprice asks for (printer, pages, copies, both sides), and adding a
+  printer is done in the system's settings (R20).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

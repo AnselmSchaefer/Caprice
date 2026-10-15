@@ -823,7 +823,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod sample {
+pub(crate) mod sample {
     use super::*;
     use crate::model::is_terminator;
 
@@ -832,6 +832,12 @@ mod sample {
     #[test]
     fn sample_docx() {
         let Some(out) = std::env::var_os("CAPRICE_SAMPLE_OUT") else { return };
+        let d = sample_doc();
+        std::fs::write(out, to_docx(&d).unwrap()).unwrap();
+    }
+
+    /// Something of every kind of formatting, over a few pages, laid out.
+    pub(crate) fn sample_doc() -> Doc {
         let plain = Style::new("Liberation Serif");
         let bold = Style { bold: true, size: 20.0, ..plain.clone() };
         let under = Style { underline: true, ..plain.clone() };
@@ -894,7 +900,7 @@ from the President of a far distant country.";
         d.setup.contents = true;
         d.notes.push(Note { id: 1, start: 26, end: 42, text: "Remember to rephrase this.".into(), color: 1 });
         crate::layout::with_ctx(|ctx| d.full_paginate(ctx, &plain));
-        std::fs::write(out, to_docx(&d).unwrap()).unwrap();
+        d
     }
 
 }

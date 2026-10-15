@@ -26,6 +26,7 @@ Caprice is a word processor for writing stories, not reports. It gives you real 
 - **Search** (Ctrl+F), **undo** and **zoom** (Ctrl + / − / 0).
 - **Your work is safe.** Caprice asks before closing or opening another file when you have unsaved changes.
 - **Export to Word** (.docx) when the story is ready to share.
+- **Print** (Ctrl+P) on any printer set up on your Mac or Linux machine, or save the pages as a PDF, looking just as they do on screen.
 
 ## Getting started
 
