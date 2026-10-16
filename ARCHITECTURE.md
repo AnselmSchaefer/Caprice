@@ -4,7 +4,7 @@ How Caprice is put together, and the rules that hold it together. The rules (§4
 read before changing anything: each says what depends on what, what to check when touching it, and
 which tests guard it. Keep this file true: a change that alters a rule updates it in the same commit.
 
-*Last brought up to date: 2026-10-15 (printing).*
+*Last brought up to date: 2026-10-16 (font twins).*
 
 ---
 
@@ -79,7 +79,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `scratchpad.rs` | The scratchpad: plain text saved with the document, in a window on the right |
 | `review.rs` | The Review window (upper left): a chapter or the selection read for mistakes, style, detail, wordiness; findings found again by their quote |
 | `ideas.rs` | The What next window (lower left): ways the story could go on from the caret, kept in the scratchpad |
-| `fonts.rs`, `theme.rs` | Installed fonts loaded on demand; colours and egui visuals |
+| `fonts.rs`, `theme.rs` | Installed fonts loaded on demand, a missing one drawn with a twin of the same widths; colours and egui visuals |
 
 ---
 
@@ -610,6 +610,26 @@ printed page breaks, wraps and justifies where the page shown does.
   and in `print.rs` the reading of `lpstat` and `places`. Check the output by eye:
   `CAPRICE_SAMPLE_PDF=out.pdf cargo test sample_pdf`, then `pdftoppm -png out.pdf page`.
 
+### R21 — A font is stored by name and drawn with what is installed: itself, or its twin
+
+`Style::font` is the name the writer chose, saved (R9) and exported (R10) as it is. `FontBook::ensure`
+loads the installed family that draws it (`drawn_with`): the font itself, else a twin from
+`TWINS` made to take the same room char for char (Times New Roman, Liberation Serif, Tinos;
+Arial, Liberation Sans, Arimo; Courier New, Liberation Mono, Cousine; Calibri, Carlito; Cambria,
+Caladea). So a story written on a Mac in Times New Roman breaks into the same pages on Linux with
+Liberation Serif, and prints the same (R20 embeds the twin, as drawn).
+
+- **Fonts load under the stored name** (`face_key(font, …)`), whatever family draws them, and
+  everything asks for them by that name (`family_for`). Never store the installed family's name.
+- A font of the document that is not offered yet (not common, or a twin's name) is added to
+  `families` on loading, so the toolbar shows it.
+- With neither the font nor a twin installed, it is drawn with egui's own font, and the pages
+  break differently. Only add a twin that is truly metric-compatible: one that is merely alike
+  moves page breaks without saying so.
+- Tests: `a_story_in_a_font_not_installed_takes_the_pages_it_takes_in_its_twin_and_keeps_its_name`
+  (it finds a pair with only the twin installed, and passes quietly on a machine that has none),
+  and in `fonts.rs` `a_missing_font_is_drawn_with_an_installed_twin_of_the_same_widths`.
+
 ---
 
 ## 5. Checklists for common changes
@@ -710,5 +730,9 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
   shown, the same PDF serves "Save as PDF", and `lp` is there on both macOS and Linux. The cost: the
   window offers only what Caprice asks for (printer, pages, copies, both sides), and adding a
   printer is done in the system's settings (R20).
+- **2026-10-16 — A missing font is drawn with its twin, under its own name.** Writing on a Mac
+  and on Linux, Times New Roman was missing on one and Liberation Serif on the other, and each
+  fell back to egui's font, so pages broke differently. Renaming the font in the document would
+  have lost the writer's choice in Word; drawing it with a font of the same widths keeps both (R21).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

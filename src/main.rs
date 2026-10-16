@@ -4004,6 +4004,35 @@ mod tests {
         s.chars().filter(|c| !c.is_whitespace()).collect()
     }
 
+    #[test]
+    fn a_story_in_a_font_not_installed_takes_the_pages_it_takes_in_its_twin_and_keeps_its_name() {
+        let pairs = [("Times New Roman", "Liberation Serif"), ("Arial", "Liberation Sans"), ("Courier New", "Liberation Mono")];
+        let probe = Harness::new();
+        let Some((missing, twin)) = pairs.into_iter().find(|(m, t)| !probe.app.fonts.is_installed(m) && probe.app.fonts.is_installed(t))
+        else {
+            eprintln!("no pair here with only the twin installed");
+            return;
+        };
+        let pages_in = |font: &str| {
+            let mut h = Harness::new();
+            h.frames(3, vec![], Modifiers::NONE);
+            h.type_text(&"It was nearly midnight and the Prime Minister sat alone in his office. ".repeat(120));
+            for st in &mut h.app.doc.flow.styles {
+                st.font = font.into();
+            }
+            let mut h = h.reopened(&format!("twin-{}", font.replace(' ', "-")));
+            h.frames(3, vec![], Modifiers::NONE);
+            let (ctx, typing) = (h.ctx.clone(), h.app.typing.clone());
+            h.app.doc.full_paginate(&ctx, &typing);
+            assert!(h.app.fonts.families.iter().any(|(f, _)| f == font), "{font} is offered");
+            assert!(serde_json::to_string(&h.app.doc_file()).unwrap().contains(&format!("\"{font}\"")), "the file keeps the name");
+            h.app.doc.spans.iter().map(|s| s.start).collect::<Vec<_>>()
+        };
+        let twin_pages = pages_in(twin);
+        assert!(twin_pages.len() > 1);
+        assert_eq!(pages_in(missing), twin_pages, "{missing} drawn with {twin}");
+    }
+
     /// Writes a sample PDF for checking by eye:
     /// `CAPRICE_SAMPLE_PDF=/some/file.pdf cargo test sample_pdf`, then `pdftoppm -png` it.
     #[test]

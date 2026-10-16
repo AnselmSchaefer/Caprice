@@ -33,8 +33,30 @@ const COMMON_FONTS: [&str; 24] = [
     "Cousine",
 ];
 
+/// Fonts made to take the same room, char for char, as each other: a missing one is drawn with an
+/// installed twin, so a story written on a Mac with Times New Roman breaks into the same pages on
+/// Linux with Liberation Serif. Its name stays the one written with, in the file and in Word.
+const TWINS: [&[&str]; 5] = [
+    &["Times New Roman", "Liberation Serif", "Tinos"],
+    &["Arial", "Liberation Sans", "Arimo"],
+    &["Courier New", "Liberation Mono", "Cousine"],
+    &["Calibri", "Carlito"],
+    &["Cambria", "Caladea"],
+];
+
+/// The installed family that draws `font`: itself, else a twin of it, else none.
+pub fn drawn_with(font: &str, installed: &BTreeSet<String>) -> Option<String> {
+    if installed.contains(font) {
+        return Some(font.to_owned());
+    }
+    let twins = TWINS.iter().find(|t| t.contains(&font))?;
+    twins.iter().find(|t| installed.contains(**t)).map(|t| (*t).to_owned())
+}
+
 pub struct FontBook {
     db: fontdb::Database,
+    /// Every installed family (with an upright face).
+    installed: BTreeSet<String>,
     /// (name shown in the UI and stored in files, installed family that renders it)
     pub families: Vec<(String, String)>,
     defs: egui::FontDefinitions,
@@ -62,11 +84,17 @@ impl FontBook {
         }
         Self {
             db,
+            installed,
             families,
             defs: egui::FontDefinitions::default(),
             requested: BTreeSet::new(),
             pending: Vec::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn is_installed(&self, font: &str) -> bool {
+        self.installed.contains(font)
     }
 
     pub fn preferred_default(&self) -> String {
@@ -78,7 +106,15 @@ impl FontBook {
         if font == "Default" || !self.requested.insert(font.to_owned()) {
             return;
         }
-        let Some((_, actual)) = self.families.iter().find(|(n, _)| n == font).cloned() else { return };
+        // A font in the document but not offered (not common, or a twin's name) is offered from now on.
+        let actual = match self.families.iter().find(|(n, _)| n == font) {
+            Some((_, actual)) => actual.clone(),
+            None => {
+                let Some(actual) = drawn_with(font, &self.installed) else { return };
+                self.families.push((font.to_owned(), actual.clone()));
+                actual
+            }
+        };
         let families = [fontdb::Family::Name(&actual)];
         let query = |bold: bool, italic: bool| fontdb::Query {
             families: &families,
@@ -127,3 +163,18 @@ impl FontBook {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_font_is_drawn_with_an_installed_twin_of_the_same_widths() {
+        let installed: BTreeSet<String> = ["Liberation Serif", "Arimo", "Georgia"].map(String::from).into();
+        assert_eq!(drawn_with("Times New Roman", &installed).as_deref(), Some("Liberation Serif"));
+        assert_eq!(drawn_with("Liberation Sans", &installed).as_deref(), Some("Arimo"));
+        assert_eq!(drawn_with("Georgia", &installed).as_deref(), Some("Georgia"), "installed, it is itself");
+        assert_eq!(drawn_with("Courier New", &installed), None, "no twin installed");
+        assert_eq!(drawn_with("Verdana", &installed), None, "no twin at all");
+    }
+}
