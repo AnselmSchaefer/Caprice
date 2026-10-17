@@ -4,7 +4,7 @@ How Caprice is put together, and the rules that hold it together. The rules (§4
 read before changing anything: each says what depends on what, what to check when touching it, and
 which tests guard it. Keep this file true: a change that alters a rule updates it in the same commit.
 
-*Last brought up to date: 2026-10-16 (font twins).*
+*Last brought up to date: 2026-10-17 (autosave and versions).*
 
 ---
 
@@ -72,6 +72,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `ui.rs` | Top toolbar (formatting, Page menu), bottom page bar and scrollbar |
 | `fileio.rs` | `.caprice` format (`DocFile`), open/save/export commands, unsaved-changes detection |
 | `export.rs` | Hand-written Office Open XML for `.docx` |
+| `versions.rs` | Autosaving a story with a file; versions of every story kept in the data folder; the Versions window |
 | `print.rs` | The Print window; pages drawn into a PDF (krilla) from `PageLayout::ink`; printers and jobs through CUPS (`Spooler`) |
 | `claude.rs` | Pen loop or cursor selection → passage → `claude -p` → streamed answer panel, a conversation; story notes |
 | `backdrop.rs` | Scenes Claude paints (SVG), pinned to the story, faintly behind the pages; the Scene menu and list |
@@ -234,6 +235,8 @@ paginating).
   becomes a scene pinned at 0 in `App::open_scene`. `scene` now only holds the description and
   whether pictures show.
 - Unsaved changes = a hash of the serialized `DocFile`, so anything saved counts automatically.
+- `DocFile::id` names the story for its versions (R22). Older files have none: they get one on
+  opening, which counts as saved (it is written with the next save).
 - Tests: `roundtrip_keeps_text_styles_breaks_and_setup`, `version_1_files_still_load_as_separate_pages`,
   `chapter_titles_are_saved_and_older_files_have_none`,
   `the_contents_setting_is_saved_opened_and_exported_through_the_app`,
@@ -419,7 +422,7 @@ many as fit the text area above the counter), and two drawings must agree with i
 
 ### R16 — Windows float over the pages, and what happens over them is theirs
 
-The scratchpad, the review, the ideas, Claude's answer, the story notes, the scene panels, the cast and Print are egui windows
+The scratchpad, the review, the ideas, Claude's answer, the story notes, the scene panels, the cast, Print and Versions are egui windows
 over the pages. They belong to the window, not to a page, so turning pages leaves them as they are. The
 scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it shows is the app's.
 
@@ -630,6 +633,36 @@ Liberation Serif, and prints the same (R20 embeds the twin, as drawn).
   (it finds a pair with only the twin installed, and passes quietly on a machine that has none),
   and in `fonts.rs` `a_missing_font_is_drawn_with_an_installed_twin_of_the_same_widths`.
 
+### R22 — A story with a file saves itself; every story keeps versions of itself
+
+`App::keep_safe` looks at the story every `CHECK_EVERY` seconds (it serializes the whole of it,
+as `unsaved` does, so not every frame). Changes `SAVE_AFTER` old are saved to the story's file,
+quietly. Opening another story or closing saves a story with a file first instead of asking; only
+a story never saved still asks. A version (the whole `.caprice` file) is kept at most every
+`KEEP_EVERY` while the story changes, on opening, before going back to another, and on exit
+(`on_exit`), so "Don't save" on a story never saved still leaves it in the versions.
+
+- **Versions belong to the story's id**, not its path: `<data>/<id>/<unix seconds>.caprice`, with
+  `story.json` saying its name and file (none: never saved, listed under "Stories never saved").
+  Anything that starts another story (open, going back to one never saved) sets `App::story_id`
+  and calls `Keeper::opened`, or its versions mix with the last story's.
+- **The same state is not kept twice** (`kept_hash`), and a fresh story with nothing in it never.
+  Of older versions, `kept` keeps the newest `KEEP_NEWEST`, then the last of each day for
+  `KEEP_DAYS` days. A story with many pictures takes room: each version holds them all.
+- **Going back is not undoable** (like opening, R1): the story as it was is kept as a version
+  first, so going back is undone by going back to that one. Going back to this story's version
+  keeps its file, so autosave then writes the older text over it.
+- Timing uses the frame clock (`ctx.input time`), so tests move it (`Harness::wait`); version names
+  use the wall clock, or `Keeper::clock` in tests. Nothing waits on a frame: while saving or keeping
+  is due, `keep_safe` asks for one.
+- **Tests never write behind your back**: `Harness::new` turns autosave off and sets no folder; the
+  tests about it turn them on with a folder of their own (`test_dir`).
+- Tests: `a_story_with_a_file_saves_itself_half_a_minute_after_a_change`,
+  `closing_a_story_with_a_file_saves_it_without_asking_but_a_story_never_saved_asks`,
+  `versions_are_kept_while_writing_and_going_back_keeps_the_story_as_it_was`,
+  `a_story_never_saved_is_kept_when_caprice_closes_and_opens_again_from_versions`, and in
+  `versions.rs` `kept` and `ago`.
+
 ---
 
 ## 5. Checklists for common changes
@@ -734,5 +767,10 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
   and on Linux, Times New Roman was missing on one and Liberation Serif on the other, and each
   fell back to egui's font, so pages broke differently. Renaming the font in the document would
   have lost the writer's choice in Word; drawing it with a font of the same widths keeps both (R21).
+- **2026-10-17 — Autosave, and versions outside the story's folder.** Work was lost to a crash
+  or a wrong "Don't save". Now a story with a file saves itself, and versions go to the data
+  folder by story id rather than beside the file: no clutter in the writer's folders, versions
+  follow a renamed file, and a story never saved has them too. Saving on leaving replaces the
+  question for a story with a file, as on macOS; the versions are what makes that safe (R22).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

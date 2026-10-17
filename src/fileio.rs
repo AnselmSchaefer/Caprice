@@ -136,6 +136,16 @@ pub struct DocFile {
     story_notes: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     scratchpad: String,
+    /// Which story this is, to keep its versions together wherever the file goes (`versions.rs`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+}
+
+impl DocFile {
+    /// How many words the story holds.
+    pub fn words(&self) -> usize {
+        self.content.iter().map(|r| r.text.as_str()).collect::<String>().split_whitespace().count()
+    }
 }
 
 fn to_runs(text: &str, styles: &[Style]) -> Vec<Run> {
@@ -224,6 +234,7 @@ impl DocFile {
                 .collect(),
             story_notes: doc.story_notes.clone(),
             scratchpad: doc.scratchpad.clone(),
+            id: String::new(),
         }
     }
 
@@ -308,7 +319,7 @@ pub struct PendingDialog {
 impl App {
     /// The document as saved, with the scene behind its pages.
     pub fn doc_file(&self) -> DocFile {
-        DocFile { scene: self.backdrop.to_file(), ..DocFile::from_doc(&self.doc) }
+        DocFile { scene: self.backdrop.to_file(), id: self.story_id.clone(), ..DocFile::from_doc(&self.doc) }
     }
 
     /// A fingerprint of what saving would write, to tell whether anything changed since.
@@ -374,6 +385,7 @@ impl App {
 
     /// Choose another document to open, first asking about unsaved changes.
     pub fn open(&mut self, ctx: &egui::Context) {
+        self.save_before_leaving();
         if self.unsaved() {
             self.leaving = Some(Leaving::Open);
         } else {
@@ -450,7 +462,11 @@ impl App {
 
     /// Hold the window open while it has unsaved changes, and ask instead.
     pub fn guard_close(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.viewport().close_requested()) && !self.may_close && self.unsaved() {
+        let closing = ctx.input(|i| i.viewport().close_requested());
+        if closing {
+            self.save_before_leaving();
+        }
+        if closing && !self.may_close && self.unsaved() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.leaving = Some(Leaving::Close);
         }
@@ -509,34 +525,41 @@ impl App {
             .map_err(|e| e.to_string())
             .and_then(|s| serde_json::from_str::<DocFile>(&s).map_err(|e| e.to_string()));
         match loaded {
-            Ok(mut file) => {
-                let scene = file.scene.take();
-                let mut doc = file.into_doc();
-                doc.version = self.doc.version + 1;
-                self.pads.clear();
-                self.search.matches.clear();
-                let fonts: BTreeSet<String> = doc.flow.styles.iter().map(|s| s.font.to_string()).collect();
-                for f in fonts {
-                    self.fonts.ensure(ctx, &f, false);
-                }
-                if let Some(st) = doc.flow.styles.first() {
-                    self.typing = st.clone();
-                }
-                self.doc = doc;
-                self.textures.clear();
-                self.ensure_textures(ctx);
-                self.doc.full_paginate(ctx, &self.typing);
-                self.pos = 0.0;
-                self.target = 0;
-                self.set_caret(ctx, 0, false);
-                self.fit = true;
+            Ok(file) => {
+                self.story_id = if file.id.is_empty() { crate::versions::new_id() } else { file.id.clone() };
+                self.adopt(ctx, file);
                 self.path = Some(path);
-                self.open_scene(scene);
                 self.status = "- opened".into();
                 self.saved_hash = self.content_hash();
+                self.keep.opened(&self.story_id);
             }
             Err(e) => self.status = format!("- open failed: {e}"),
         }
+    }
+
+    /// Show the story in `file` in place of the one shown, from its first page.
+    pub fn adopt(&mut self, ctx: &egui::Context, mut file: DocFile) {
+        let scene = file.scene.take();
+        let mut doc = file.into_doc();
+        doc.version = self.doc.version + 1;
+        self.pads.clear();
+        self.search.matches.clear();
+        let fonts: BTreeSet<String> = doc.flow.styles.iter().map(|s| s.font.to_string()).collect();
+        for f in fonts {
+            self.fonts.ensure(ctx, &f, false);
+        }
+        if let Some(st) = doc.flow.styles.first() {
+            self.typing = st.clone();
+        }
+        self.doc = doc;
+        self.textures.clear();
+        self.ensure_textures(ctx);
+        self.doc.full_paginate(ctx, &self.typing);
+        self.pos = 0.0;
+        self.target = 0;
+        self.set_caret(ctx, 0, false);
+        self.fit = true;
+        self.open_scene(scene);
     }
 }
 

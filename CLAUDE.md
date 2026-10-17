@@ -70,6 +70,8 @@ Full list with reasons and tests in `ARCHITECTURE.md` §4.
 10. **Tests never call Claude** unless marked `#[ignore]` and calling `claude::allow_live()`.
 11. **Print draws `PageLayout::ink`.** Anything new drawn on a page goes there, or it is not printed.
     Tests never reach the system's printers: they set `App::print.spooler`.
+12. **A story with a file saves itself; every story keeps versions by its id.** Anything that
+    starts another story sets `story_id` and calls `Keeper::opened`. `Harness` turns both off.
 
 ## Files
 

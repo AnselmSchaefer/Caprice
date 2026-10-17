@@ -22,6 +22,7 @@ mod scratchpad;
 mod search;
 mod theme;
 mod ui;
+mod versions;
 mod view;
 
 use std::collections::HashMap;
@@ -184,6 +185,10 @@ pub struct App {
     pub dialog: Option<fileio::PendingDialog>,
     /// The Print window and what it has chosen.
     pub print: print::Print,
+    /// Which story this is, to keep its versions together (`versions.rs`).
+    pub story_id: String,
+    /// Autosaving and the versions kept.
+    pub keep: versions::Keeper,
     /// What saving last wrote (or opening read), to notice unsaved changes.
     pub saved_hash: u64,
     /// Opening or closing that waits on the "Save changes?" question, and what to do once saved.
@@ -264,6 +269,8 @@ impl App {
             cast_panel: cast::CastPanel::default(),
             dialog: None,
             print: print::Print::new(),
+            story_id: versions::new_id(),
+            keep: versions::Keeper::new(),
             saved_hash: 0,
             leaving: None,
             after_save: None,
@@ -456,6 +463,11 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame(ui);
     }
+
+    /// Whatever was said about saving, a version of the story is kept.
+    fn on_exit(&mut self) {
+        self.keep_now();
+    }
 }
 
 impl App {
@@ -593,6 +605,8 @@ impl App {
         self.story_notes_window(&ctx);
         self.scratchpad(&ctx);
         self.print_window(&ctx);
+        self.versions_window(&ctx);
+        self.keep_safe(&ctx);
         self.review_window(&ctx);
         self.ideas_window(&ctx);
         self.scene_panel(&ctx);
@@ -623,7 +637,9 @@ mod tests {
         fn new() -> Self {
             let ctx = egui::Context::default();
             apply_theme(&ctx);
-            let app = App::new(&ctx);
+            let mut app = App::new(&ctx);
+            // Nothing written behind a test's back: the tests about it turn these on.
+            (app.keep.autosave, app.keep.dir) = (false, None);
             Self { ctx, app, time: 0.0, mods: Modifiers::NONE, access: None, painted: Vec::new(), width: 1200.0 }
         }
 
@@ -4031,6 +4047,133 @@ mod tests {
         let twin_pages = pages_in(twin);
         assert!(twin_pages.len() > 1);
         assert_eq!(pages_in(missing), twin_pages, "{missing} drawn with {twin}");
+    }
+
+    impl Harness {
+        /// Let `secs` go by with nothing done, as the clock the app reads sees it.
+        fn wait(&mut self, secs: f64) {
+            self.time += secs;
+            self.frames(2, vec![], Modifiers::NONE);
+        }
+
+        /// Ask for the window to close, as its close button does.
+        fn close_window(&mut self) {
+            self.time += 1.0 / 60.0;
+            let mut input = egui::RawInput {
+                time: Some(self.time),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(self.width, 900.0))),
+                ..Default::default()
+            };
+            let closing = egui::ViewportInfo { events: vec![egui::ViewportEvent::Close], ..Default::default() };
+            input.viewports.insert(egui::ViewportId::ROOT, closing);
+            let app = &mut self.app;
+            self.ctx.run_ui(input, |ui| app.frame(ui)).textures_delta.clear();
+            self.frames(2, vec![], Modifiers::NONE);
+        }
+    }
+
+    /// A folder of its own for a test's files, empty.
+    fn test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("caprice-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_story_with_a_file_saves_itself_half_a_minute_after_a_change() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.app.keep.autosave = true;
+        let dir = test_dir("autosave");
+        let path = dir.join("story.caprice");
+        h.type_text("Once");
+        h.app.save_to(path.clone());
+        h.type_text(" upon a time");
+        h.wait(6.0);
+        h.wait(10.0);
+        assert!(h.app.unsaved(), "not straight away");
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("upon"));
+        h.wait(25.0);
+        assert!(!h.app.unsaved(), "saved by itself");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Once upon a time"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn closing_a_story_with_a_file_saves_it_without_asking_but_a_story_never_saved_asks() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.app.keep.autosave = true;
+        h.type_text("Draft");
+        h.close_window();
+        assert_eq!(h.app.leaving, Some(fileio::Leaving::Close), "never saved: it asks");
+        h.key(Key::Escape, Modifiers::NONE);
+
+        let dir = test_dir("close-saves");
+        let path = dir.join("story.caprice");
+        h.app.save_to(path.clone());
+        h.type_text(", the end");
+        h.close_window();
+        assert_eq!(h.app.leaving, None, "no question");
+        assert!(!h.app.unsaved());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Draft, the end"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn versions_are_kept_while_writing_and_going_back_keeps_the_story_as_it_was() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let dir = test_dir("versions");
+        (h.app.keep.dir, h.app.keep.clock) = (Some(dir.clone()), Some(1_000_000));
+        h.type_text("First draft");
+        h.wait(6.0);
+        h.app.keep.clock = Some(1_000_600);
+        h.type_text(", then more");
+        h.wait(150.0);
+        h.app.keep.clock = Some(1_000_700);
+        h.type_text(" and more");
+        h.wait(160.0);
+        assert_eq!(std::fs::read_dir(dir.join(&h.app.story_id)).unwrap().count(), 3, "two versions, five minutes apart, and what the story is");
+
+        h.app.keep.clock = Some(1_000_900);
+        h.click_widget("File");
+        h.click_widget("Versions… "); // with room for a shortcut
+        h.click_widget("15 minutes ago");
+        assert_eq!(h.text(), "First draft");
+        assert!(h.app.unsaved());
+        // Changed and gone back again, what it held is kept first, to come back to in turn.
+        h.key(Key::End, Modifiers::COMMAND);
+        h.type_text(" revised");
+        h.click_widget("3 minutes ago");
+        assert_eq!(h.text(), "First draft, then more and more");
+        assert_eq!(h.app.keep.mine.len(), 3);
+        h.click_widget("just now");
+        assert_eq!(h.text(), "First draft revised");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_story_never_saved_is_kept_when_caprice_closes_and_opens_again_from_versions() {
+        let dir = test_dir("never-saved");
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        (h.app.keep.dir, h.app.keep.clock) = (Some(dir.clone()), Some(2_000_000));
+        h.type_text("A story never saved");
+        eframe::App::on_exit(&mut h.app);
+
+        let mut later = Harness::new();
+        later.frames(3, vec![], Modifiers::NONE);
+        (later.app.keep.dir, later.app.keep.clock) = (Some(dir.clone()), Some(2_000_120));
+        later.click_widget("File");
+        later.click_widget("Versions… "); // with room for a shortcut
+        later.click_widget("Stories never saved");
+        later.click_widget("Untitled, 2 minutes ago");
+        assert_eq!(later.text(), "A story never saved");
+        assert_eq!(later.app.path, None);
+        assert_eq!(later.app.story_id, h.app.story_id, "it goes on keeping versions with the others");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Writes a sample PDF for checking by eye:
