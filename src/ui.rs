@@ -189,6 +189,7 @@ enum FileAction {
     ExportDocx,
     Print,
     Versions,
+    Revert,
 }
 
 /// What was clicked in the tools this frame, done once they are all drawn.
@@ -425,6 +426,7 @@ impl App {
                 ("Export as Word (.docx)…", "", FileAction::ExportDocx),
                 ("Print…", "Ctrl+P", FileAction::Print),
                 ("Versions…", "", FileAction::Versions),
+                ("Drop changes since saving", "", FileAction::Revert),
             ];
             for (label, shortcut, action) in items {
                 let button = egui::Button::new(label).shortcut_text(shortcut).frame(false);
@@ -600,6 +602,7 @@ impl App {
             Some(FileAction::ExportDocx) => self.export_docx(ctx),
             Some(FileAction::Print) => self.open_print(ctx),
             Some(FileAction::Versions) => self.open_versions(),
+            Some(FileAction::Revert) => self.drop_changes(ctx),
             None => {}
         }
     }

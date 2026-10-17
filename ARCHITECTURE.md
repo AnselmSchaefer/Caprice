@@ -637,8 +637,11 @@ Liberation Serif, and prints the same (R20 embeds the twin, as drawn).
 
 `App::keep_safe` looks at the story every `CHECK_EVERY` seconds (it serializes the whole of it,
 as `unsaved` does, so not every frame). Changes `SAVE_AFTER` old are saved to the story's file,
-quietly. Opening another story or closing saves a story with a file first instead of asking; only
-a story never saved still asks. A version (the whole `.caprice` file) is kept at most every
+quietly. Opening another story or closing saves a story with a file first; then, if it changed
+since it was opened or saved by hand (`App::as_saved`, which autosave leaves alone), it asks
+whether to keep the changes or drop them back to that (`drop_changes`, also in the File menu). A
+story never saved asks Save / Don't save as before. Closing to throw away an afternoon's changes
+must keep working: writers do it. A version (the whole `.caprice` file) is kept at most every
 `KEEP_EVERY` while the story changes, on opening, before going back to another, and on exit
 (`on_exit`), so "Don't save" on a story never saved still leaves it in the versions.
 
@@ -647,10 +650,12 @@ a story never saved still asks. A version (the whole `.caprice` file) is kept at
   Anything that starts another story (open, going back to one never saved) sets `App::story_id`
   and calls `Keeper::opened`, or its versions mix with the last story's.
 - **The same state is not kept twice** (`kept_hash`), and a fresh story with nothing in it never.
+  Two versions in one second get the next free second's name rather than writing over each other
+  (dropping changes, then opening the list, did).
   Of older versions, `kept` keeps the newest `KEEP_NEWEST`, then the last of each day for
   `KEEP_DAYS` days. A story with many pictures takes room: each version holds them all.
-- **Going back is not undoable** (like opening, R1): the story as it was is kept as a version
-  first, so going back is undone by going back to that one. Going back to this story's version
+- **Going back and dropping changes are not undoable** (like opening, R1): the story as it was
+  is kept as a version first, so going back is undone by going back to that one. Going back to this story's version
   keeps its file, so autosave then writes the older text over it.
 - Timing uses the frame clock (`ctx.input time`), so tests move it (`Harness::wait`); version names
   use the wall clock, or `Keeper::clock` in tests. Nothing waits on a frame: while saving or keeping
@@ -658,7 +663,9 @@ a story never saved still asks. A version (the whole `.caprice` file) is kept at
 - **Tests never write behind your back**: `Harness::new` turns autosave off and sets no folder; the
   tests about it turn them on with a folder of their own (`test_dir`).
 - Tests: `a_story_with_a_file_saves_itself_half_a_minute_after_a_change`,
-  `closing_a_story_with_a_file_saves_it_without_asking_but_a_story_never_saved_asks`,
+  `closing_a_story_with_a_file_asks_whether_to_keep_the_changes_already_saved`,
+  `closing_can_drop_the_changes_since_saving_and_they_stay_in_the_versions`,
+  `changes_since_saving_can_be_dropped_from_the_file_menu_and_a_story_never_saved_still_asks`,
   `versions_are_kept_while_writing_and_going_back_keeps_the_story_as_it_was`,
   `a_story_never_saved_is_kept_when_caprice_closes_and_opens_again_from_versions`, and in
   `versions.rs` `kept` and `ago`.
@@ -770,7 +777,7 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
 - **2026-10-17 — Autosave, and versions outside the story's folder.** Work was lost to a crash
   or a wrong "Don't save". Now a story with a file saves itself, and versions go to the data
   folder by story id rather than beside the file: no clutter in the writer's folders, versions
-  follow a renamed file, and a story never saved has them too. Saving on leaving replaces the
-  question for a story with a file, as on macOS; the versions are what makes that safe (R22).
+  follow a renamed file, and a story never saved has them too. Leaving still asks, but whether
+  to keep or drop the changes since saving by hand, as the file holds them already (R22).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

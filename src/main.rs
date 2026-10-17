@@ -189,6 +189,8 @@ pub struct App {
     pub story_id: String,
     /// Autosaving and the versions kept.
     pub keep: versions::Keeper,
+    /// The story as opened or last saved by hand (a hash and the file's text), to drop changes back to.
+    pub as_saved: Option<(u64, String)>,
     /// What saving last wrote (or opening read), to notice unsaved changes.
     pub saved_hash: u64,
     /// Opening or closing that waits on the "Save changes?" question, and what to do once saved.
@@ -271,6 +273,7 @@ impl App {
             print: print::Print::new(),
             story_id: versions::new_id(),
             keep: versions::Keeper::new(),
+            as_saved: None,
             saved_hash: 0,
             leaving: None,
             after_save: None,
@@ -4101,23 +4104,67 @@ mod tests {
     }
 
     #[test]
-    fn closing_a_story_with_a_file_saves_it_without_asking_but_a_story_never_saved_asks() {
+    fn closing_a_story_with_a_file_asks_whether_to_keep_the_changes_already_saved() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.app.keep.autosave = true;
+        let dir = test_dir("close-keeps");
+        let path = dir.join("story.caprice");
+        h.type_text("Draft");
+        h.app.save_to(path.clone());
+        h.close_window();
+        assert!(h.app.leaving.is_none(), "nothing changed since saving: it just closes");
+
+        h.type_text(", the end");
+        h.close_window();
+        assert_eq!(h.app.leaving, Some(fileio::Leaving::Close), "it asks");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Draft, the end"), "saved before asking, in case");
+        h.click_widget("Keep changes");
+        assert!(h.app.may_close);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Draft, the end"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn closing_can_drop_the_changes_since_saving_and_they_stay_in_the_versions() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let dir = test_dir("close-drops");
+        (h.app.keep.autosave, h.app.keep.dir, h.app.keep.clock) = (true, Some(dir.join("versions")), Some(3_000_000));
+        let path = dir.join("story.caprice");
+        h.type_text("Draft");
+        h.app.save_to(path.clone());
+        h.type_text(", a bad idea");
+        h.wait(6.0);
+        h.wait(40.0);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("a bad idea"), "saved by itself");
+        h.close_window();
+        h.click_widget("Drop them");
+        assert!(h.app.may_close);
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("Draft") && !saved.contains("a bad idea"), "the file is as saved by hand");
+        h.app.open_versions();
+        assert!(h.app.keep.mine.iter().any(|k| std::fs::read_to_string(&k.file).unwrap().contains("a bad idea")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn changes_since_saving_can_be_dropped_from_the_file_menu_and_a_story_never_saved_still_asks() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.app.keep.autosave = true;
         h.type_text("Draft");
         h.close_window();
-        assert_eq!(h.app.leaving, Some(fileio::Leaving::Close), "never saved: it asks");
+        assert_eq!(h.app.leaving, Some(fileio::Leaving::Close), "never saved: save or not");
+        assert!(h.widget_rect("Don\u{2019}t save").is_some());
         h.key(Key::Escape, Modifiers::NONE);
 
-        let dir = test_dir("close-saves");
-        let path = dir.join("story.caprice");
-        h.app.save_to(path.clone());
-        h.type_text(", the end");
-        h.close_window();
-        assert_eq!(h.app.leaving, None, "no question");
-        assert!(!h.app.unsaved());
-        assert!(std::fs::read_to_string(&path).unwrap().contains("Draft, the end"));
+        let dir = test_dir("revert");
+        h.app.save_to(dir.join("story.caprice"));
+        h.type_text(" and more");
+        h.click_widget("File");
+        h.click_widget("Drop changes since saving ");
+        assert_eq!(h.text(), "Draft");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

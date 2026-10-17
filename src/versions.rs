@@ -203,10 +203,69 @@ impl App {
     /// Save to the story's file without saying so: it happens on its own.
     pub fn save_quietly(&mut self) {
         let Some(path) = self.path.clone() else { return };
-        let shown = std::mem::take(&mut self.status);
+        let (shown, as_saved) = (std::mem::take(&mut self.status), self.as_saved.take());
         self.save_to(path);
+        self.as_saved = as_saved;
         if self.status == "- saved" {
             self.status = shown;
+        }
+    }
+
+    /// Has a story with a file changed since it was opened or saved by hand? Autosave does not
+    /// count: it is what the writer may still want to drop on leaving.
+    pub fn changed_since_saved(&self) -> bool {
+        let saved = self.as_saved.as_ref().map(|(h, _)| *h);
+        self.keep.autosave && self.path.is_some() && saved.is_some_and(|h| h != self.content_hash())
+    }
+
+    /// Put the story back as it was opened or last saved by hand, its file too. What it held is
+    /// kept as a version first, so dropping it can be undone from the Versions window.
+    pub fn drop_changes(&mut self, ctx: &egui::Context) {
+        let Some(file) = self.as_saved.as_ref().and_then(|(_, j)| serde_json::from_str::<DocFile>(j).ok()) else {
+            self.status = "- not saved yet: nothing to go back to".into();
+            return;
+        };
+        if self.as_saved.as_ref().is_some_and(|(h, _)| *h == self.content_hash()) {
+            self.status = "- no changes since saving".into();
+            return;
+        }
+        self.keep_now();
+        self.adopt(ctx, file);
+        self.save_quietly();
+        self.status = "- back to as saved".into();
+    }
+
+    /// Leaving a story with a file that changed since it was saved by hand: autosave has written
+    /// the changes already, so the question is whether to keep them.
+    pub fn keep_or_drop_prompt(&mut self, ctx: &egui::Context, leaving: crate::fileio::Leaving) {
+        let (mut keep, mut drop, mut cancel) = (false, false, false);
+        let modal = egui::Modal::new(Id::new("keep_or_drop")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.heading(format!("Keep the changes to \u{201c}{}\u{201d}?", self.story_name()));
+            ui.add_space(4.0);
+            let said = "They are saved already. Dropping them puts the story back as you last saved or opened it; \
+                        they stay under File \u{2192} Versions.";
+            ui.label(egui::RichText::new(said).color(crate::theme::TEXT_DIM));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                keep = ui.button("Keep changes").clicked();
+                let drop_btn = ui.button("Drop them");
+                let cancel_btn = ui.button("Cancel");
+                (drop, cancel) = (drop_btn.clicked(), cancel_btn.clicked());
+                // Enter keeps, unless the keyboard is on one of the other buttons: then it is theirs.
+                let other = drop_btn.has_focus() || cancel_btn.has_focus();
+                keep |= !other && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+            });
+        });
+        cancel |= modal.should_close();
+        if keep || drop {
+            self.leaving = None;
+            if drop {
+                self.drop_changes(ctx);
+            }
+            self.leave(ctx, leaving);
+        } else if cancel {
+            self.leaving = None;
         }
     }
 
@@ -228,7 +287,11 @@ impl App {
 
     fn keep_version(&mut self, json: &str) {
         let Some(dir) = self.keep.dir.as_ref().map(|d| d.join(&self.story_id)) else { return };
-        let now = self.keep.now();
+        // Two in one second (going back, then opening the list) must not write over each other.
+        let mut now = self.keep.now();
+        while dir.join(format!("{now}.caprice")).exists() {
+            now += 1;
+        }
         let about = About { name: self.story_name(), path: self.path.clone() };
         let written = std::fs::create_dir_all(&dir)
             .and_then(|()| std::fs::write(dir.join(format!("{now}.caprice")), json))

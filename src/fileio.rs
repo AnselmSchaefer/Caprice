@@ -354,6 +354,7 @@ impl App {
             Ok(()) => {
                 self.path = Some(path);
                 self.saved_hash = self.content_hash();
+                self.as_saved = serde_json::to_string(&self.doc_file()).ok().map(|j| (self.saved_hash, j));
                 "- saved".into()
             }
             Err(e) => format!("- save failed: {e}"),
@@ -386,7 +387,7 @@ impl App {
     /// Choose another document to open, first asking about unsaved changes.
     pub fn open(&mut self, ctx: &egui::Context) {
         self.save_before_leaving();
-        if self.unsaved() {
+        if self.unsaved() || self.changed_since_saved() {
             self.leaving = Some(Leaving::Open);
         } else {
             self.choose_file_to_open(ctx);
@@ -450,7 +451,7 @@ impl App {
     }
 
     /// Go on with what was waiting on the unsaved-changes question.
-    fn leave(&mut self, ctx: &egui::Context, leaving: Leaving) {
+    pub(crate) fn leave(&mut self, ctx: &egui::Context, leaving: Leaving) {
         match leaving {
             Leaving::Open => self.choose_file_to_open(ctx),
             Leaving::Close => {
@@ -466,7 +467,7 @@ impl App {
         if closing {
             self.save_before_leaving();
         }
-        if closing && !self.may_close && self.unsaved() {
+        if closing && !self.may_close && (self.unsaved() || self.changed_since_saved()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.leaving = Some(Leaving::Close);
         }
@@ -475,6 +476,9 @@ impl App {
     /// The "Save changes?" question, while something waits on it.
     pub fn unsaved_prompt(&mut self, ctx: &egui::Context) {
         let Some(leaving) = self.leaving else { return };
+        if self.path.is_some() && !self.unsaved() {
+            return self.keep_or_drop_prompt(ctx, leaving);
+        }
         let name = self.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned());
         let (mut save, mut discard, mut cancel) = (false, false, false);
         let modal = egui::Modal::new(egui::Id::new("unsaved_prompt")).show(ctx, |ui| {
@@ -531,6 +535,7 @@ impl App {
                 self.path = Some(path);
                 self.status = "- opened".into();
                 self.saved_hash = self.content_hash();
+                self.as_saved = serde_json::to_string(&self.doc_file()).ok().map(|j| (self.saved_hash, j));
                 self.keep.opened(&self.story_id);
             }
             Err(e) => self.status = format!("- open failed: {e}"),

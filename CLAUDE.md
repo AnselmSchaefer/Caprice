@@ -71,7 +71,8 @@ Full list with reasons and tests in `ARCHITECTURE.md` §4.
 11. **Print draws `PageLayout::ink`.** Anything new drawn on a page goes there, or it is not printed.
     Tests never reach the system's printers: they set `App::print.spooler`.
 12. **A story with a file saves itself; every story keeps versions by its id.** Anything that
-    starts another story sets `story_id` and calls `Keeper::opened`. `Harness` turns both off.
+    starts another story sets `story_id` and calls `Keeper::opened`. Leaving still offers to drop
+    the changes since saving by hand (`as_saved`). `Harness` turns autosave and versions off.
 
 ## Files
 
