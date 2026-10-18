@@ -120,6 +120,11 @@ impl Keeper {
     }
 }
 
+/// When the versions in a story's folder were kept, oldest first.
+pub fn times_kept(dir: &Path) -> Vec<u64> {
+    versions_in(dir).into_iter().map(|(t, _)| t).collect()
+}
+
 /// The versions in a story's folder, oldest first: (when, file).
 fn versions_in(dir: &Path) -> Vec<(u64, PathBuf)> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
@@ -358,6 +363,7 @@ impl App {
         if k.id != self.story_id {
             (self.path, self.story_id) = (None, k.id.clone());
             self.keep.opened(&k.id);
+            self.created = file.created;
         }
         self.adopt(ctx, file);
         self.status = format!("- back to {when}");

@@ -192,8 +192,10 @@ pub struct App {
     pub keep: versions::Keeper,
     /// The story as opened or last saved by hand (a hash and the file's text), to drop changes back to.
     pub as_saved: Option<(u64, String)>,
-    /// Word counts and today's words towards the daily goal.
+    /// Word counts and today's words towards the daily goal; the Document info window.
     pub words: words::Words,
+    /// When the story was begun, in seconds since 1970 (0: not known).
+    pub created: u64,
     /// What saving last wrote (or opening read), to notice unsaved changes.
     pub saved_hash: u64,
     /// Opening or closing that waits on the "Save changes?" question, and what to do once saved.
@@ -278,6 +280,7 @@ impl App {
             keep: versions::Keeper::new(),
             as_saved: None,
             words: words::Words::new(),
+            created: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
             saved_hash: 0,
             leaving: None,
             after_save: None,
@@ -617,6 +620,7 @@ impl App {
         self.scratchpad(&ctx);
         self.print_window(&ctx);
         self.versions_window(&ctx);
+        self.info_window(&ctx);
         self.keep_safe(&ctx);
         self.track_words(&ctx);
         self.review_window(&ctx);
@@ -4266,27 +4270,60 @@ mod tests {
         assert_eq!(h.text(), "Mara met Anne. Ann laughed. ann sang.", "all at once is one step back");
     }
 
+    impl Harness {
+        /// The text of every label in the last frame, as a screen reader reads it.
+        fn labels(&mut self) -> String {
+            self.ctx.enable_accesskit();
+            self.frames(2, vec![], Modifiers::NONE);
+            let nodes = self.access.as_ref().map_or(&[][..], |t| &t.nodes[..]);
+            nodes.iter().filter_map(|(_, n)| n.value().or(n.label())).collect::<Vec<_>>().join("\n")
+        }
+    }
+
     #[test]
-    fn the_page_bar_counts_the_storys_words_the_selections_and_todays_towards_the_goal() {
+    fn document_info_tells_the_words_of_the_story_and_selection_and_todays_towards_the_goal() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.wait(6.0);
         h.type_text("It was nearly midnight \u{2014} and dark.");
-        h.frames(2, vec![], Modifiers::NONE);
-        assert!(h.widget_rect("6 words").is_some(), "the story's count");
+        assert!(!h.labels().contains("6 words"), "no count in sight while writing");
         h.shift(Key::ArrowLeft);
         h.key(Key::ArrowLeft, Modifiers::SHIFT | Modifiers::COMMAND);
         h.key(Key::ArrowLeft, Modifiers::SHIFT | Modifiers::COMMAND);
-        h.frames(2, vec![], Modifiers::NONE);
-        assert!(h.widget_rect("2 selected").is_some(), "the selection's");
-        h.key(Key::End, Modifiers::COMMAND);
         h.wait(6.0);
-        assert_eq!(h.app.words_today(), 6, "written since the story was first seen today");
         h.app.words.progress.goal = 500;
-        h.click_widget("6 words");
-        assert!(h.widget_rect("6 words").is_some());
-        let shown = format!("{:?}", h.access.as_ref().unwrap().nodes);
-        assert!(shown.contains("6 of 500"), "today, of the goal");
+        h.click_widget("File");
+        h.click_widget("Document info… ");
+        let shown: Vec<String> = h.labels().lines().map(str::to_owned).collect();
+        let created = words::date(h.app.created);
+        for line in ["Untitled", "Not saved yet", "Words", "6", "Selection", "2 words", "Today", "6 of 500 words", &created] {
+            assert!(shown.iter().any(|l| l == line), "{line:?} in {shown:?}");
+        }
+    }
+
+    #[test]
+    fn a_story_keeps_when_it_was_begun_and_an_older_file_takes_its_own_date() {
+        let dir = test_dir("created");
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.app.created = 1_700_000_000;
+        h.type_text("Begun long ago");
+        h.app.save_to(dir.join("story.caprice"));
+        let other = h.reopened("created");
+        assert_eq!(other.app.created, 1_700_000_000);
+
+        let old = dir.join("old.caprice");
+        let json = serde_json::to_string(&h.app.doc_file()).unwrap().replace(r#","created":1700000000"#, "");
+        assert!(!json.contains("created"));
+        std::fs::write(&old, json).unwrap();
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        h.app.open_path(&ctx, old.clone());
+        let file_time = std::fs::metadata(&old).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        assert!(h.app.created.abs_diff(file_time) < 5, "the file's date");
+        assert!(!h.app.unsaved(), "opening it is no change");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Writes a sample PDF for checking by eye:

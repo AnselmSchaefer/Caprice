@@ -69,7 +69,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `notes.rs` | Post-its: placement, pads, drawing, editing |
 | `images.rs` | Pictures: inserting, resizing, rotating, moving, textures |
 | `search.rs` | Find and replace bar, matches (case, whole words) |
-| `words.rs` | Word counts in the page bar; today's words and the daily goal, kept in the data folder |
+| `words.rs` | The Document info window: dates, file, counts (words, chapter, selection…), today's words and the daily goal, kept in the data folder |
 | `ui.rs` | Top toolbar (formatting, Page menu), bottom page bar and scrollbar |
 | `fileio.rs` | `.caprice` format (`DocFile`), open/save/export commands, unsaved-changes detection |
 | `export.rs` | Hand-written Office Open XML for `.docx` |
@@ -237,7 +237,8 @@ paginating).
   whether pictures show.
 - Unsaved changes = a hash of the serialized `DocFile`, so anything saved counts automatically.
 - `DocFile::id` names the story for its versions (R22). Older files have none: they get one on
-  opening, which counts as saved (it is written with the next save).
+  opening, which counts as saved (it is written with the next save). `DocFile::created` likewise:
+  older files take the file's own date (created, else modified) on opening, and keep it once saved.
 - Tests: `roundtrip_keeps_text_styles_breaks_and_setup`, `version_1_files_still_load_as_separate_pages`,
   `chapter_titles_are_saved_and_older_files_have_none`,
   `the_contents_setting_is_saved_opened_and_exported_through_the_app`,
@@ -423,7 +424,7 @@ many as fit the text area above the counter), and two drawings must agree with i
 
 ### R16 — Windows float over the pages, and what happens over them is theirs
 
-The scratchpad, the review, the ideas, Claude's answer, the story notes, the scene panels, the cast, Print and Versions are egui windows
+The scratchpad, the review, the ideas, Claude's answer, the story notes, the scene panels, the cast, Print, Versions and Document info are egui windows
 over the pages. They belong to the window, not to a page, so turning pages leaves them as they are. The
 scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it shows is the app's.
 
@@ -465,7 +466,7 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   `the_file_name_is_always_in_the_toolbar_and_runs_past_when_there_is_little_room`.
 - **Nothing in a dock is drawn over anything else or past the dock's edge, at any window width.**
   The page bar lays out from the right (Scratchpad, Fit, the zoom, New page) and, as it gets
-  shorter, drops the word count, the page count, shrinks New page to "+", drops the track, the zoom, Scratchpad,
+  shorter, drops the page count, shrinks New page to "+", drops the track, the zoom, Scratchpad,
   "+" and Fit, the track taking whatever room is left (guarded too by
   `the_page_bar_leaves_no_empty_room_left_of_its_buttons`); the sums in `scrollbar` must match the
   widths drawn. The toolbar drops "⋯" too when there is no room for it. `ui::MIN_WINDOW` keeps a
@@ -671,7 +672,7 @@ must keep working: writers do it. A version (the whole `.caprice` file) is kept 
   `a_story_never_saved_is_kept_when_caprice_closes_and_opens_again_from_versions`, and in
   `versions.rs` `kept` and `ago`.
 
-### R23 — Find and replace keep the story's formatting and undo as one; word counts never touch the story
+### R23 — Find and replace keep the story's formatting and undo as one; document info never touches the story
 
 - **A replacement takes the style of the first char it replaces** (`App::replacement`), so a bold
   or coloured name stays so. Replace one goes through `apply_edit`; replace all applies every
@@ -681,6 +682,10 @@ must keep working: writers do it. A version (the whole `.caprice` file) is kept 
 - Whole words: neither end of a match is inside a word (letters, digits, `_`), so "ann's" names
   Ann and "Anne" does not, as in R17. Finding starts at the first match from the caret.
 - Ctrl+H is Ctrl on a Mac too: Cmd+H hides the app there.
+- **Word counts are in File > Document info, not in sight while writing** (asked for: a count
+  always showing distracts). The window also shows the file, when the story was begun
+  (`App::created`, saved) and last saved (the file's time), the versions kept, and what the story
+  holds. Something new to know about a story goes there.
 - **Counting words changes nothing saved.** The story's count is cached by `Doc::version`; the
   daily goal and each story's count at its first sight today live in the data folder
   (`progress.json`), the writer's, not the story's. In the story's file they would make it
@@ -688,7 +693,8 @@ must keep working: writers do it. A version (the whole `.caprice` file) is kept 
   first seen that day (deleting counts against it), the day being the system clock's local one
   (`date +%z`, asked once). `Harness::new` sets no file and an empty progress.
 - Tests: `ctrl_h_renames_someone_once_and_everywhere_in_one_undo_step_keeping_the_bold`,
-  `the_page_bar_counts_the_storys_words_the_selections_and_todays_towards_the_goal`, and in
+  `document_info_tells_the_words_of_the_story_and_selection_and_todays_towards_the_goal`,
+  `a_story_keeps_when_it_was_begun_and_an_older_file_takes_its_own_date`, and in
   `search.rs` / `words.rs` finding, counting, the chapter around the caret and today's words.
 
 ---

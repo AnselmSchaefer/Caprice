@@ -139,6 +139,13 @@ pub struct DocFile {
     /// Which story this is, to keep its versions together wherever the file goes (`versions.rs`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
+    /// When the story was begun, in seconds since 1970 (0 in older files: not known).
+    #[serde(default, skip_serializing_if = "unknown")]
+    pub created: u64,
+}
+
+fn unknown(when: &u64) -> bool {
+    *when == 0
 }
 
 impl DocFile {
@@ -235,6 +242,7 @@ impl DocFile {
             story_notes: doc.story_notes.clone(),
             scratchpad: doc.scratchpad.clone(),
             id: String::new(),
+            created: 0,
         }
     }
 
@@ -319,7 +327,7 @@ pub struct PendingDialog {
 impl App {
     /// The document as saved, with the scene behind its pages.
     pub fn doc_file(&self) -> DocFile {
-        DocFile { scene: self.backdrop.to_file(), id: self.story_id.clone(), ..DocFile::from_doc(&self.doc) }
+        DocFile { scene: self.backdrop.to_file(), id: self.story_id.clone(), created: self.created, ..DocFile::from_doc(&self.doc) }
     }
 
     /// A fingerprint of what saving would write, to tell whether anything changed since.
@@ -531,6 +539,11 @@ impl App {
         match loaded {
             Ok(file) => {
                 self.story_id = if file.id.is_empty() { crate::versions::new_id() } else { file.id.clone() };
+                // Older files say nothing: the file's own date is the best guess (written with the next save).
+                let meta = std::fs::metadata(&path).ok();
+                let made = meta.and_then(|m| m.created().or_else(|_| m.modified()).ok());
+                let made = made.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+                self.created = if file.created > 0 { file.created } else { made };
                 self.adopt(ctx, file);
                 self.path = Some(path);
                 self.status = "- opened".into();

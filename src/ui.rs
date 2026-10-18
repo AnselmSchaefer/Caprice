@@ -190,6 +190,7 @@ enum FileAction {
     Print,
     Versions,
     Revert,
+    Info,
 }
 
 /// What was clicked in the tools this frame, done once they are all drawn.
@@ -427,6 +428,7 @@ impl App {
                 ("Print…", "Ctrl+P", FileAction::Print),
                 ("Versions…", "", FileAction::Versions),
                 ("Drop changes since saving", "", FileAction::Revert),
+                ("Document info…", "", FileAction::Info),
             ];
             for (label, shortcut, action) in items {
                 let button = egui::Button::new(label).shortcut_text(shortcut).frame(false);
@@ -603,6 +605,7 @@ impl App {
             Some(FileAction::Print) => self.open_print(ctx),
             Some(FileAction::Versions) => self.open_versions(),
             Some(FileAction::Revert) => self.drop_changes(ctx),
+            Some(FileAction::Info) => self.open_info(),
             None => {}
         }
     }
@@ -686,13 +689,10 @@ impl App {
         // anything or past the bar however narrow the window is, and the track takes the room
         // left over rather than leaving it empty.
         let label_w = 92.0;
-        let words_w = 124.0;
         let zoom_w = 68.0;
         let track_min = 60.0 + 20.0;
         let tools_w = |new_w: f32, zoom: bool| 100.0 + 8.0 + 48.0 + if zoom { zoom_w } else { 8.0 } + new_w;
         let show_label = r.width() >= label_w + 8.0 + track_min + tools_w(104.0, true);
-        // The word count goes before the page count, its room going to the track.
-        let show_words = show_label && r.width() >= label_w + words_w + 16.0 + track_min + tools_w(104.0, true);
         let new_w = if r.width() >= track_min + tools_w(104.0, true) { 104.0 } else { 30.0 };
         let show_track = r.width() >= track_min + tools_w(new_w, true);
         let show_zoom = r.width() >= tools_w(new_w, true);
@@ -707,10 +707,6 @@ impl App {
                 FontId::proportional(13.0),
                 TEXT_DIM,
             );
-        }
-        let words_rect = Rect::from_min_size(pos2(r.left() + label_w + 8.0, cy - 15.0), vec2(words_w, 30.0));
-        if show_words {
-            self.word_count(ui, words_rect);
         }
         let scratch_btn = Rect::from_min_max(pos2(r.right() - 100.0, cy - 15.0), pos2(r.right(), cy + 15.0));
         let fit_right = if show_scratch { scratch_btn.left() - 8.0 } else { r.right() };
@@ -745,11 +741,7 @@ impl App {
             );
         }
 
-        let track_left = match (show_label, show_words) {
-            (_, true) => words_rect.right() + 8.0,
-            (true, false) => r.left() + label_w + 8.0,
-            _ => r.left(),
-        };
+        let track_left = if show_label { r.left() + label_w + 8.0 } else { r.left() };
         let track = Rect::from_min_max(pos2(track_left, cy - 4.0), pos2(btn.left() - 20.0, cy + 4.0));
         if !show_track {
             return;
