@@ -24,6 +24,7 @@ mod theme;
 mod ui;
 mod versions;
 mod view;
+mod words;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -191,6 +192,8 @@ pub struct App {
     pub keep: versions::Keeper,
     /// The story as opened or last saved by hand (a hash and the file's text), to drop changes back to.
     pub as_saved: Option<(u64, String)>,
+    /// Word counts and today's words towards the daily goal.
+    pub words: words::Words,
     /// What saving last wrote (or opening read), to notice unsaved changes.
     pub saved_hash: u64,
     /// Opening or closing that waits on the "Save changes?" question, and what to do once saved.
@@ -274,6 +277,7 @@ impl App {
             story_id: versions::new_id(),
             keep: versions::Keeper::new(),
             as_saved: None,
+            words: words::Words::new(),
             saved_hash: 0,
             leaving: None,
             after_save: None,
@@ -503,6 +507,10 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
             self.open_search();
         }
+        // Ctrl even on a Mac, where Cmd+H hides the app (Word on a Mac takes Ctrl+H too).
+        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::H)) {
+            self.open_replace();
+        }
 
         if self.leaving.is_none() {
             self.process_input(&ctx);
@@ -610,6 +618,7 @@ impl App {
         self.print_window(&ctx);
         self.versions_window(&ctx);
         self.keep_safe(&ctx);
+        self.track_words(&ctx);
         self.review_window(&ctx);
         self.ideas_window(&ctx);
         self.scene_panel(&ctx);
@@ -642,7 +651,8 @@ mod tests {
             apply_theme(&ctx);
             let mut app = App::new(&ctx);
             // Nothing written behind a test's back: the tests about it turn these on.
-            (app.keep.autosave, app.keep.dir) = (false, None);
+            (app.keep.autosave, app.keep.dir, app.words.file) = (false, None, None);
+            app.words.progress = Default::default();
             Self { ctx, app, time: 0.0, mods: Modifiers::NONE, access: None, painted: Vec::new(), width: 1200.0 }
         }
 
@@ -4221,6 +4231,62 @@ mod tests {
         assert_eq!(later.app.path, None);
         assert_eq!(later.app.story_id, h.app.story_id, "it goes on keeping versions with the others");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ctrl_h_renames_someone_once_and_everywhere_in_one_undo_step_keeping_the_bold() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Ann met Anne. Ann laughed. ann sang.");
+        h.key(Key::Home, Modifiers::COMMAND);
+        for _ in 0..3 {
+            h.shift(Key::ArrowRight);
+        }
+        h.key(Key::B, Modifiers::COMMAND);
+        h.key(Key::Home, Modifiers::COMMAND); // finding starts from the caret
+        h.key(Key::H, Modifiers::CTRL);
+        h.type_text("Ann");
+        assert_eq!(h.app.search.matches.len(), 4, "Anne too, and ann");
+        h.click_widget("Whole words");
+        assert_eq!(h.app.search.matches.len(), 3);
+        h.click_widget(search::REPLACE_FIELD);
+        h.type_text("Mara");
+        h.click_widget("Replace");
+        assert_eq!(h.text(), "Mara met Anne. Ann laughed. ann sang.");
+        assert!(h.app.doc.flow.styles[..4].iter().all(|s| s.bold) && !h.app.doc.flow.styles[4].bold, "bold as the name was");
+        assert_eq!(h.app.search.current, 0, "on to the next");
+        h.click_widget("Match case");
+        assert_eq!(h.app.search.matches.len(), 1);
+        h.click_widget("Match case");
+        h.click_widget("All");
+        assert_eq!(h.text(), "Mara met Anne. Mara laughed. Mara sang.");
+        assert_eq!(h.app.shown_status, "- replaced 2 times");
+        h.key(Key::Escape, Modifiers::NONE);
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert_eq!(h.text(), "Mara met Anne. Ann laughed. ann sang.", "all at once is one step back");
+    }
+
+    #[test]
+    fn the_page_bar_counts_the_storys_words_the_selections_and_todays_towards_the_goal() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.wait(6.0);
+        h.type_text("It was nearly midnight \u{2014} and dark.");
+        h.frames(2, vec![], Modifiers::NONE);
+        assert!(h.widget_rect("6 words").is_some(), "the story's count");
+        h.shift(Key::ArrowLeft);
+        h.key(Key::ArrowLeft, Modifiers::SHIFT | Modifiers::COMMAND);
+        h.key(Key::ArrowLeft, Modifiers::SHIFT | Modifiers::COMMAND);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert!(h.widget_rect("2 selected").is_some(), "the selection's");
+        h.key(Key::End, Modifiers::COMMAND);
+        h.wait(6.0);
+        assert_eq!(h.app.words_today(), 6, "written since the story was first seen today");
+        h.app.words.progress.goal = 500;
+        h.click_widget("6 words");
+        assert!(h.widget_rect("6 words").is_some());
+        let shown = format!("{:?}", h.access.as_ref().unwrap().nodes);
+        assert!(shown.contains("6 of 500"), "today, of the goal");
     }
 
     /// Writes a sample PDF for checking by eye:

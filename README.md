@@ -23,7 +23,9 @@ Caprice is a word processor for writing stories, not reports. It gives you real 
 - **Leafing through pages** with the scrollbar at the bottom, a two-finger swipe or Page Up / Page Down. In *Paperstack*, dragging the scrollbar slides each page it passes halfway out, and letting go moves them all together.
 - **Pictures** in your text that you can move, resize and rotate.
 - **Formatting** that stays out of the way: fonts, sizes, bold, italic, underline, text colour, alignment, lists and page setup.
-- **Search** (Ctrl+F), **undo** and **zoom** (Ctrl + / − / 0).
+- **Search and replace** (Ctrl+F, Ctrl+H), with match case and whole words, to rename someone across the whole story in one go (and one undo).
+- **Word count** in the page bar for the story or the selection; click it for the chapter's count, the words written today and a daily goal.
+- **Undo** and **zoom** (Ctrl + / − / 0).
 - **Your work is safe.** A story with a file saves itself half a minute after each change; closing still lets you keep the changes or drop them back to how you last saved it. And every story, saved or not, keeps earlier versions of itself: go back to one under File → Versions, where stories never saved can be opened again too.
 - **Export to Word** (.docx) when the story is ready to share.
 - **Print** (Ctrl+P) on any printer set up on your Mac or Linux machine, or save the pages as a PDF, looking just as they do on screen.

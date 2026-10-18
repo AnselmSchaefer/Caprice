@@ -5,7 +5,7 @@ behaviour**: its rules (§4) say what depends on what, and which tests guard eac
 
 ## Commands
 
-- `cargo build`, `cargo test` (headless, about 12 s), `cargo clippy --all-targets`
+- `cargo build`, `cargo test` (headless, about 13 s), `cargo clippy --all-targets`
 - `./install.sh`: release build, installed to `~/.local/bin/caprice` with a launcher entry
 - `cargo mutants` for untested code. `/tmp` is a small tmpfs here: set `TMPDIR` to a dir on disk.
 - Word output check: `CAPRICE_SAMPLE_OUT=out.docx cargo test sample_docx`, then
@@ -72,7 +72,8 @@ Full list with reasons and tests in `ARCHITECTURE.md` §4.
     Tests never reach the system's printers: they set `App::print.spooler`.
 12. **A story with a file saves itself; every story keeps versions by its id.** Anything that
     starts another story sets `story_id` and calls `Keeper::opened`. Leaving still offers to drop
-    the changes since saving by hand (`as_saved`). `Harness` turns autosave and versions off.
+    the changes since saving by hand (`as_saved`). `Harness` turns autosave, versions and the
+    word goal's file off: tests write nothing outside their own folders.
 
 ## Files
 

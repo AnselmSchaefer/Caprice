@@ -4,7 +4,7 @@ How Caprice is put together, and the rules that hold it together. The rules (§4
 read before changing anything: each says what depends on what, what to check when touching it, and
 which tests guard it. Keep this file true: a change that alters a rule updates it in the same commit.
 
-*Last brought up to date: 2026-10-17 (autosave and versions).*
+*Last brought up to date: 2026-10-18 (find and replace, word counts).*
 
 ---
 
@@ -68,7 +68,8 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `book.rs` | Book look: pages turning on their left edge |
 | `notes.rs` | Post-its: placement, pads, drawing, editing |
 | `images.rs` | Pictures: inserting, resizing, rotating, moving, textures |
-| `search.rs` | Find bar and matches |
+| `search.rs` | Find and replace bar, matches (case, whole words) |
+| `words.rs` | Word counts in the page bar; today's words and the daily goal, kept in the data folder |
 | `ui.rs` | Top toolbar (formatting, Page menu), bottom page bar and scrollbar |
 | `fileio.rs` | `.caprice` format (`DocFile`), open/save/export commands, unsaved-changes detection |
 | `export.rs` | Hand-written Office Open XML for `.docx` |
@@ -464,7 +465,7 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   `the_file_name_is_always_in_the_toolbar_and_runs_past_when_there_is_little_room`.
 - **Nothing in a dock is drawn over anything else or past the dock's edge, at any window width.**
   The page bar lays out from the right (Scratchpad, Fit, the zoom, New page) and, as it gets
-  shorter, drops the page count, shrinks New page to "+", drops the track, the zoom, Scratchpad,
+  shorter, drops the word count, the page count, shrinks New page to "+", drops the track, the zoom, Scratchpad,
   "+" and Fit, the track taking whatever room is left (guarded too by
   `the_page_bar_leaves_no_empty_room_left_of_its_buttons`); the sums in `scrollbar` must match the
   widths drawn. The toolbar drops "⋯" too when there is no room for it. `ui::MIN_WINDOW` keeps a
@@ -670,6 +671,26 @@ must keep working: writers do it. A version (the whole `.caprice` file) is kept 
   `a_story_never_saved_is_kept_when_caprice_closes_and_opens_again_from_versions`, and in
   `versions.rs` `kept` and `ago`.
 
+### R23 — Find and replace keep the story's formatting and undo as one; word counts never touch the story
+
+- **A replacement takes the style of the first char it replaces** (`App::replacement`), so a bold
+  or coloured name stays so. Replace one goes through `apply_edit`; replace all applies every
+  edit as one `Doc::apply_group` (one undo step, notes and scenes moved, R1, R7), from the last
+  match back so the places found stay true, then `full_paginate`. After replacing one, the next
+  match is the first from the end of the replacement (`resume_at`): the replacement may match too.
+- Whole words: neither end of a match is inside a word (letters, digits, `_`), so "ann's" names
+  Ann and "Anne" does not, as in R17. Finding starts at the first match from the caret.
+- Ctrl+H is Ctrl on a Mac too: Cmd+H hides the app there.
+- **Counting words changes nothing saved.** The story's count is cached by `Doc::version`; the
+  daily goal and each story's count at its first sight today live in the data folder
+  (`progress.json`), the writer's, not the story's. In the story's file they would make it
+  unsaved on opening, and the goal is a habit across stories. "Today" is every story's words since
+  first seen that day (deleting counts against it), the day being the system clock's local one
+  (`date +%z`, asked once). `Harness::new` sets no file and an empty progress.
+- Tests: `ctrl_h_renames_someone_once_and_everywhere_in_one_undo_step_keeping_the_bold`,
+  `the_page_bar_counts_the_storys_words_the_selections_and_todays_towards_the_goal`, and in
+  `search.rs` / `words.rs` finding, counting, the chapter around the caret and today's words.
+
 ---
 
 ## 5. Checklists for common changes
@@ -712,7 +733,7 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
 
 ## 6. Tests
 
-- `cargo test` runs everything headlessly (about 200 tests, ~12 s). They drive the real `App`
+- `cargo test` runs everything headlessly (about 215 tests, ~13 s). They drive the real `App`
   through an egui `Context`: `layout::with_ctx` for model/layout tests, `Harness` (in `main.rs`)
   for app-level ones (`frames`, `key`, `type_text`, `click_in_page`, `scrub_to`, `long_contents`,
   `shown`, and `click_widget`, which finds a button by its label or a field by its hint through
