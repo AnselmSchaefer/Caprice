@@ -4,8 +4,9 @@
 //! break where they would without them. A band is drawn as `Ink`, so the page shown, a page
 //! turning and print all draw the same.
 //!
-//! The text holds fields (`{page}`, `{pages}`, `{chapter}`), filled in for each page when it is
-//! drawn. In Word they become fields too (`PAGE`, `NUMPAGES`, `STYLEREF`), see `export.rs`.
+//! A band shows one thing: the page number (`{page}`), the chapter's title (`{chapter}`), both
+//! filled in for each page when it is drawn, or text of the writer's own. In Word the two are
+//! fields too (`PAGE`, `STYLEREF`), see `export.rs`.
 
 use std::f32::consts::PI;
 
@@ -15,7 +16,7 @@ use crate::App;
 use crate::contents::Entry;
 use crate::fonts::family_for;
 use crate::layout::Ink;
-use crate::model::{Band, BandLook, CHAPTER_FIELD, Doc, PAGE_FIELD, PAGES_FIELD, PageSetup};
+use crate::model::{Band, BandLook, CHAPTER_FIELD, Doc, PAGE_FIELD, PageSetup};
 use crate::theme::{PAPER, TEXT_DIM};
 
 /// The size of a band's text, in page points.
@@ -29,9 +30,9 @@ pub fn rgb([r, g, b]: [u8; 3]) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
-/// The band's text with its fields filled in for page `number` (from 1) of `pages`.
-pub fn filled(text: &str, number: usize, pages: usize, chapter: &str) -> String {
-    text.replace(PAGE_FIELD, &number.to_string()).replace(PAGES_FIELD, &pages.to_string()).replace(CHAPTER_FIELD, chapter)
+/// The band's text with its fields filled in for page `number` (from 1).
+pub fn filled(text: &str, number: usize, chapter: &str) -> String {
+    text.replace(PAGE_FIELD, &number.to_string()).replace(CHAPTER_FIELD, chapter)
 }
 
 /// The text a band starts with when it is put on: the chapter on top, the page number below.
@@ -141,7 +142,7 @@ impl Doc {
         let font = self.contents_style().font;
         let mut ink = Vec::new();
         for (band, top) in [(&s.header, true), (&s.footer, false)] {
-            let text = filled(&band.text, i + 1, self.pages(), &chapter);
+            let text = filled(&band.text, i + 1, &chapter);
             ink.extend(band_ink(ctx, band, top, &text, i + 1, s, &font, sc));
         }
         ink
@@ -169,7 +170,7 @@ pub fn band_tile(ui: &mut egui::Ui, band: &Band, top: bool, chosen: bool, font: 
         let r = Rect::from_min_max(pos2(rect.left() + setup.margin_left * sc, y), pos2(rect.right() - setup.margin_right * sc - k as f32 * 18.0, y + 2.5 * sc));
         p.rect_filled(r, 1.0, Color32::from_gray(222));
     }
-    let sample = filled(if band.text.is_empty() { first_text(band.look, top) } else { &band.text }, 2, 9, "Chapter One");
+    let sample = filled(if band.text.is_empty() { first_text(band.look, top) } else { &band.text }, 2, "Chapter One");
     for ink in band_ink(ui.ctx(), band, top, &sample, 2, &setup, font, sc) {
         p.extend(ink.translate(vec2(rect.left(), page_top)).shape());
     }
@@ -234,8 +235,9 @@ mod tests {
 
     #[test]
     fn fields_are_filled_in_for_each_page() {
-        assert_eq!(filled("{chapter} \u{2014} {page} of {pages}", 3, 12, "The Mill"), "The Mill \u{2014} 3 of 12");
-        assert_eq!(filled("no fields", 3, 12, "x"), "no fields");
+        assert_eq!(filled("{page}", 3, "The Mill"), "3");
+        assert_eq!(filled("{chapter}", 3, "The Mill"), "The Mill");
+        assert_eq!(filled("no fields", 3, "x"), "no fields");
     }
 
     #[test]

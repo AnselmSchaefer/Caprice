@@ -4367,11 +4367,17 @@ mod tests {
         h.click_widget("Filigree");
         assert_eq!(h.app.doc.setup.header.look, model::BandLook::Filigree);
         assert!(painted_texts(&h).iter().filter(|t| *t == "The Mill").count() >= 2, "the chapter shows over the page: {:?}", painted_texts(&h));
+        // One thing at a time: the page number, the chapter or words of one's own.
+        h.click_widget("Page number");
+        assert_eq!(h.app.doc.setup.header.text, "{page}");
+        assert!(h.widget_rect("Header text").is_none(), "no field for the page number");
+        h.click_widget("Own text");
         h.click_widget("Header text");
-        h.key(Key::A, Modifiers::COMMAND);
-        h.type_text("Page {page} of {pages}: ");
+        h.type_text("The Mill Press");
+        assert_eq!(h.app.doc.setup.header.text, "The Mill Press");
         h.click_widget("Chapter title");
-        assert_eq!(h.app.doc.setup.header.text, "Page {page} of {pages}: {chapter}");
+        assert_eq!(h.app.doc.setup.header.text, "{chapter}");
+        assert!(h.widget_rect("Header text").is_none());
         h.click_widget("Footer ⏵");
         h.click_widget("Circle");
         assert_eq!(h.app.doc.setup.footer.look, model::BandLook::Circle);
@@ -4383,24 +4389,25 @@ mod tests {
         // Each page its own, on paper too, then in the file and in Word.
         let ctx = h.ctx.clone();
         let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
-        assert_eq!(squeeze(&h.app.printed_text(&ctx, 0)), "TheMillWordsaboutthemill.Page1of2:TheMill1");
-        assert_eq!(squeeze(&h.app.printed_text(&ctx, 1)), "TheRiverWordsabouttheriver.Page2of2:TheRiver2");
+        assert_eq!(squeeze(&h.app.printed_text(&ctx, 0)), "TheMillWordsaboutthemill.TheMill1");
+        assert_eq!(squeeze(&h.app.printed_text(&ctx, 1)), "TheRiverWordsabouttheriver.TheRiver2");
         let other = h.reopened("header-footer");
         assert_eq!((&other.app.doc.setup.header, &other.app.doc.setup.footer), (&h.app.doc.setup.header, &h.app.doc.setup.footer));
         let docx = export::to_docx(&h.app.doc).unwrap();
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(docx)).unwrap();
         let mut header = String::new();
         std::io::Read::read_to_string(&mut zip.by_name("word/header1.xml").unwrap(), &mut header).unwrap();
-        assert!(header.contains(" PAGE ") && header.contains(" NUMPAGES ") && header.contains("STYLEREF"), "{header}");
+        assert!(header.contains("STYLEREF"), "{header}");
         assert!(zip.by_name("word/footer1.xml").is_ok());
 
         // Taken off again.
-        assert!(painted_texts(&h).iter().any(|t| t == "Page 1 of 2: The Mill"));
+        let mills = |h: &Harness| painted_texts(h).iter().filter(|t| *t == "The Mill").count();
+        assert_eq!(mills(&h), 2, "the title, and the header over it");
         h.click_widget("Header ⏵");
         h.click_widget("Remove header");
         assert!(!h.app.doc.setup.header.is_on());
         h.frames(2, vec![], Modifiers::NONE);
-        assert!(!painted_texts(&h).iter().any(|t| t.contains("Page 1 of 2: The Mill")));
+        assert_eq!(mills(&h), 1, "only the title");
     }
 
     impl Harness {

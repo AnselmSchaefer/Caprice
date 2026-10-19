@@ -270,7 +270,7 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
 - Story notes, the scratchpad and the cast are not exported (decided: notes to Claude and to
   oneself, not part of the book).
 - Headers and footers are Word's header and footer parts, their fields Word's (`PAGE`,
-  `NUMPAGES`, `STYLEREF "Heading 1"`), their looks paragraph borders, shading, a "❦" and an
+  `STYLEREF "Heading 1"`), their looks paragraph borders, shading, a "❦" and an
   ellipse shape (module comment of `export.rs`); Facing pages are odd and even headers
   (`evenAndOddHeaders` in `settings.xml`). Known difference: before the first chapter, Caprice
   shows no chapter, and Word's `STYLEREF` shows the first one after.
@@ -738,8 +738,10 @@ and R3 do not know them, and a header or footer change does not paginate (`set_b
   (`draw_bands`, then `text_boxes` over the editor), the static and sliding pages
   (`draw_furniture`), a book's turning page (tessellated and bent with the paper) and print (R20).
   Something new drawn on a page that is not the story's text goes there too.
-- **Fields are filled in when drawn** (`bands::filled`): `{page}`, `{pages}`, `{chapter}` (the
-  chapter that starts on the page, else the last before it, `chapter_of_page`). Their size never
+- **A band shows one thing**, chosen with radio buttons: the page number (`{page}`), the
+  chapter's title (`{chapter}`: the chapter that starts on the page, else the last before it,
+  `chapter_of_page`), or text of the writer's own. The fields are filled in when drawn
+  (`bands::filled`). There is no page count (not wanted). Their size never
   feeds back into layout (R6). A header showing the chapter asks for `chapters(false)` once a page;
   print asks once for all pages.
 - **A text box is pinned to a char and shows on its page** (`boxes_on`): pushed onto the next

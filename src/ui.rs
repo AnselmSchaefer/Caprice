@@ -628,25 +628,27 @@ impl App {
         if band.is_on() {
             ui.separator();
             let what = if top { "Header" } else { "Footer" };
-            let mut text = band.text.clone();
-            let field = egui::TextEdit::singleline(&mut text).hint_text(format!("{what} text")).desired_width(f32::INFINITY);
-            if ui.add(field).changed() {
-                new.text = text;
-            }
+            // It shows one thing: the page number, the chapter's title, or words of the writer's own.
+            let (page, chapter) = (crate::model::PAGE_FIELD, crate::model::CHAPTER_FIELD);
+            let own = band.text != page && band.text != chapter;
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Add").color(TEXT_DIM));
-                let fields = [
-                    ("Page number", crate::model::PAGE_FIELD),
-                    ("Page count", crate::model::PAGES_FIELD),
-                    ("Chapter title", crate::model::CHAPTER_FIELD),
-                ];
-                for (label, field) in fields {
-                    if ui.button(label).on_hover_text(format!("Shown in the text as {field}, filled in on each page")).clicked() {
-                        let gap = if new.text.is_empty() || new.text.ends_with(' ') { "" } else { " " };
-                        new.text = format!("{}{gap}{field}", new.text);
-                    }
+                if ui.radio(band.text == page, "Page number").clicked() {
+                    new.text = page.into();
+                }
+                if ui.radio(band.text == chapter, "Chapter title").on_hover_text("The chapter the page is in").clicked() {
+                    new.text = chapter.into();
+                }
+                if ui.radio(own, "Own text").clicked() && !own {
+                    new.text = String::new();
                 }
             });
+            if own {
+                let mut text = band.text.clone();
+                let field = egui::TextEdit::singleline(&mut text).hint_text(format!("{what} text")).desired_width(f32::INFINITY);
+                if ui.add(field).changed() {
+                    new.text = text;
+                }
+            }
             if let Some(c) = crate::bands::accent_row(ui, band.color) {
                 new.color = c;
             }

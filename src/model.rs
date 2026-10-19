@@ -184,13 +184,11 @@ impl BandLook {
 
 /// Stands in a header's or footer's text for the number of the page it is on.
 pub const PAGE_FIELD: &str = "{page}";
-/// For the number of pages there are.
-pub const PAGES_FIELD: &str = "{pages}";
 /// For the title of the chapter the page is in: the first that starts on it, else the last before.
 pub const CHAPTER_FIELD: &str = "{chapter}";
 
-/// A header or footer: one line of text on every page, in the top or bottom margin. The fields
-/// (`PAGE_FIELD`…) in its text are filled in for each page.
+/// A header or footer: one line on every page, in the top or bottom margin. It shows the page
+/// number (`PAGE_FIELD`), the chapter's title (`CHAPTER_FIELD`), filled in for each page, or text.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Band {

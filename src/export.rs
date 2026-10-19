@@ -5,8 +5,8 @@
 //! * hard page breaks = "page break before" on the paragraph that follows
 //! * font, size, bold, italic, underline, colour = run properties
 //! * page setup = section properties (paper, orientation, margins)
-//! * header and footer = Word's header and footer parts, their fields (`{page}`, `{pages}`,
-//!   `{chapter}`) = `PAGE`, `NUMPAGES` and `STYLEREF "Heading 1"` fields; their looks = paragraph
+//! * header and footer = Word's header and footer parts, their fields (`{page}`, `{chapter}`) =
+//!   `PAGE` and `STYLEREF "Heading 1"` fields; their looks = paragraph
 //!   borders (Rule, Facing), shading (Banner), a "❦" under a border (Filigree), an ellipse shape
 //!   holding the text (Circle). Facing pages = different odd and even headers (`evenAndOddHeaders`).
 //! * text boxes = text box shapes anchored in the paragraph of the char they are pinned to, placed
@@ -98,11 +98,11 @@ fn hex([r, g, b]: [u8; 3]) -> String {
 }
 
 /// The runs of a header's, footer's or text box's text, in run properties `rpr`: the text, and a
-/// field for each of `{page}`, `{pages}` and `{chapter}`, its result filled in with `results`
+/// field for each `{page}` and `{chapter}`, its result filled in with `results`
 /// until Word works it out.
-fn field_runs(text: &str, rpr: &str, results: [&str; 3]) -> String {
-    use crate::model::{CHAPTER_FIELD, PAGE_FIELD, PAGES_FIELD};
-    let fields = [(PAGE_FIELD, " PAGE "), (PAGES_FIELD, " NUMPAGES "), (CHAPTER_FIELD, " STYLEREF \"Heading 1\" ")];
+fn field_runs(text: &str, rpr: &str, results: [&str; 2]) -> String {
+    use crate::model::{CHAPTER_FIELD, PAGE_FIELD};
+    let fields = [(PAGE_FIELD, " PAGE "), (CHAPTER_FIELD, " STYLEREF \"Heading 1\" ")];
     let plain = |t: &str| {
         // A line break within the text is a break in the run.
         let lines: Vec<String> = t.split('\n').map(|l| format!("<w:t xml:space=\"preserve\">{}</w:t>", esc(l))).collect();
@@ -188,7 +188,7 @@ fn text_box_xml(b: &crate::model::TextBox, id: u32) -> String {
             _ => String::new(),
         };
         let border = if border.is_empty() { border } else { format!("<w:pBdr>{border}</w:pBdr>") };
-        let _ = write!(paragraphs, "<w:p><w:pPr>{border}{jc}<w:rPr>{rpr}</w:rPr></w:pPr>{}</w:p>", field_runs(line, &rpr, ["1", "1", ""]));
+        let _ = write!(paragraphs, "<w:p><w:pPr>{border}{jc}<w:rPr>{rpr}</w:rPr></w:pPr>{}</w:p>", field_runs(line, &rpr, ["1", ""]));
     }
     let tint = |t: f32| b.color.map(|c| (255.0 - (255.0 - f32::from(c)) * t).round() as u8);
     let look = match b.look {
@@ -214,7 +214,7 @@ fn band_xml(band: &Band, top: bool, even: bool, font: &str, setup: &crate::model
         ..Style::new(font)
     };
     let rpr = run_props(&st);
-    let runs = field_runs(&band.text, &rpr, ["1", "1", ""]);
+    let runs = field_runs(&band.text, &rpr, ["1", ""]);
     let color = hex(band.color);
     let side = if top { "bottom" } else { "top" };
     let rule = format!("<w:pBdr><w:{side} w:val=\"single\" w:sz=\"4\" w:space=\"4\" w:color=\"{color}\"/></w:pBdr>");
@@ -238,7 +238,7 @@ fn band_xml(band: &Band, top: bool, even: bool, font: &str, setup: &crate::model
             let cy = if top { setup.margin_top / 2.0 } else { size.y - setup.margin_bottom / 2.0 };
             let mid = (setup.margin_left + size.x - setup.margin_right) / 2.0;
             // Word works out the text's width itself: the circle is made for two or three digits.
-            let shown = crate::bands::filled(&band.text, 99, 99, "");
+            let shown = crate::bands::filled(&band.text, 99, "");
             let r = (shown.chars().count() as f32 * BAND_SIZE * 0.3).max(BAND_SIZE * 0.6) + 5.0;
             let rect = egui::Rect::from_center_size(egui::pos2(mid, cy), egui::vec2(2.0 * r, 2.0 * r));
             let look = ShapeLook { geom: "ellipse", fill: Some(band.color), line: None, inset: [0.0; 4] };
