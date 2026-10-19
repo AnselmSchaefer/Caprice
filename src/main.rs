@@ -4501,6 +4501,51 @@ mod tests {
         assert_eq!(squeeze(&h.text()), "Afirstlineofthestory.!", "the story keeps its text");
     }
 
+    impl Harness {
+        fn right_click_at(&mut self, pos: egui::Pos2) {
+            let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE };
+            self.frames(1, vec![egui::Event::PointerMoved(pos)], Modifiers::NONE);
+            self.frames(1, vec![button(true)], Modifiers::NONE);
+            self.frames(1, vec![button(false)], Modifiers::NONE);
+            self.frames(2, vec![], Modifiers::NONE);
+        }
+
+        /// A new text box of the look named `look`, with `text` typed into it.
+        fn new_text_box(&mut self, look: &str, text: &str) -> model::TextBox {
+            self.click_widget("Insert");
+            self.click_widget("Text box \u{23f5}");
+            self.click_widget(look);
+            self.frames(2, vec![], Modifiers::NONE);
+            self.type_text(text);
+            self.app.doc.boxes.last().unwrap().clone()
+        }
+    }
+
+    #[test]
+    fn a_right_click_anywhere_on_a_text_box_offers_its_menu_whether_written_in_or_not() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("The story.");
+        // Being written in: the click lands on its text.
+        let b = h.new_text_box("Simple", "Delete me");
+        assert!(h.app.boxes.editing);
+        h.right_click_at(h.on_page(b.pos + egui::vec2(20.0, 12.0)));
+        h.click_widget("Delete text box");
+        assert!(h.app.doc.boxes.is_empty(), "deleted from its text");
+
+        // Not selected at all.
+        let b = h.new_text_box("Shaded", "Me too");
+        h.click_in_page(egui::vec2(5.0, 400.0));
+        assert_eq!(h.app.boxes.selected, None);
+        let caret = h.app.caret;
+        h.right_click_at(h.on_page(b.pos + egui::vec2(20.0, 12.0)));
+        h.click_widget("Shaded");
+        h.right_click_at(h.on_page(b.pos + egui::vec2(20.0, 12.0)));
+        h.click_widget("Delete text box");
+        assert!(h.app.doc.boxes.is_empty());
+        assert_eq!((h.text(), h.app.caret), ("The story.".to_owned(), caret), "the story was not touched");
+    }
+
     /// Writes a sample PDF for checking by eye:
     /// `CAPRICE_SAMPLE_PDF=/some/file.pdf cargo test sample_pdf`, then `pdftoppm -png` it.
     #[test]

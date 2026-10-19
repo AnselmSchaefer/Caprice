@@ -271,9 +271,8 @@ impl App {
             let resp = ui.interact(rect.expand(EDGE), Id::new(("text_box", id)), Sense::click_and_drag());
             let label = if b.text.is_empty() { "Text box" } else { b.text.as_str() };
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-            if writing {
-                self.box_field(ui, &b, rect, sc);
-            }
+            // While it is written in, its text takes the pointer there, right clicks too.
+            let field = writing.then(|| self.box_field(ui, &b, rect, sc));
             if resp.hovered() && self.boxes.drag.is_none() {
                 ui.output_mut(|o| o.cursor_icon = if writing { egui::CursorIcon::Move } else { egui::CursorIcon::Text });
             }
@@ -285,6 +284,9 @@ impl App {
                 self.boxes.drag = Some(BoxDrag { id, start: Rect::from_min_size(b.pos.to_pos2(), b.size), handle: None, dragged: Vec2::ZERO });
             }
             self.box_menu(&resp, id);
+            if let Some(field) = field {
+                self.box_menu(&field, id);
+            }
             self.follow_box_drag(&ctx, &resp, i, sc);
             if selected {
                 self.box_handles(ui, &ctx, &b, rect, i, sc);
@@ -299,7 +301,7 @@ impl App {
     }
 
     /// The field the selected box's text is written in, over the box, in the box's own layout.
-    fn box_field(&mut self, ui: &mut egui::Ui, b: &TextBox, rect: Rect, sc: f32) {
+    fn box_field(&mut self, ui: &mut egui::Ui, b: &TextBox, rect: Rect, sc: f32) -> egui::Response {
         let (at, narrower) = inset(b.look);
         let area = Rect::from_min_size(rect.min + at * sc, vec2(b.size.x - narrower, rect.height() / sc - 2.0 * at.y) * sc);
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area));
@@ -344,6 +346,7 @@ impl App {
             // Escape, or a click elsewhere: the box stays selected, to be moved, formatted or deleted.
             self.boxes.editing = false;
         }
+        resp
     }
 
     /// The right-click menu of a box: its look, its colour, deleting it.

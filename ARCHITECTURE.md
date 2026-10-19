@@ -752,8 +752,12 @@ and R3 do not know them, and a header or footer change does not paginate (`set_b
 - **Clicking a box writes in it; the story keeps its caret.** A selected box not being written in
   takes Delete, Backspace and Escape (`box_key`); any other key, a typed letter or a click on the
   story lets it go. Changes to headers, footers and boxes are not undoable (R1).
+- **A right click anywhere on a box opens its menu** (look, colour, delete). While it is written
+  in, its text field lies over it and takes the pointer there, so the field gets the same menu
+  (`box_menu` on both); with it on the box alone, only the thin edge around the text opened it.
 - Tests: `a_header_and_footer_from_the_insert_menu_show_each_pages_chapter_and_number_and_print`,
   `a_text_box_is_written_in_moved_and_resized_and_goes_where_its_text_goes`,
+  `a_right_click_anywhere_on_a_text_box_offers_its_menu_whether_written_in_or_not`,
   `text_boxes_stay_with_their_char_and_where_it_was_once_it_is_deleted`,
   `files_from_before_footers_keep_their_page_numbers_as_a_footer`, and in `bands.rs`
   `fields_are_filled_in_for_each_page`, `a_leaf_is_convex_and_reaches_from_end_to_end`.
