@@ -111,6 +111,26 @@ struct LookEntry {
     sheet: Option<String>,
 }
 
+/// A text box, pinned to char `at`; its text in one style.
+#[derive(Serialize, Deserialize)]
+struct BoxFile {
+    at: usize,
+    /// Top-left on the page and size (width, least height), in points.
+    pos: [f32; 2],
+    size: [f32; 2],
+    text: String,
+    /// Its style; `para` holds only its alignment.
+    style: Run,
+    #[serde(default)]
+    look: crate::model::BoxLook,
+    #[serde(default = "accent_ink")]
+    color: [u8; 3],
+}
+
+fn accent_ink() -> [u8; 3] {
+    crate::model::ACCENT_INK
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct DocFile {
     version: u32,
@@ -142,6 +162,8 @@ pub struct DocFile {
     /// When the story was begun, in seconds since 1970 (0 in older files: not known).
     #[serde(default, skip_serializing_if = "unknown")]
     pub created: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    boxes: Vec<BoxFile>,
 }
 
 fn unknown(when: &u64) -> bool {
@@ -178,11 +200,14 @@ fn to_runs(text: &str, styles: &[Style]) -> Vec<Run> {
         .collect()
 }
 
+fn run_style(r: &Run) -> Style {
+    let (font, size, para, image) = (r.font.as_str().into(), r.size, r.para, r.image);
+    Style { font, size, bold: r.bold, italic: r.italic, underline: r.underline, color: r.color, para, image }
+}
+
 fn from_runs(runs: Vec<Run>, text: &mut String, styles: &mut Vec<Style>) {
     for r in runs {
-        let (font, size, para, image) = (r.font.into(), r.size, r.para, r.image);
-        let st = Style { font, size, bold: r.bold, italic: r.italic, underline: r.underline, color: r.color, para, image };
-        styles.extend(std::iter::repeat_n(st, r.text.chars().count()));
+        styles.extend(std::iter::repeat_n(run_style(&r), r.text.chars().count()));
         text.push_str(&r.text);
     }
 }
@@ -218,6 +243,19 @@ impl DocFile {
             })
             .collect();
         scenes.sort_by_key(|s| s.at);
+        let boxes = doc
+            .boxes
+            .iter()
+            .map(|b| BoxFile {
+                at: b.at,
+                pos: [b.pos.x, b.pos.y],
+                size: [b.size.x, b.size.y],
+                text: b.text.clone(),
+                style: to_runs(" ", std::slice::from_ref(&b.style)).remove(0),
+                look: b.look,
+                color: b.color,
+            })
+            .collect();
         Self {
             version: 2,
             setup: doc.setup.clone(),
@@ -243,6 +281,7 @@ impl DocFile {
             scratchpad: doc.scratchpad.clone(),
             id: String::new(),
             created: 0,
+            boxes,
         }
     }
 
@@ -263,6 +302,10 @@ impl DocFile {
         doc.ensure_final_mark();
         doc.setup = self.setup;
         doc.setup.clamp_margins();
+        // Before footers, page numbers were a setting of their own: they are a plain footer now.
+        if std::mem::take(&mut doc.setup.page_numbers) && !doc.setup.footer.is_on() {
+            doc.setup.footer = crate::model::Band::page_numbers();
+        }
         doc.story_notes = self.story_notes;
         doc.scratchpad = self.scratchpad;
         for mut c in self.cast {
@@ -288,6 +331,16 @@ impl DocFile {
             let shown = s.shown.min(s.versions.len() - 1);
             let at = shift(s.at).min(total - 1);
             doc.scenes.push(Scene { id, at, versions: s.versions, shown, subject: s.subject, hidden: s.hidden, people: s.people, chosen: s.chosen });
+        }
+        for b in self.boxes {
+            let id = doc.next_box_id;
+            doc.next_box_id += 1;
+            let at = shift(b.at).min(total - 1);
+            let size = egui::vec2(b.size[0], b.size[1]).max(egui::vec2(8.0, 8.0));
+            let mut style = run_style(&b.style);
+            style.image = 0;
+            let pos = egui::vec2(b.pos[0], b.pos[1]);
+            doc.boxes.push(crate::model::TextBox { id, at, pos, size, text: b.text, style, look: b.look, color: b.color });
         }
         for n in self.notes {
             let (start, end) = (shift(n.start).min(total), shift(n.end).min(total));
@@ -593,7 +646,7 @@ mod tests {
         doc.flow.text = format!("hi{PAGE_BREAK}yo\n");
         doc.flow.styles = vec![bold.clone(), bold.clone(), plain.clone(), plain.clone(), plain.clone(), plain.clone()];
         doc.setup.margin_left = 40.0;
-        doc.setup.page_numbers = true;
+        doc.setup.footer = crate::model::Band { look: crate::model::BandLook::Filigree, text: "{page}".into(), color: [1, 2, 3] };
         doc.notes.push(Note { id: 7, start: 1, end: 4, text: "check this".into(), color: 2 });
         let json = serde_json::to_string(&DocFile::from_doc(&doc)).unwrap();
         let back = serde_json::from_str::<DocFile>(&json).unwrap().into_doc();
@@ -663,5 +716,18 @@ mod tests {
         let doc = serde_json::from_str::<DocFile>(json).unwrap().into_doc();
         assert_eq!(doc.flow.text, format!("one{PAGE_BREAK}two\n"));
         assert_eq!(doc.flow.styles.len(), 8);
+    }
+
+    #[test]
+    fn files_from_before_footers_keep_their_page_numbers_as_a_footer() {
+        let json = r#"{"version":2,"setup":{"page_numbers":true},"content":[{"text":"one\n","font":"F","size":12.0,"bold":false,"underline":false}]}"#;
+        let doc = serde_json::from_str::<DocFile>(json).unwrap().into_doc();
+        assert_eq!(doc.setup.footer, crate::model::Band::page_numbers());
+        assert!(!doc.setup.page_numbers);
+        let saved = serde_json::to_string(&DocFile::from_doc(&doc)).unwrap();
+        assert!(!saved.contains("page_numbers") && saved.contains(r#""text":"{page}""#), "{saved}");
+        // Without them, no footer.
+        let json = r#"{"version":2,"content":[{"text":"one\n","font":"F","size":12.0,"bold":false,"underline":false}]}"#;
+        assert!(!serde_json::from_str::<DocFile>(json).unwrap().into_doc().setup.footer.is_on());
     }
 }

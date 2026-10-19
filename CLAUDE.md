@@ -62,13 +62,14 @@ Full list with reasons and tests in `ARCHITECTURE.md` §4.
    `set_caret(spans[i].start)`. Contents pages hold no text.
 6. **Derived things must not depend on their own results** (the contents' page count comes from
    the titles only).
-7. **Notes and scenes are char positions outside the text.** Anything that rewrites text without
-   `Doc::apply` must move them.
+7. **Notes, scenes and text boxes are char positions outside the text.** Anything that rewrites
+   text without `Doc::apply` must move them.
 8. **Files hold only stored state.** New fields get `#[serde(default)]`; old formats are converted
    in `DocFile::into_doc`.
 9. **Every formatting feature needs a Word mapping** in `export.rs`, or a decision that it has none.
 10. **Tests never call Claude** unless marked `#[ignore]` and calling `claude::allow_live()`.
-11. **Print draws `PageLayout::ink`.** Anything new drawn on a page goes there, or it is not printed.
+11. **Print draws `PageLayout::ink` and `App::furniture`** (header, footer, text boxes). Anything new
+    drawn on a page goes into one of them, or it is not printed. Neither moves a page break.
     Tests never reach the system's printers: they set `App::print.spooler`.
 12. **A story with a file saves itself; every story keeps versions by its id.** Anything that
     starts another story sets `story_id` and calls `Keeper::opened`. Leaving still offers to drop

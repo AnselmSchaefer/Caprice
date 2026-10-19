@@ -1,12 +1,11 @@
 //! Painting pages: paper, page stacks, static pages and pages sliding to and from the pile behind.
 
-use std::sync::Arc;
-
-use eframe::egui::{self, Color32, FontId, Pos2, Rect, Stroke, pos2, vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, Stroke, pos2, vec2};
 
 use crate::{App, Appearance};
+use crate::layout::Ink;
 use crate::notes::{NOTE_OUT, NoteLook, mirror_note, note_color, note_rect};
-use crate::theme::{INK, PAPER};
+use crate::theme::PAPER;
 
 /// Which way, per sheet, the piles of pages ahead and behind spread out from under the page.
 pub const AHEAD: egui::Vec2 = egui::vec2(1.0, 0.64);
@@ -129,24 +128,21 @@ impl App {
         side(behind, BEHIND, BEHIND_FILL, 50.0, &|k| k - 1, true);
     }
 
-    /// The page number, and where it goes relative to the page's top-left (None if turned off).
-    pub fn footer(&self, ctx: &egui::Context, i: usize, sc: f32) -> Option<(Arc<egui::Galley>, Pos2)> {
-        if !self.doc.setup.page_numbers {
-            return None;
+    /// What page `i` holds besides the story, at scale `sc` relative to the page's top-left: its
+    /// header and footer, then its text boxes on top. Every look and print draw it (R20).
+    /// `chapters` are `chapters(false)`, asked for only if a header or footer shows the chapter.
+    pub fn furniture(&self, ctx: &egui::Context, i: usize, sc: f32, chapters: &dyn Fn() -> Vec<crate::contents::Entry>) -> Vec<Ink> {
+        let mut ink = self.doc.bands_ink(ctx, i, sc, chapters);
+        for b in self.doc.boxes_on(i) {
+            ink.extend(crate::textbox::box_ink(ctx, b, sc, true));
         }
-        let galley = ctx.fonts_mut(|f| {
-            f.layout((i + 1).to_string(), FontId::proportional(10.0 * sc), Color32::from_gray(110), f32::INFINITY)
-        });
-        let size = self.doc.setup.size() * sc;
-        let x = (size.x - galley.size().x) / 2.0;
-        let y = size.y - self.doc.setup.margin_bottom * sc / 2.0 - galley.size().y / 2.0;
-        Some((galley, pos2(x, y)))
+        ink
     }
 
-    pub fn draw_footer(&self, ui: &egui::Ui, rect: Rect, i: usize) {
-        if let Some((galley, at)) = self.footer(ui.ctx(), i, self.scale_of(rect)) {
-            ui.painter().galley(rect.min + at.to_vec2(), galley, INK);
-        }
+    /// Page `i`'s header, footer and text boxes, drawn on a page at `rect`.
+    pub fn draw_furniture(&self, ui: &egui::Ui, rect: Rect, i: usize) {
+        let ink = self.furniture(ui.ctx(), i, self.scale_of(rect), &|| self.doc.chapters(false));
+        ui.painter().extend(ink.into_iter().filter_map(|k| k.translate(rect.min.to_vec2()).shape()));
     }
 
     pub fn static_page(&self, ui: &egui::Ui, rect: Rect, i: usize) {
@@ -155,7 +151,7 @@ impl App {
         let sc = self.scale_of(rect);
         let layout = self.page_layout(ui.ctx(), i, sc);
         self.paint_layout(ui.painter(), &layout, rect.min + self.doc.setup.margin_origin() * sc);
-        self.draw_footer(ui, rect, i);
+        self.draw_furniture(ui, rect, i);
         self.paint_notes(ui.ctx(), ui.painter(), rect, i, &NoteLook::FLAT);
     }
 
@@ -330,7 +326,7 @@ impl App {
             ui.painter().extend(self.backdrop_shapes(ctx, i, sheet, &|p| p, 1.0, 1.0));
             let layout = self.page_layout(ctx, i, sc);
             self.paint_layout(ui.painter(), &layout, sheet.min + self.doc.setup.margin_origin() * sc);
-            self.draw_footer(ui, sheet, i);
+            self.draw_furniture(ui, sheet, i);
         }
         let r = note_rect(sheet, sc, 0.0);
         let shift = (mirror_note(sheet, r).left() - r.left()) * left;

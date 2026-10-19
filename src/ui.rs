@@ -5,7 +5,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, FontId, Id, Rect, Sense, Stroke, UiBuilder, pos2, vec2};
 
 use crate::{App, Appearance};
-use crate::model::{Align, CM, ListKind, Orientation};
+use crate::model::{Align, Band, BandLook, BoxLook, CM, ListKind, Orientation, Style, TextBox};
 use crate::theme::{ACCENT, BTN, BTN_HOVER, DOCK, DOCK_EDGE, TEXT, TEXT_DIM};
 
 pub const DOCK_H: f32 = 48.0;
@@ -18,7 +18,7 @@ pub const MIN_WINDOW: [f32; 2] = [340.0, 400.0];
 /// Widest the docks get.
 pub const DOCK_MAX_W: f32 = 1180.0;
 /// The toolbar's groups of tools, in the order they show; the last ones go into "⋯" first.
-/// File, font, letters, paragraph, page and image, note and find, Claude and scenes.
+/// File, font, letters, paragraph, page and insert, note and find, Claude and scenes.
 pub const GROUPS: usize = 7;
 /// Room between two tools, or two groups.
 const TOOL_GAP: f32 = 8.0;
@@ -175,10 +175,48 @@ fn color_dropdown(ui: &mut egui::Ui, color: Option<[u8; 3]>) -> Option<Option<[u
     pick
 }
 
-#[derive(Clone, Copy)]
-enum ImageAction {
-    Insert,
-    Width(f32),
+/// Something picked in the Insert menu.
+enum InsertAction {
+    Picture,
+    TextBox(BoxLook),
+    /// A new header (true) or footer.
+    Band(bool, Band),
+    PageBreak,
+}
+
+/// The looks a text box can have, each drawn as a small box with a few words in it, as the
+/// headers' gallery does; the one clicked.
+fn box_gallery(ui: &mut egui::Ui, typing: &Style) -> Option<BoxLook> {
+    let mut pick = None;
+    egui::Grid::new("box_gallery").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
+        for (k, look) in BoxLook::ALL.into_iter().enumerate() {
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(look.name()).size(12.0).color(TEXT_DIM));
+                let (rect, resp) = ui.allocate_exact_size(vec2(170.0, 66.0), Sense::click());
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, look.name()));
+                let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+                p.rect_filled(rect, 2.0, crate::theme::PAPER);
+                let mut style = Style { size: 10.0, bold: false, italic: false, underline: false, color: None, ..typing.with_para(Default::default()) };
+                style.para.align = if look == BoxLook::Quote { Align::Center } else { Align::Left };
+                let text = "A few words set apart from the story.".into();
+                let color = crate::textbox::first_color(look);
+                let sample = TextBox { id: 0, at: 0, pos: vec2(12.0, 9.0), size: vec2(146.0, 46.0), text, style, look, color };
+                for ink in crate::textbox::box_ink(ui.ctx(), &sample, 1.0, true) {
+                    p.extend(ink.translate(rect.min.to_vec2()).shape());
+                }
+                if resp.hovered() {
+                    ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, TEXT_DIM), egui::StrokeKind::Outside);
+                }
+                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    pick = Some(look);
+                }
+            });
+            if k % 2 == 1 {
+                ui.end_row();
+            }
+        }
+    });
+    pick
 }
 
 #[derive(Clone, Copy)]
@@ -205,7 +243,7 @@ struct Tools {
     color: Option<Option<[u8; 3]>>,
     para: Option<ParaChange>,
     setup: Option<crate::model::PageSetup>,
-    image: Option<ImageAction>,
+    insert: Option<InsertAction>,
     add_note: bool,
     find: bool,
 }
@@ -397,7 +435,7 @@ impl App {
                 3 => self.paragraph_tools(ui, out),
                 4 => {
                     out.setup = self.page_menu(ui);
-                    self.image_menu(ui, out);
+                    self.insert_menu(ui, out);
                 }
                 5 => {
                     out.add_note |= ui.button("Note").on_hover_text("Attach a note to the selection or line (Ctrl+Alt+N)").clicked();
@@ -439,30 +477,36 @@ impl App {
         });
     }
 
+    /// The style the toolbar shows and changes: the selected text box's, else the typing style.
+    fn tool_style(&self) -> Style {
+        self.boxes.selected.and_then(|id| self.text_box(id)).map_or_else(|| self.typing.clone(), |b| b.style.clone())
+    }
+
     fn font_tools(&mut self, ui: &mut egui::Ui, out: &mut Tools) {
+        let shown = self.tool_style();
         egui::ComboBox::from_id_salt("font")
-            .selected_text(self.typing.font.to_string())
+            .selected_text(shown.font.to_string())
             .width(FONT_W)
             .show_ui(ui, |ui| {
                 for (f, _) in &self.fonts.families {
-                    if ui.selectable_label(*f == *self.typing.font, f).clicked() {
+                    if ui.selectable_label(*f == *shown.font, f).clicked() {
                         out.font = Some(f.clone());
                     }
                 }
             });
-        let mut size = self.typing.size;
+        let mut size = shown.size;
         ui.add_sized(
             [58.0, 30.0],
             egui::DragValue::new(&mut size).range(6.0..=96.0).speed(0.15).max_decimals(1).suffix(" pt"),
         );
-        if size != self.typing.size {
+        if size != shown.size {
             out.size = Some(size);
         }
     }
 
     /// The look of the letters, close together as one group.
     fn letter_tools(&mut self, ui: &mut egui::Ui, out: &mut Tools) {
-        let t = &self.typing;
+        let t = &self.tool_style();
         let small = vec2(28.0, 30.0);
         ui.spacing_mut().item_spacing.x = 3.0;
         let b = egui::Button::new(egui::RichText::new("B").strong()).selected(t.bold).min_size(small);
@@ -477,7 +521,10 @@ impl App {
     /// Paragraph format of the paragraph the caret is in. Alignment (with line spacing) and lists
     /// are one dropdown each, to save room.
     fn paragraph_tools(&mut self, ui: &mut egui::Ui, out: &mut Tools) {
-        let attrs = self.doc.para_attrs_at(self.caret);
+        let mut attrs = self.doc.para_attrs_at(self.caret);
+        if self.boxes.selected.is_some() {
+            attrs.align = self.tool_style().para.align;
+        }
         let para_change = &mut out.para;
         icon_dropdown(ui, Icon::Align(attrs.align), false, "Alignment and line spacing", |ui| {
             ui.horizontal(|ui| {
@@ -525,26 +572,96 @@ impl App {
         }
     }
 
-    fn image_menu(&mut self, ui: &mut egui::Ui, out: &mut Tools) {
-        let selected_image = self.selected_image().is_some();
-        egui::containers::menu::MenuButton::new("Image").ui(ui, |ui| {
-            ui.set_min_width(190.0);
-            if ui.add(egui::Button::new("Insert picture…").frame(false)).clicked() {
-                out.image = Some(ImageAction::Insert);
-            }
-            ui.add_enabled_ui(selected_image, |ui| {
+    /// The Insert menu: a picture, a text box, a header or footer (each from a gallery of looks),
+    /// a page break.
+    fn insert_menu(&mut self, ui: &mut egui::Ui, out: &mut Tools) {
+        egui::containers::menu::MenuButton::new("Insert")
+            .config(egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
+            .ui(ui, |ui| {
+                ui.set_min_width(190.0);
+                if ui.add(egui::Button::new("Picture…").frame(false)).clicked() {
+                    out.insert = Some(InsertAction::Picture);
+                    ui.close();
+                }
+                ui.menu_button("Text box", |ui| {
+                    if let Some(look) = box_gallery(ui, &self.typing) {
+                        out.insert = Some(InsertAction::TextBox(look));
+                        ui.close();
+                    }
+                });
+                for (label, top) in [("Header", true), ("Footer", false)] {
+                    ui.menu_button(label, |ui| {
+                        if let Some(band) = self.band_menu(ui, top) {
+                            out.insert = Some(InsertAction::Band(top, band));
+                        }
+                    });
+                }
                 ui.separator();
-                for (label, fraction) in [("Small  (25% of width)", 0.25), ("Medium  (50%)", 0.5), ("Large  (75%)", 0.75), ("Full width", 1.0)] {
-                    if ui.add(egui::Button::new(label).frame(false)).clicked() {
-                        out.image = Some(ImageAction::Width(fraction));
+                if ui.add(egui::Button::new("Page break").shortcut_text("Ctrl+Enter").frame(false)).clicked() {
+                    out.insert = Some(InsertAction::PageBreak);
+                    ui.close();
+                }
+            });
+    }
+
+    /// The gallery of header (`top`) or footer looks, and once there is one its text, fields,
+    /// colour and a way to take it off. The band as changed, if it was.
+    fn band_menu(&self, ui: &mut egui::Ui, top: bool) -> Option<Band> {
+        let band = if top { &self.doc.setup.header } else { &self.doc.setup.footer };
+        let font = self.doc.contents_style().font;
+        let mut new = band.clone();
+        egui::Grid::new(("band_gallery", top)).num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
+            for (k, look) in BandLook::ALL.into_iter().enumerate() {
+                // A look not in use is shown with its own first text, and the colour chosen.
+                let text = if band.is_on() && !band.text.is_empty() { band.text.clone() } else { crate::bands::first_text(look, top).to_owned() };
+                let shown = Band { look, text, color: band.color };
+                ui.vertical(|ui| {
+                    if crate::bands::band_tile(ui, &shown, top, band.look == look, &font).clicked() {
+                        new = shown;
+                    }
+                });
+                if k % 2 == 1 {
+                    ui.end_row();
+                }
+            }
+        });
+        if band.is_on() {
+            ui.separator();
+            let what = if top { "Header" } else { "Footer" };
+            let mut text = band.text.clone();
+            let field = egui::TextEdit::singleline(&mut text).hint_text(format!("{what} text")).desired_width(f32::INFINITY);
+            if ui.add(field).changed() {
+                new.text = text;
+            }
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Add").color(TEXT_DIM));
+                let fields = [
+                    ("Page number", crate::model::PAGE_FIELD),
+                    ("Page count", crate::model::PAGES_FIELD),
+                    ("Chapter title", crate::model::CHAPTER_FIELD),
+                ];
+                for (label, field) in fields {
+                    if ui.button(label).on_hover_text(format!("Shown in the text as {field}, filled in on each page")).clicked() {
+                        let gap = if new.text.is_empty() || new.text.ends_with(' ') { "" } else { " " };
+                        new.text = format!("{}{gap}{field}", new.text);
                     }
                 }
             });
-        });
+            if let Some(c) = crate::bands::accent_row(ui, band.color) {
+                new.color = c;
+            }
+            if ui.add(egui::Button::new(format!("Remove {}", what.to_lowercase())).frame(false)).clicked() {
+                new = Band::default();
+            }
+        }
+        (new != *band).then_some(new)
     }
 
     /// Do what was clicked in the tools, after they are all drawn.
-    fn apply_tools(&mut self, ctx: &egui::Context, out: Tools) {
+    fn apply_tools(&mut self, ctx: &egui::Context, mut out: Tools) {
+        if self.boxes.selected.is_some() {
+            self.format_box(ctx, &mut out);
+        }
         if let Some(f) = out.font {
             self.fonts.ensure(ctx, &f, false);
             let f: Arc<str> = f.into();
@@ -588,13 +705,15 @@ impl App {
         if out.find {
             self.open_search();
         }
-        match out.image {
-            Some(ImageAction::Insert) => {
+        match out.insert {
+            Some(InsertAction::Picture) => {
                 self.ask_path(ctx, crate::fileio::DialogFor::Picture, || {
                     rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg"]).pick_file()
                 });
             }
-            Some(ImageAction::Width(f)) => self.set_image_width_fraction(ctx, f),
+            Some(InsertAction::TextBox(look)) => self.insert_text_box(ctx, look),
+            Some(InsertAction::Band(top, band)) => self.set_band(top, band),
+            Some(InsertAction::PageBreak) => self.insert_page_break(ctx),
             None => {}
         }
         match out.file {
@@ -608,6 +727,37 @@ impl App {
             Some(FileAction::Info) => self.open_info(),
             None => {}
         }
+    }
+
+    /// The letter tools and alignment act on the selected text box, all of its text: take them
+    /// out of `out` and do them there.
+    fn format_box(&mut self, ctx: &egui::Context, out: &mut Tools) {
+        if let Some(f) = out.font.take() {
+            self.fonts.ensure(ctx, &f, false);
+            self.edit_selected_box(|b| b.style.font = f.into());
+        }
+        let toggles = [std::mem::take(&mut out.bold), std::mem::take(&mut out.italic), std::mem::take(&mut out.underline)];
+        let size = out.size.take();
+        let color = out.color.take();
+        let align = match out.para {
+            Some(ParaChange::Align(a)) => {
+                out.para = None;
+                Some(a)
+            }
+            _ => None,
+        };
+        if size.is_none() && color.is_none() && align.is_none() && !toggles.contains(&true) {
+            return;
+        }
+        self.edit_selected_box(|b: &mut TextBox| {
+            let st = &mut b.style;
+            st.size = size.unwrap_or(st.size);
+            st.color = color.unwrap_or(st.color);
+            st.para.align = align.unwrap_or(st.para.align);
+            st.bold ^= toggles[0];
+            st.italic ^= toggles[1];
+            st.underline ^= toggles[2];
+        });
     }
 
     /// The Page menu: new page settings, if they were changed.
@@ -660,7 +810,6 @@ impl App {
                     ui.end_row();
                 });
                 ui.separator();
-                ui.checkbox(&mut setup.page_numbers, "Page numbers");
                 ui.horizontal(|ui| {
                     ui.label("Chapter initials");
                     let tip = "The first letter of each chapter, enlarged to sink into its first lines";

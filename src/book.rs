@@ -5,6 +5,7 @@ use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke, pos2, vec2};
 use egui::epaint::{Mesh, TessellationOptions, Tessellator, WHITE_UV};
 
 use crate::App;
+use crate::layout::Ink;
 use crate::notes::NoteLook;
 use crate::render::BEHIND_FILL;
 use crate::theme::{INK, PAPER};
@@ -177,8 +178,9 @@ impl App {
                     tess.tessellate_shape(Shape::galley(pos2(origin.x + p.x + at.x, origin.y + p.y + at.y), g.clone(), INK), &mut text_mesh);
                 }
             }
-            if let Some((g, at)) = self.footer(ctx, i, sc) {
-                tess.tessellate_shape(Shape::galley(at, g, INK), &mut text_mesh);
+            // The header, footer and text boxes bend with the paper too (pictures cannot be in them).
+            for shape in self.furniture(ctx, i, sc, &|| self.doc.chapters(false)).into_iter().filter_map(Ink::shape) {
+                tess.tessellate_shape(shape, &mut text_mesh);
             }
             for v in &mut text_mesh.vertices {
                 v.pos = map(v.pos.x, rect.top() + v.pos.y);

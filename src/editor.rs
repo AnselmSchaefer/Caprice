@@ -523,7 +523,10 @@ impl App {
         let events = ctx.input(|i| i.events.clone());
         for e in events {
             match e {
-                Event::Text(t) => self.insert_text(ctx, &t),
+                Event::Text(t) => {
+                    self.boxes = Default::default();
+                    self.insert_text(ctx, &t);
+                }
                 Event::Ime(egui::ImeEvent::Commit(t)) => self.insert_text(ctx, &t),
                 Event::Paste(t) => self.paste(ctx, &t),
                 Event::Copy => {
@@ -547,6 +550,9 @@ impl App {
     /// Keys are handled in the order they arrived, together with typing, so that e.g. pressing a
     /// formatting shortcut right after Enter formats the new paragraph.
     fn handle_key(&mut self, ctx: &egui::Context, key: Key, m: Modifiers) {
+        if self.box_key(key, m) {
+            return;
+        }
         let (word, shift) = (m.command || m.ctrl, m.shift);
         if m.alt && !m.command && matches!(key, Key::ArrowUp | Key::ArrowDown) && self.picture_paragraph().is_some() {
             return self.nudge_picture(ctx, key == Key::ArrowUp);
@@ -755,7 +761,8 @@ impl App {
         if !interactive {
             return;
         }
-        self.mouse(ui, &layout, content, i, picture);
+        let boxes = self.box_hits(&ctx, page_rect, i);
+        self.mouse(ui, &layout, content, i, picture, &boxes);
     }
 
     /// The selected picture (if the selection is exactly one, on this page) and where it is on screen.
@@ -766,10 +773,13 @@ impl App {
         Some((img.id, img.rect.translate(content.min.to_vec2() + vec2(0.0, p.y))))
     }
 
-    fn mouse(&mut self, ui: &mut egui::Ui, layout: &PageLayout, content: Rect, i: usize, picture: Option<(u32, Rect)>) {
+    /// The pointer on the page: `boxes` are where text boxes lie on it, which take it there.
+    fn mouse(&mut self, ui: &mut egui::Ui, layout: &PageLayout, content: Rect, i: usize, picture: Option<(u32, Rect)>, boxes: &[Rect]) {
         let ctx = ui.ctx().clone();
         let sc = layout.scale;
         let resp = ui.interact(content.expand(6.0), Id::new("editor"), Sense::click_and_drag());
+        // Drawn later on the same layer, the boxes do not hide the page from `contains_pointer` (R16).
+        let over_box = ctx.input(|inp| inp.pointer.latest_pos()).is_some_and(|p| boxes.iter().any(|r| r.contains(p)));
 
         // Resize handles sit on top of the editor.
         let mut over_handle = false;
@@ -799,7 +809,7 @@ impl App {
                 }
             }
         }
-        if resp.hovered() && !self.ctrl_down && !over_handle {
+        if resp.hovered() && !self.ctrl_down && !over_handle && !over_box {
             let pointer = ctx.input(|inp| inp.pointer.latest_pos());
             let on_picture = pointer.is_some_and(|p| layout.image_at(p - content.min).is_some());
             let on_link = pointer.is_some_and(|p| layout.link_at(p - content.min).is_some());
@@ -837,7 +847,7 @@ impl App {
         });
 
         // Right click on a picture opens its menu.
-        if secondary && resp.contains_pointer() {
+        if secondary && resp.contains_pointer() && !over_box {
             self.pic_menu = None;
             if let Some(p) = pos {
                 if let Some(pic) = layout.image_at(p - content.min) {
@@ -849,10 +859,12 @@ impl App {
             }
         }
 
-        if pressed && resp.contains_pointer() {
+        if pressed && resp.contains_pointer() && !over_box {
             if let Some(p) = resp.interact_pointer_pos().or(pos) {
                 self.pic_drag = None;
                 self.sel_drag = None;
+                // Back to the story: a text box selected is let go.
+                self.boxes = Default::default();
                 if let Some(page) = layout.link_at(p - content.min).filter(|_| !shift) {
                     // A line of the contents leads to its chapter, the caret too, like a link.
                     self.set_caret(&ctx, self.doc.spans[page].start, false);
@@ -956,7 +968,7 @@ impl App {
                         painter.add(egui::Shape::mesh(crate::images::picture_mesh(tex.id(), img.rect, img.rotation, egui::Color32::WHITE)));
                     }
                 }
-                Ink::Text(g, at) => painter.galley(at, g, INK),
+                other => painter.extend(other.shape()),
             }
         }
     }

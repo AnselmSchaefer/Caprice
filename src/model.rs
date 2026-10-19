@@ -145,6 +145,81 @@ pub fn is_terminator(c: char) -> bool {
     c == '\n' || c == PAGE_BREAK
 }
 
+/// How a header or footer looks (drawn in `bands.rs`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum BandLook {
+    /// There is none.
+    #[default]
+    None,
+    /// The text, centred.
+    Plain,
+    /// The text over a hairline (a footer: under one) across the writing width.
+    Rule,
+    /// A hairline with a little fleuron in its middle, the text beyond it.
+    Filigree,
+    /// The text in white on a band of colour across the writing width.
+    Banner,
+    /// The text at the outer edge, left on even pages and right on odd ones, over a hairline.
+    Facing,
+    /// The text in white in a circle of colour (made for the page number).
+    Circle,
+}
+
+impl BandLook {
+    /// Every look there is, in the order the galleries show them.
+    pub const ALL: [BandLook; 6] = [BandLook::Plain, BandLook::Rule, BandLook::Filigree, BandLook::Banner, BandLook::Facing, BandLook::Circle];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BandLook::None => "None",
+            BandLook::Plain => "Plain",
+            BandLook::Rule => "Rule",
+            BandLook::Filigree => "Filigree",
+            BandLook::Banner => "Banner",
+            BandLook::Facing => "Facing pages",
+            BandLook::Circle => "Circle",
+        }
+    }
+}
+
+/// Stands in a header's or footer's text for the number of the page it is on.
+pub const PAGE_FIELD: &str = "{page}";
+/// For the number of pages there are.
+pub const PAGES_FIELD: &str = "{pages}";
+/// For the title of the chapter the page is in: the first that starts on it, else the last before.
+pub const CHAPTER_FIELD: &str = "{chapter}";
+
+/// A header or footer: one line of text on every page, in the top or bottom margin. The fields
+/// (`PAGE_FIELD`…) in its text are filled in for each page.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Band {
+    pub look: BandLook,
+    pub text: String,
+    /// The colour of its lines, fleuron, band or circle.
+    pub color: [u8; 3],
+}
+
+/// The colour headers, footers and text boxes start with: a quiet blue.
+pub const ACCENT_INK: [u8; 3] = [86, 124, 164];
+
+impl Default for Band {
+    fn default() -> Self {
+        Self { look: BandLook::None, text: String::new(), color: ACCENT_INK }
+    }
+}
+
+impl Band {
+    pub fn is_on(&self) -> bool {
+        self.look != BandLook::None
+    }
+
+    /// The page number, centred: what "Page numbers" was before there were footers.
+    pub fn page_numbers() -> Self {
+        Self { look: BandLook::Plain, text: PAGE_FIELD.into(), ..Self::default() }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum Orientation {
     #[default]
@@ -164,7 +239,13 @@ pub struct PageSetup {
     pub margin_bottom: f32,
     pub margin_left: f32,
     pub margin_right: f32,
+    /// Files from before headers and footers: the page number at the foot of the page. Opening
+    /// such a file makes it the footer (`DocFile::into_doc`); it is never set otherwise.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub page_numbers: bool,
+    /// Drawn in the top and bottom margins of every page; they take no room from the text.
+    pub header: Band,
+    pub footer: Band,
     /// How many lines deep the first letter of a chapter sinks (0: no drop caps).
     pub drop_cap_lines: u8,
     /// Pages listing the chapters go before the story.
@@ -182,6 +263,8 @@ impl Default for PageSetup {
             margin_left: 72.0,
             margin_right: 72.0,
             page_numbers: false,
+            header: Band::default(),
+            footer: Band::default(),
             drop_cap_lines: 0,
             contents: false,
         }
@@ -327,6 +410,56 @@ impl Character {
     }
 }
 
+/// How a text box looks (drawn in `textbox.rs`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum BoxLook {
+    /// White, with a thin dark border.
+    #[default]
+    Simple,
+    /// Tinted with its colour, no border.
+    Shaded,
+    /// A bar of its colour down the left side, lightly tinted.
+    Sidebar,
+    /// Larger italic text between two rules of its colour, centred, as a pull quote.
+    Quote,
+    /// Only the text.
+    Bare,
+}
+
+impl BoxLook {
+    pub const ALL: [BoxLook; 5] = [BoxLook::Simple, BoxLook::Shaded, BoxLook::Sidebar, BoxLook::Quote, BoxLook::Bare];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BoxLook::Simple => "Simple",
+            BoxLook::Shaded => "Shaded",
+            BoxLook::Sidebar => "Sidebar",
+            BoxLook::Quote => "Quote",
+            BoxLook::Bare => "No border",
+        }
+    }
+}
+
+/// A box of text placed on a page, in front of the story's text, which does not flow around it
+/// (as Word's "In front of text"). Like a note it is pinned to a char outside the text, and shows
+/// on that char's page, so it goes where the text it belongs with goes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextBox {
+    pub id: u64,
+    /// The char it is pinned to.
+    pub at: usize,
+    /// Its top-left from the page's top-left, in page points.
+    pub pos: Vec2,
+    /// Its width, and the least height: it grows to hold its text.
+    pub size: Vec2,
+    pub text: String,
+    /// Font, size, bold, italic, underline and colour of all its text; `para.align` aligns it.
+    pub style: Style,
+    pub look: BoxLook,
+    /// The colour of its border, tint, bar or rules.
+    pub color: [u8; 3],
+}
+
 pub const NOTE_COLORS: [(u8, u8, u8); 5] =
     [(255, 214, 90), (255, 150, 185), (130, 215, 140), (120, 195, 255), (255, 175, 100)];
 
@@ -357,6 +490,9 @@ pub struct Doc {
     pub story_notes: String,
     /// The scratchpad's plain text, kept beside the story.
     pub scratchpad: String,
+    /// Text boxes, in the order they were made (later ones lie on top).
+    pub boxes: Vec<TextBox>,
+    pub next_box_id: u64,
 }
 
 impl Doc {
@@ -377,6 +513,8 @@ impl Doc {
             next_cast_id: 1,
             story_notes: String::new(),
             scratchpad: String::new(),
+            boxes: Vec::new(),
+            next_box_id: 1,
         }
     }
 

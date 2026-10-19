@@ -150,10 +150,37 @@ pub struct PageLayout {
     pub scale: f32,
 }
 
-/// One thing drawn on a page: text with its top-left, or a picture in its box (on the page).
+/// One thing drawn on a page: text with its top-left, a picture in its box (on the page), or a
+/// shape of a header, footer or text box.
 pub enum Ink {
     Text(Arc<egui::Galley>, egui::Pos2),
     Picture(ImageBox),
+    /// An outline filled with a colour. It must be convex: egui fills no other kind.
+    Fill(Vec<egui::Pos2>, Color32),
+    /// A line through the points, this wide.
+    Line(Vec<egui::Pos2>, f32, Color32),
+}
+
+impl Ink {
+    /// What egui draws for it on screen; a picture needs its texture, so it has none.
+    pub fn shape(self) -> Option<egui::Shape> {
+        match self {
+            Ink::Text(g, at) => Some(egui::Shape::galley(at, g, INK)),
+            Ink::Picture(_) => None,
+            Ink::Fill(points, color) => Some(egui::Shape::convex_polygon(points, color, Stroke::NONE)),
+            Ink::Line(points, width, color) => Some(egui::Shape::line(points, Stroke::new(width, color))),
+        }
+    }
+
+    /// The same, moved by `by`.
+    pub fn translate(self, by: Vec2) -> Ink {
+        match self {
+            Ink::Text(g, at) => Ink::Text(g, at + by),
+            Ink::Picture(img) => Ink::Picture(ImageBox { rect: img.rect.translate(by), ..img }),
+            Ink::Fill(points, color) => Ink::Fill(points.into_iter().map(|p| p + by).collect(), color),
+            Ink::Line(points, width, color) => Ink::Line(points.into_iter().map(|p| p + by).collect(), width, color),
+        }
+    }
 }
 
 impl PageLayout {

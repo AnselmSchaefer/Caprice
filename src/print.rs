@@ -432,14 +432,21 @@ impl App {
         document.set_metadata(Metadata::new().title(self.print_title()).creator("Caprice".into()));
         let mut faces = Faces::new(self.fonts.defs());
         let mut images: HashMap<u32, Option<Image>> = HashMap::new();
+        // Headers showing the chapter need the chapters, found once for all the pages.
+        let chapters = std::cell::OnceCell::new();
+        let chapters = || chapters.get_or_init(|| self.doc.chapters(false)).clone();
         for i in pages.filter(|&i| i < self.doc.pages()) {
             let settings = krilla::page::PageSettings::from_wh(size.x, size.y).ok_or("the paper has no size")?;
             let mut page = document.start_page_with(settings);
             let mut surface = page.surface();
             let layout = self.doc.layout_page(ctx, i, 1.0, &[]);
-            for ink in layout.ink(self.doc.setup.margin_origin().to_pos2()) {
+            let mut ink = layout.ink(self.doc.setup.margin_origin().to_pos2());
+            ink.extend(self.furniture(ctx, i, 1.0, &chapters));
+            for ink in ink {
                 match ink {
                     Ink::Text(galley, at) => draw_galley(&mut surface, &mut faces, &galley, at),
+                    Ink::Fill(points, color) => draw_shape(&mut surface, &points, true, Some(color), None),
+                    Ink::Line(points, width, color) => draw_shape(&mut surface, &points, false, None, Some((width, color))),
                     Ink::Picture(img) => {
                         let picture = images.entry(img.id).or_insert_with(|| {
                             let data = self.doc.images.iter().find(|d| d.id == img.id)?;
@@ -454,9 +461,6 @@ impl App {
                         }
                     }
                 }
-            }
-            if let Some((galley, at)) = self.footer(ctx, i, 1.0) {
-                draw_galley(&mut surface, &mut faces, &galley, at);
             }
             surface.finish();
             page.finish();
@@ -596,6 +600,33 @@ pub fn places(run: &Run) -> Vec<f32> {
 }
 
 /// Draw `galley` with its top-left at `at`, as text a PDF reader can search and copy.
+fn paint_of(color: Color32) -> (krilla::paint::Paint, NormalizedF32) {
+    let [r, g, b, a] = color.to_srgba_unmultiplied();
+    (rgb::Color::new(r, g, b).into(), NormalizedF32::new(f32::from(a) / 255.0).unwrap_or(NormalizedF32::ONE))
+}
+
+/// An outline through `points` (`closed` back to the first), filled and stroked as given.
+fn draw_shape(surface: &mut Surface, points: &[Pos2], closed: bool, fill: Option<Color32>, stroke: Option<(f32, Color32)>) {
+    let mut path = PathBuilder::new();
+    for (k, p) in points.iter().enumerate() {
+        if k == 0 { path.move_to(p.x, p.y) } else { path.line_to(p.x, p.y) }
+    }
+    if closed {
+        path.close();
+    }
+    let Some(path) = path.finish() else { return };
+    surface.set_fill(fill.map(|c| {
+        let (paint, opacity) = paint_of(c);
+        Fill { paint, opacity, ..Default::default() }
+    }));
+    surface.set_stroke(stroke.map(|(width, c)| {
+        let (paint, opacity) = paint_of(c);
+        krilla::paint::Stroke { paint, width, opacity, ..Default::default() }
+    }));
+    surface.draw_path(&path);
+    surface.set_stroke(None);
+}
+
 fn draw_galley(surface: &mut Surface, faces: &mut Faces, galley: &Galley, at: Pos2) {
     for run in runs(faces, galley, at) {
         let format = &galley.job.sections[run.section].format;
@@ -660,7 +691,7 @@ impl App {
         let mut faces = Faces::new(self.fonts.defs());
         let layout = self.doc.layout_page(ctx, i, 1.0, &[]);
         let mut ink = layout.ink(self.doc.setup.margin_origin().to_pos2());
-        ink.extend(self.footer(ctx, i, 1.0).map(|(g, at)| Ink::Text(g, at)));
+        ink.extend(self.furniture(ctx, i, 1.0, &|| self.doc.chapters(false)));
         let texts = ink.iter().filter_map(|k| if let Ink::Text(g, at) = k { Some((g, *at)) } else { None });
         texts.flat_map(|(g, at)| runs(&mut faces, g, at)).map(|r| r.text).collect()
     }

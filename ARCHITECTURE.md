@@ -4,7 +4,7 @@ How Caprice is put together, and the rules that hold it together. The rules (§4
 read before changing anything: each says what depends on what, what to check when touching it, and
 which tests guard it. Keep this file true: a change that alters a rule updates it in the same commit.
 
-*Last brought up to date: 2026-10-18 (find and replace, word counts).*
+*Last brought up to date: 2026-10-19 (the Insert menu: headers and footers, text boxes).*
 
 ---
 
@@ -13,7 +13,8 @@ which tests guard it. Keep this file true: a change that alters a rule updates i
 A desktop word processor in Rust on egui/eframe 0.36. It shows one page at a time on a desk, with
 the pages before and after it as piles, and turns pages with an animation ("Book": hinged like a
 book; "Paperstack": sliding into the pile). Post-its stick out of the page's edge. Chapters get
-titles, drop caps and contents pages. It saves `.caprice` (JSON), exports `.docx`, and prints, to a
+titles, drop caps and contents pages; headers and footers in a few looks, and text boxes placed
+anywhere on a page. It saves `.caprice` (JSON), exports `.docx`, and prints, to a
 printer or a PDF file, the pages as it shows them. Claude Code
 (the CLI) can review a passage drawn around with the pen or selected with the cursor, and paint scenes that show faintly behind the pages, each
 for its part of the story, drawing the people of the story's cast the same in every scene. On the
@@ -30,22 +31,23 @@ stored (.caprice)            derived, rebuilt from the stored state, never saved
 Flow: text + one Style       ──paginate (page size, scale 1)──▶ Doc::spans (the pages)
       per char                 │                                     │
 PageSetup (paper, margins,     ├─ Doc::chapters() ─▶ contents pages  │
-  page numbers, drop caps,     ├─ drop caps (which paragraphs, how   │
+  header, footer, drop caps,   ├─ drop caps (which paragraphs, how   │
   contents)                    │   many chars beside the cap)        ▼
 images (bytes, width,          └──────────────────────────▶ layout_page(i, zoom) ─▶ drawing
   rotation)                                                 (PageLayout: galleys,     (render, book,
 notes (char ranges + text)                                   hit-testing, caret)       editor, notes)
+text boxes (a char + place)  ──boxes_on(i)──▶ drawn over page i (App::furniture, with the header and footer)
 scenes (a char + drawings)   ──scene_at(caret) / page_scene(i)──▶ the drawing behind a page
 cast (names, looks, sheets)  ──named_in(what is painted, or just before)──▶ the people sent with a scene
                              export::to_docx(&Doc) ─▶ .docx (Word lays it out again itself)
-                             layout_page(i, 1) ─▶ PageLayout::ink ─▶ PDF ─▶ a file, or lp (CUPS)
+                             layout_page(i, 1) ─▶ PageLayout::ink + furniture ─▶ PDF ─▶ a file, or lp (CUPS)
 ```
 
 - **`Flow`** (`model.rs`) is one `String` plus one `Style` per char (font, size, bold, italic,
   underline, colour, image id, paragraph attributes). Paragraph formatting sits on the paragraph's **terminator** char.
 - **Pages are not stored.** `Doc::spans` is a cache: per page, a char/byte range of the flow, whether
   a hard break ends it, and, for a contents page, which part of the contents it shows.
-- **Notes** are char ranges kept beside the text, not in it; **scenes** are chars likewise.
+- **Notes** are char ranges kept beside the text, not in it; **scenes** and **text boxes** are chars likewise.
 - **Everything shown is recomputed** from these each frame (egui is immediate mode). Caches that do
   exist key on `Doc::version` (search matches, the scene's "read at").
 
@@ -70,7 +72,9 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `images.rs` | Pictures: inserting, resizing, rotating, moving, textures |
 | `search.rs` | Find and replace bar, matches (case, whole words) |
 | `words.rs` | The Document info window: dates, file, counts (words, chapter, selection…), today's words and the daily goal, kept in the data folder |
-| `ui.rs` | Top toolbar (formatting, Page menu), bottom page bar and scrollbar |
+| `ui.rs` | Top toolbar (formatting, Page and Insert menus, the text box gallery), bottom page bar and scrollbar |
+| `bands.rs` | Headers and footers: their looks drawn as `Ink`, fields filled in per page, the gallery tiles, accent colours |
+| `textbox.rs` | Text boxes: drawn as `Ink`, inserted, written in, moved, resized, pinned to a char; their selection |
 | `fileio.rs` | `.caprice` format (`DocFile`), open/save/export commands, unsaved-changes detection |
 | `export.rs` | Hand-written Office Open XML for `.docx` |
 | `versions.rs` | Autosaving a story with a file; versions of every story kept in the data folder; the Versions window |
@@ -199,7 +203,8 @@ paginating).
 
 ### R7 — Notes and scenes are char positions outside the text
 
-- `rebase_notes` and `rebase_scenes` move them with every `Edit`. A scene pin is a point: text
+- `rebase_notes`, `rebase_scenes` and `rebase_boxes` move them with every `Edit`. A text box pin
+  moves like a scene pin. A scene pin is a point: text
   typed right at it goes after it (it still starts its paragraph or sentence), and deleted around, it stays
   where the text was. A rewrite of the text that bypasses `Doc::apply`
   (file migration) must move them too (`take_out_contents_chars` returns what it removed, so
@@ -207,6 +212,7 @@ paginating).
 - Neither changes where pages break.
 - **Anything new pinned to the text** goes the same way: moved in `apply_raw`, and in `into_doc`.
 - Tests: `notes_follow_edits`, `replacing_across_a_notes_edges`,
+  `text_boxes_stay_with_their_char_and_where_it_was_once_it_is_deleted`,
   `deleting_a_notes_text_leaves_a_point_note`, `post_its_do_not_change_where_pages_break`,
   `scenes_stay_with_their_paragraph_through_edits_and_saving`,
   `files_with_the_old_contents_char_open_with_the_setting_and_post_its_and_scenes_in_place`.
@@ -236,10 +242,14 @@ paginating).
   becomes a scene pinned at 0 in `App::open_scene`. `scene` now only holds the description and
   whether pictures show.
 - Unsaved changes = a hash of the serialized `DocFile`, so anything saved counts automatically.
+- `PageSetup::page_numbers` is read only from files from before footers: `into_doc` makes it a
+  plain footer of the page number (`Band::page_numbers`) and it is never written again. (Older
+  Caprice opening a newer file shows no page numbers.)
 - `DocFile::id` names the story for its versions (R22). Older files have none: they get one on
   opening, which counts as saved (it is written with the next save). `DocFile::created` likewise:
   older files take the file's own date (created, else modified) on opening, and keep it once saved.
 - Tests: `roundtrip_keeps_text_styles_breaks_and_setup`, `version_1_files_still_load_as_separate_pages`,
+  `files_from_before_footers_keep_their_page_numbers_as_a_footer`,
   `chapter_titles_are_saved_and_older_files_have_none`,
   `the_contents_setting_is_saved_opened_and_exported_through_the_app`,
   `an_older_files_one_scene_opens_pinned_to_the_start_of_the_story`,
@@ -259,8 +269,18 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
 - Scenes are not exported (decided: they are a writing aid, too faint to print).
 - Story notes, the scratchpad and the cast are not exported (decided: notes to Claude and to
   oneself, not part of the book).
+- Headers and footers are Word's header and footer parts, their fields Word's (`PAGE`,
+  `NUMPAGES`, `STYLEREF "Heading 1"`), their looks paragraph borders, shading, a "❦" and an
+  ellipse shape (module comment of `export.rs`); Facing pages are odd and even headers
+  (`evenAndOddHeaders` in `settings.xml`). Known difference: before the first chapter, Caprice
+  shows no chapter, and Word's `STYLEREF` shows the first one after.
+- Text boxes are text box shapes (`wps:wsp`) anchored in the paragraph of their char, at their
+  place on the page, `wrapNone` (in front of the text, as in Caprice), growing to their text
+  (`spAutoFit`). Quote and sidebar lines are paragraph borders inside the box.
 - Character formatting maps to run properties (`run_props`): bold, italic (`<w:i/>`), underline,
   and colour (`<w:color>`; none is Word's automatic colour, as it is Caprice's usual ink).
+- The sample checks (`sample_docx`, `sample_pdf`) lay the sample out in a context that has its
+  font loaded; laid out in a fresh `with_ctx` it panicked once any other test had loaded it.
 - Tests: in `export.rs`, plus `notes_become_comments_over_the_same_text`,
   `italic_and_coloured_text_is_drawn_saved_and_exported`.
 
@@ -270,7 +290,9 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
 |---|---|---|
 | Zoomed line heights rounded to pixels | Rescale rows to page-size height × zoom, per line | `layout.rs::true_to_scale` |
 | Text background fills the whole line height | Trim background quads to the font height | `layout.rs::tight_highlights` |
-| No text flowing around a box | Drop cap paragraph as three pieces | `dropcap.rs` |
+| No text flowing around a box | Drop cap paragraph as three pieces; text boxes lie in front of the text | `dropcap.rs`, `textbox.rs` |
+| Only convex shapes are filled | Fleurons and circles built of convex pieces (`leaf`, `circle`) | `bands.rs` |
+| A field's galley is shown from its left, whatever its alignment | Box text laid out left, rows moved within the width (`box_galley`) | `textbox.rs` |
 | `TextEdit` caret height from its own font | Pass the post-it font | `notes.rs` |
 | No bending of text | Tessellate galleys, move vertices | `render.rs`, `book.rs`, `notes.rs` |
 | Modifiers unreliable on Hyprland | Track Ctrl from key events | `view.rs` |
@@ -442,7 +464,10 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   `Area` like the second row of tools). The editor takes a press whenever the pointer is in its
   rect on the background layer (`contains_pointer`), whatever else was drawn over it there: a
   click on the second row's tools, drawn on the background, also moved the caret in the text
-  under it. Guarded by `tools_that_do_not_fit_open_in_a_second_row_under_the_toolbar`. The search
+  under it. Guarded by `tools_that_do_not_fit_open_in_a_second_row_under_the_toolbar`. Text
+  boxes are drawn on the background too, after the editor, so the editor leaves a press alone
+  where a box lies (`box_hits`, passed to `mouse`); guarded by
+  `a_text_box_is_written_in_moved_and_resized_and_goes_where_its_text_goes`. The search
   bar is still drawn on the background; it lies over the top margin, which takes no clicks, unless
   the margin is very small.
 - **The toolbar is in groups (`ui::GROUPS`), and those that do not fit go into "⋯"**, the last
@@ -587,7 +612,8 @@ Claude menu, not saved as open, their results not saved either.
 ### R20 — Print draws what the screen draws, from the same layout
 
 `App::pdf` lays every page out at page size (`layout_page(i, 1.0)`, no highlights) and draws
-`PageLayout::ink`, the list `paint_layout` draws on screen, plus the page number (`footer`). So a
+`PageLayout::ink`, the list `paint_layout` draws on screen, plus `App::furniture` (header, footer,
+text boxes), which every look draws too. So a
 printed page breaks, wraps and justifies where the page shown does.
 
 - **Anything new drawn on a page goes into `PageLayout::ink`**, not straight onto the painter in
@@ -597,6 +623,9 @@ printed page breaks, wraps and justifies where the page shown does.
 - **Fonts are embedded from `FontBook::defs`**, the same files egui draws with, each char in the
   first face of its family's chain that has it, as egui picks. A font loaded some other way must
   go into `defs` too.
+- **`Ink::Fill` and `Ink::Line`** are the shapes of headers, footers and text boxes: a fill must be
+  convex (egui fills nothing else). On screen and on a turning page they go through `Ink::shape`;
+  print draws them as paths (`draw_shape`).
 - **Letters follow their own widths** (`places`): at page size egui puts each glyph on a whole
   point, which printed looked like "bul let". Lines keep egui's start and, justified, its end.
   Chars egui shaped into one glyph (a ligature) are printed one by one, sharing its width.
@@ -612,6 +641,7 @@ printed page breaks, wraps and justifies where the page shown does.
   `print_sends_copies_of_some_pages_to_the_printer_chosen_from_the_menu`,
   `with_no_printer_set_up_print_says_so_and_saves_every_page_as_a_pdf`,
   `each_printed_page_holds_the_text_of_that_page_and_its_number`, `a_picture_is_printed_with_its_page`,
+  `a_header_and_footer_from_the_insert_menu_show_each_pages_chapter_and_number_and_print`,
   and in `print.rs` the reading of `lpstat` and `places`. Check the output by eye:
   `CAPRICE_SAMPLE_PDF=out.pdf cargo test sample_pdf`, then `pdftoppm -png out.pdf page`.
 
@@ -697,6 +727,35 @@ must keep working: writers do it. A version (the whole `.caprice` file) is kept 
   `a_story_keeps_when_it_was_begun_and_an_older_file_takes_its_own_date`, and in
   `search.rs` / `words.rs` finding, counting, the chapter around the caret and today's words.
 
+### R24 — Headers, footers and text boxes lie on the page; they never move the text
+
+Headers and footers (`PageSetup::header`, `footer`, a `Band` each: a look, a line of text, a
+colour) sit in the middle of the top and bottom margins; text boxes (`Doc::boxes`) lie wherever
+they were put, in front of the story's text. Neither changes where pages break, so pagination
+and R3 do not know them, and a header or footer change does not paginate (`set_band`).
+
+- **Everything they draw is `Ink`, from one place, `App::furniture`**: the page shown
+  (`draw_bands`, then `text_boxes` over the editor), the static and sliding pages
+  (`draw_furniture`), a book's turning page (tessellated and bent with the paper) and print (R20).
+  Something new drawn on a page that is not the story's text goes there too.
+- **Fields are filled in when drawn** (`bands::filled`): `{page}`, `{pages}`, `{chapter}` (the
+  chapter that starts on the page, else the last before it, `chapter_of_page`). Their size never
+  feeds back into layout (R6). A header showing the chapter asks for `chapters(false)` once a page;
+  print asks once for all pages.
+- **A text box is pinned to a char and shows on its page** (`boxes_on`): pushed onto the next
+  page with its text, it goes along; moved by hand, it is pinned again to the char under its
+  top-left corner (`pin_box`). Its height grows to hold its text (`box_height`, at page size, R4).
+  Its text is one style; while a box is selected the toolbar's font, size, letters, colour and
+  alignment format the whole box (`format_box`, `tool_style`), and Ctrl+B/I/U do too.
+- **Clicking a box writes in it; the story keeps its caret.** A selected box not being written in
+  takes Delete, Backspace and Escape (`box_key`); any other key, a typed letter or a click on the
+  story lets it go. Changes to headers, footers and boxes are not undoable (R1).
+- Tests: `a_header_and_footer_from_the_insert_menu_show_each_pages_chapter_and_number_and_print`,
+  `a_text_box_is_written_in_moved_and_resized_and_goes_where_its_text_goes`,
+  `text_boxes_stay_with_their_char_and_where_it_was_once_it_is_deleted`,
+  `files_from_before_footers_keep_their_page_numbers_as_a_footer`, and in `bands.rs`
+  `fields_are_filled_in_for_each_page`, `a_leaf_is_convex_and_reaches_from_end_to_end`.
+
 ---
 
 ## 5. Checklists for common changes
@@ -707,6 +766,10 @@ it changes drop caps (`has_drop_cap`) or the contents (`chapters`).
 
 **A new page setting:** `PageSetup` field + default → Page menu (`ui.rs`, applied through
 `set_setup`) → pagination/layout → Word section or settings (R10) → round-trip test.
+
+**A new look for headers, footers or text boxes:** a `BandLook`/`BoxLook` variant (in `ALL`, so
+the gallery shows it) → its `Ink` in `band_ink`/`box_ink`, convex fills only → its Word mapping in
+`band_xml`/`text_box_xml` (R10) → check with `sample_docx` and `sample_pdf`.
 
 **Something new drawn on a page:** size at page size (R4) → pagination (`next_span`) and layout
 (`layout_page`) agree → incremental equals full (R3) → both looks (`render.rs` and `book.rs`) →
@@ -739,7 +802,7 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
 
 ## 6. Tests
 
-- `cargo test` runs everything headlessly (about 215 tests, ~13 s). They drive the real `App`
+- `cargo test` runs everything headlessly (about 220 tests, ~13 s). They drive the real `App`
   through an egui `Context`: `layout::with_ctx` for model/layout tests, `Harness` (in `main.rs`)
   for app-level ones (`frames`, `key`, `type_text`, `click_in_page`, `scrub_to`, `long_contents`,
   `shown`, and `click_widget`, which finds a button by its label or a field by its hint through
@@ -806,5 +869,11 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
   folder by story id rather than beside the file: no clutter in the writer's folders, versions
   follow a renamed file, and a story never saved has them too. Leaving still asks, but whether
   to keep or drop the changes since saving by hand, as the file holds them already (R22).
+- **2026-10-19 — Text boxes lie in front of the text, pinned to a char.** Word offers text that
+  wraps around a box; egui cannot flow text around anything (R11), and making pagination aware of
+  boxes would tie page breaks to where a box was dropped. So a box lies in front of the text
+  (Word's "In front of text", which is how it is exported), and it is pinned to a char like a
+  scene, not to a page, so it goes along when the text moves to another page. Headers and footers
+  likewise take no room: they sit in the margins (R24). "Page numbers" became a footer.
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

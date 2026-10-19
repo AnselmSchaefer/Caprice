@@ -1,4 +1,5 @@
 mod backdrop;
+mod bands;
 mod book;
 mod cast;
 mod claude;
@@ -20,6 +21,7 @@ mod render;
 mod review;
 mod scratchpad;
 mod search;
+mod textbox;
 mod theme;
 mod ui;
 mod versions;
@@ -205,6 +207,8 @@ pub struct App {
     pub may_close: bool,
     /// What was last copied or cut, with its formatting.
     pub clip: Option<editor::Clip>,
+    /// The text box selected, and whether it is being written in.
+    pub boxes: textbox::Boxes,
 }
 
 impl App {
@@ -285,6 +289,7 @@ impl App {
             leaving: None,
             after_save: None,
             may_close: false,
+            boxes: textbox::Boxes::default(),
         };
         app.saved_hash = app.content_hash();
         app
@@ -581,8 +586,9 @@ impl App {
                 }
                 Self::paper(ui.painter(), page_rect);
                 ui.painter().extend(self.backdrop_shapes(&ctx, i, page_rect, &|p| p, 1.0, 1.0));
-                self.draw_footer(ui, page_rect, i);
+                self.draw_bands(ui, page_rect, i);
                 self.editor_surface(ui, page_rect, i, !self.circling());
+                self.text_boxes(ui, page_rect, i);
                 self.draw_notes(ui, page_rect, i);
                 self.pen_surface(ui, page_rect, i);
             }
@@ -4012,7 +4018,7 @@ mod tests {
         h.type_text(&format!(" and more. {}", "It was nearly midnight and the Prime Minister sat alone. ".repeat(160)));
         let ctx = h.ctx.clone();
         let mut setup = h.app.doc.setup.clone();
-        setup.page_numbers = true;
+        setup.footer = model::Band::page_numbers();
         h.app.set_setup(&ctx, setup);
         assert!(h.app.doc.pages() >= 3);
         let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
@@ -4326,12 +4332,174 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    // ------------------------------------------- the Insert menu: headers, footers, text boxes
+
+    /// The text of everything the last frame painted, galley by galley.
+    fn painted_texts(h: &Harness) -> Vec<String> {
+        h.painted.iter().filter_map(|cs| if let egui::Shape::Text(t) = &cs.shape { Some(t.galley.job.text.clone()) } else { None }).collect()
+    }
+
+    /// Two chapters, each on a page of its own.
+    fn two_chapters(h: &mut Harness) {
+        h.frames(3, vec![], Modifiers::NONE);
+        let st = h.app.typing.clone();
+        let mut title = model::ParaAttrs::default();
+        title.set_chapter_title(true);
+        let text = "The Mill\nWords about the mill.\u{c}The River\nWords about the river.\n";
+        let mut styles: Vec<model::Style> = text.chars().map(|c| if model::is_terminator(c) { st.with_para(Default::default()) } else { st.clone() }).collect();
+        styles[8] = st.with_para(title);
+        styles[40] = st.with_para(title);
+        h.app.doc.flow = model::Flow { text: text.into(), styles };
+        let ctx = h.ctx.clone();
+        h.app.doc.full_paginate(&ctx, &st);
+        h.app.set_caret(&ctx, 0, false);
+        h.frames(30, vec![], Modifiers::NONE);
+        assert_eq!(h.app.doc.pages(), 2);
+    }
+
+    #[test]
+    fn a_header_and_footer_from_the_insert_menu_show_each_pages_chapter_and_number_and_print() {
+        let mut h = Harness::new();
+        two_chapters(&mut h);
+        let pages = h.app.doc.spans.clone();
+        h.click_widget("Insert");
+        h.click_widget("Header ⏵");
+        h.click_widget("Filigree");
+        assert_eq!(h.app.doc.setup.header.look, model::BandLook::Filigree);
+        assert!(painted_texts(&h).iter().filter(|t| *t == "The Mill").count() >= 2, "the chapter shows over the page: {:?}", painted_texts(&h));
+        h.click_widget("Header text");
+        h.key(Key::A, Modifiers::COMMAND);
+        h.type_text("Page {page} of {pages}: ");
+        h.click_widget("Chapter title");
+        assert_eq!(h.app.doc.setup.header.text, "Page {page} of {pages}: {chapter}");
+        h.click_widget("Footer ⏵");
+        h.click_widget("Circle");
+        assert_eq!(h.app.doc.setup.footer.look, model::BandLook::Circle);
+        h.click_widget("Plum");
+        assert_eq!(h.app.doc.setup.footer.color, bands::ACCENTS[7].1);
+        assert_eq!(h.app.doc.spans, pages, "they take no room from the text");
+        assert!(h.app.unsaved(), "a change to save");
+
+        // Each page its own, on paper too, then in the file and in Word.
+        let ctx = h.ctx.clone();
+        let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        assert_eq!(squeeze(&h.app.printed_text(&ctx, 0)), "TheMillWordsaboutthemill.Page1of2:TheMill1");
+        assert_eq!(squeeze(&h.app.printed_text(&ctx, 1)), "TheRiverWordsabouttheriver.Page2of2:TheRiver2");
+        let other = h.reopened("header-footer");
+        assert_eq!((&other.app.doc.setup.header, &other.app.doc.setup.footer), (&h.app.doc.setup.header, &h.app.doc.setup.footer));
+        let docx = export::to_docx(&h.app.doc).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(docx)).unwrap();
+        let mut header = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("word/header1.xml").unwrap(), &mut header).unwrap();
+        assert!(header.contains(" PAGE ") && header.contains(" NUMPAGES ") && header.contains("STYLEREF"), "{header}");
+        assert!(zip.by_name("word/footer1.xml").is_ok());
+
+        // Taken off again.
+        assert!(painted_texts(&h).iter().any(|t| t == "Page 1 of 2: The Mill"));
+        h.click_widget("Header ⏵");
+        h.click_widget("Remove header");
+        assert!(!h.app.doc.setup.header.is_on());
+        h.frames(2, vec![], Modifiers::NONE);
+        assert!(!painted_texts(&h).iter().any(|t| t.contains("Page 1 of 2: The Mill")));
+    }
+
+    impl Harness {
+        /// Where a point of the page (in page points from its top-left corner) is on screen.
+        fn on_page(&self, at: egui::Vec2) -> egui::Pos2 {
+            let rect = self.app.last_page_rect;
+            rect.min + at * self.app.scale_of(rect)
+        }
+
+        fn drag(&mut self, from: egui::Pos2, to: egui::Pos2) {
+            self.frames(1, vec![egui::Event::PointerMoved(from)], Modifiers::NONE);
+            self.press_at(from, true);
+            for k in 1..=6 {
+                self.frames(1, vec![egui::Event::PointerMoved(from + (to - from) * (k as f32 / 6.0))], Modifiers::NONE);
+            }
+            self.press_at(to, false);
+            self.frames(3, vec![], Modifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn a_text_box_is_written_in_moved_and_resized_and_goes_where_its_text_goes() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("A first line of the story.");
+        h.click_widget("Insert");
+        h.click_widget("Text box ⏵");
+        h.click_widget("Shaded");
+        h.frames(2, vec![], Modifiers::NONE);
+        h.type_text("Set apart");
+        assert_eq!(h.app.doc.boxes.len(), 1);
+        let b = h.app.doc.boxes[0].clone();
+        assert_eq!((b.text.as_str(), b.look), ("Set apart", model::BoxLook::Shaded));
+        assert_eq!(h.text(), "A first line of the story.", "the typing went into the box");
+        assert!(painted_texts(&h).iter().any(|t| t == "Set apart"));
+
+        // A click on the story lets it go; typing goes to the story again.
+        h.click_in_page(egui::vec2(5.0, 300.0));
+        assert_eq!(h.app.boxes.selected, None);
+        h.type_text("!");
+        assert_eq!(h.text(), "A first line of the story.!");
+        assert_eq!(h.app.doc.boxes[0].text, "Set apart");
+
+        // Clicked, it is written in again, and the caret in the story stays where it was.
+        let caret = h.app.caret;
+        h.click_widget("Set apart");
+        assert_eq!((h.app.boxes.selected, h.app.caret), (Some(b.id), caret));
+        // The toolbar formats the box, not the story.
+        h.click_widget("B");
+        assert!(h.app.doc.boxes[0].style.bold && !h.app.typing.bold);
+
+        // Dragged by its edge, it moves; by a handle, it grows.
+        // The top edge, between the handles.
+        let edge = egui::vec2(b.pos.x + b.size.x / 4.0, b.pos.y + 2.0);
+        h.drag(h.on_page(edge), h.on_page(edge + egui::vec2(60.0, 200.0)));
+        let moved = h.app.doc.boxes[0].clone();
+        assert!((moved.pos - (b.pos + egui::vec2(60.0, 200.0))).length() < 2.0, "{:?} from {:?}", moved.pos, b.pos);
+        assert_eq!(moved.size, b.size);
+        let corner = moved.pos + egui::vec2(moved.size.x, h.app.doc.boxes[0].size.y.max(textbox::box_height(&h.ctx, &moved)));
+        h.drag(h.on_page(corner), h.on_page(corner + egui::vec2(40.0, 30.0)));
+        let grown = h.app.doc.boxes[0].clone();
+        assert!((grown.size.x - (b.size.x + 40.0)).abs() < 2.0 && grown.pos == moved.pos, "{grown:?}");
+        assert_eq!(h.text(), "A first line of the story.!", "the story under it was not touched");
+
+        // Pinned to the text it lies over: pushed onto the next page, it goes along.
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, 0, false);
+        h.key(Key::Enter, Modifiers::COMMAND);
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!(h.app.doc.boxes_on(1).count(), 1, "on the page its text went to");
+        assert_eq!(h.app.doc.boxes_on(0).count(), 0);
+        let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        assert!(squeeze(&h.app.printed_text(&ctx, 1)).ends_with("Setapart"), "printed with its page");
+
+        // Kept in the file and in Word; Delete takes it away once it is selected.
+        let other = h.reopened("text-box");
+        assert_eq!(other.app.doc.boxes.len(), 1);
+        let (a, c) = (&other.app.doc.boxes[0], &h.app.doc.boxes[0]);
+        assert_eq!((&a.text, a.at, a.pos, a.size, &a.style, a.look), (&c.text, c.at, c.pos, c.size, &c.style, c.look));
+        let docx = export::to_docx(&h.app.doc).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(docx)).unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("word/document.xml").unwrap(), &mut xml).unwrap();
+        assert!(xml.contains("<wps:txbx>") && xml.contains(">Set apart<") && xml.contains("<wp:wrapNone/>"));
+        assert_eq!(h.shown(), 1);
+        h.click_widget("Set apart");
+        h.key(Key::Escape, Modifiers::NONE);
+        assert_eq!((h.app.boxes.selected, h.app.boxes.editing), (Some(b.id), false), "written in no more, still selected");
+        h.key(Key::Delete, Modifiers::NONE);
+        assert!(h.app.doc.boxes.is_empty());
+        assert_eq!(squeeze(&h.text()), "Afirstlineofthestory.!", "the story keeps its text");
+    }
+
     /// Writes a sample PDF for checking by eye:
     /// `CAPRICE_SAMPLE_PDF=/some/file.pdf cargo test sample_pdf`, then `pdftoppm -png` it.
     #[test]
     fn sample_pdf() {
         let Some(out) = std::env::var_os("CAPRICE_SAMPLE_PDF") else { return };
-        // Laid out first: the fonts an App loads are known to every egui context after it.
+        // Laid out once opened, by an App that has loaded its fonts.
         let doc = export::sample::sample_doc();
         let mut h = Harness::new();
         h.app.doc = doc;

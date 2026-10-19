@@ -4,7 +4,13 @@
 //! * paragraphs = paragraphs of the flow; alignment, line spacing, bullets and numbering = paragraph properties
 //! * hard page breaks = "page break before" on the paragraph that follows
 //! * font, size, bold, italic, underline, colour = run properties
-//! * page setup = section properties (paper, orientation, margins), page numbers = a footer field
+//! * page setup = section properties (paper, orientation, margins)
+//! * header and footer = Word's header and footer parts, their fields (`{page}`, `{pages}`,
+//!   `{chapter}`) = `PAGE`, `NUMPAGES` and `STYLEREF "Heading 1"` fields; their looks = paragraph
+//!   borders (Rule, Facing), shading (Banner), a "❦" under a border (Filigree), an ellipse shape
+//!   holding the text (Circle). Facing pages = different odd and even headers (`evenAndOddHeaders`).
+//! * text boxes = text box shapes anchored in the paragraph of the char they are pinned to, placed
+//!   on the page and in front of the text (`wrapNone`), as they are in Caprice
 //! * notes = Word comments anchored to the same text
 //! * chapter titles = the built-in "Heading 1" style; drop caps = Word's own drop caps (a framed
 //!   paragraph holding the letter); the contents = a `TOC` field over the headings, filled in with
@@ -16,12 +22,16 @@ use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
 
 use crate::contents::Entry;
-use crate::model::{Align, CHAPTER_TITLE_SCALE, Doc, IMAGE_CHAR, ListKind, Note, PAGE_BREAK, ParaAttrs, Style, is_terminator};
+use eframe::egui;
+
+use crate::model::{Align, Band, BandLook, CHAPTER_TITLE_SCALE, Doc, IMAGE_CHAR, ListKind, Note, PAGE_BREAK, ParaAttrs, Style, is_terminator};
 
 const NS_W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const NS_WP: &str = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
 const NS_A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const NS_PIC: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture";
+const NS_WPS: &str = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape";
+const NS_MC: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 const NS_R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const CT: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml";
@@ -77,6 +87,169 @@ fn run_props(st: &Style) -> String {
         s.push_str("<w:u w:val=\"single\"/>");
     }
     s
+}
+
+fn emu(points: f32) -> i64 {
+    (points * 12700.0).round() as i64
+}
+
+fn hex([r, g, b]: [u8; 3]) -> String {
+    format!("{r:02X}{g:02X}{b:02X}")
+}
+
+/// The runs of a header's, footer's or text box's text, in run properties `rpr`: the text, and a
+/// field for each of `{page}`, `{pages}` and `{chapter}`, its result filled in with `results`
+/// until Word works it out.
+fn field_runs(text: &str, rpr: &str, results: [&str; 3]) -> String {
+    use crate::model::{CHAPTER_FIELD, PAGE_FIELD, PAGES_FIELD};
+    let fields = [(PAGE_FIELD, " PAGE "), (PAGES_FIELD, " NUMPAGES "), (CHAPTER_FIELD, " STYLEREF \"Heading 1\" ")];
+    let plain = |t: &str| {
+        // A line break within the text is a break in the run.
+        let lines: Vec<String> = t.split('\n').map(|l| format!("<w:t xml:space=\"preserve\">{}</w:t>", esc(l))).collect();
+        if t.is_empty() { String::new() } else { format!("<w:r><w:rPr>{rpr}</w:rPr>{}</w:r>", lines.join("<w:br/>")) }
+    };
+    let mut out = String::new();
+    let mut rest = text;
+    loop {
+        let next = fields.iter().zip(results).filter_map(|((f, code), result)| rest.find(f).map(|at| (at, *f, *code, result))).min_by_key(|x| x.0);
+        let Some((at, f, code, result)) = next else {
+            out.push_str(&plain(rest));
+            return out;
+        };
+        out.push_str(&plain(&rest[..at]));
+        let run = |inner: String| format!("<w:r><w:rPr>{rpr}</w:rPr>{inner}</w:r>");
+        out.push_str(&run("<w:fldChar w:fldCharType=\"begin\"/>".into()));
+        out.push_str(&run(format!("<w:instrText xml:space=\"preserve\">{}</w:instrText>", esc(code))));
+        out.push_str(&run("<w:fldChar w:fldCharType=\"separate\"/>".into()));
+        out.push_str(&run(format!("<w:t xml:space=\"preserve\">{}</w:t>", esc(result))));
+        out.push_str(&run("<w:fldChar w:fldCharType=\"end\"/>".into()));
+        rest = &rest[at + f.len()..];
+    }
+}
+
+/// How a shape is drawn: its outline (`rect`, `ellipse`), fill, line (width in points), and the
+/// room inside it around its text, in points (left, top, right, bottom).
+struct ShapeLook<'a> {
+    geom: &'a str,
+    fill: Option<[u8; 3]>,
+    line: Option<(f32, [u8; 3])>,
+    inset: [f32; 4],
+}
+
+/// A shape holding `paragraphs`, placed at `rect` (points from the page's top-left) in front of
+/// the text, which does not wrap around it. Word 2010 and later, and LibreOffice, read it.
+fn anchored_shape(id: u32, rect: egui::Rect, look: &ShapeLook, paragraphs: &str) -> String {
+    let (cx, cy) = (emu(rect.width()), emu(rect.height()));
+    let fill = look.fill.map_or("<a:noFill/>".to_owned(), |c| format!("<a:solidFill><a:srgbClr val=\"{}\"/></a:solidFill>", hex(c)));
+    let line = look.line.map_or("<a:ln><a:noFill/></a:ln>".to_owned(), |(w, c)| {
+        format!("<a:ln w=\"{}\"><a:solidFill><a:srgbClr val=\"{}\"/></a:solidFill></a:ln>", emu(w), hex(c))
+    });
+    let [l, t, r, b] = look.inset.map(emu);
+    format!(
+        "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" \
+locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/>\
+<wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH>\
+<wp:positionV relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionV>\
+<wp:extent cx=\"{cx}\" cy=\"{cy}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/><wp:wrapNone/>\
+<wp:docPr id=\"{id}\" name=\"Text Box {id}\"/><wp:cNvGraphicFramePr/>\
+<a:graphic><a:graphicData uri=\"{NS_WPS}\"><wps:wsp><wps:cNvSpPr txBox=\"1\"/>\
+<wps:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></a:xfrm><a:prstGeom prst=\"{}\"><a:avLst/></a:prstGeom>{fill}{line}</wps:spPr>\
+<wps:txbx><w:txbxContent>{paragraphs}</w:txbxContent></wps:txbx>\
+<wps:bodyPr rot=\"0\" vert=\"horz\" wrap=\"square\" lIns=\"{l}\" tIns=\"{t}\" rIns=\"{r}\" bIns=\"{b}\" anchor=\"{}\" anchorCtr=\"0\"><a:noAutofit/></wps:bodyPr>\
+</wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
+        251_659_264 + id,
+        emu(rect.left()),
+        emu(rect.top()),
+        look.geom,
+        if look.geom == "ellipse" { "ctr" } else { "t" },
+    )
+}
+
+/// A text box as Word's: a shape with its look, its text in paragraphs of its style.
+fn text_box_xml(b: &crate::model::TextBox, id: u32) -> String {
+    use crate::model::BoxLook;
+    let st = crate::textbox::shown_style(b);
+    let rpr = run_props(&st);
+    let jc = match b.style.para.align {
+        Align::Left => "",
+        Align::Center => "<w:jc w:val=\"center\"/>",
+        Align::Right => "<w:jc w:val=\"right\"/>",
+        Align::Justify => "<w:jc w:val=\"both\"/>",
+    };
+    let lines: Vec<&str> = b.text.split('\n').collect();
+    let rule = |side: &str| format!("<w:{side} w:val=\"single\" w:sz=\"8\" w:space=\"4\" w:color=\"{}\"/>", hex(b.color));
+    let mut paragraphs = String::new();
+    for (k, line) in lines.iter().enumerate() {
+        // A quote's rules are the borders of its first and last paragraph; a sidebar's bar runs
+        // down the left of every one.
+        let border = match b.look {
+            BoxLook::Quote => [(k == 0).then(|| rule("top")), (k + 1 == lines.len()).then(|| rule("bottom"))].into_iter().flatten().collect(),
+            BoxLook::Sidebar => format!("<w:left w:val=\"single\" w:sz=\"{}\" w:space=\"6\" w:color=\"{}\"/>", 32, hex(b.color)),
+            _ => String::new(),
+        };
+        let border = if border.is_empty() { border } else { format!("<w:pBdr>{border}</w:pBdr>") };
+        let _ = write!(paragraphs, "<w:p><w:pPr>{border}{jc}<w:rPr>{rpr}</w:rPr></w:pPr>{}</w:p>", field_runs(line, &rpr, ["1", "1", ""]));
+    }
+    let tint = |t: f32| b.color.map(|c| (255.0 - (255.0 - f32::from(c)) * t).round() as u8);
+    let look = match b.look {
+        BoxLook::Simple => ShapeLook { geom: "rect", fill: Some([255, 255, 255]), line: Some((0.75, b.color)), inset: [7.0, 5.0, 7.0, 5.0] },
+        BoxLook::Shaded => ShapeLook { geom: "rect", fill: Some(tint(0.16)), line: None, inset: [7.0, 5.0, 7.0, 5.0] },
+        BoxLook::Sidebar => ShapeLook { geom: "rect", fill: Some(tint(0.07)), line: None, inset: [2.0, 5.0, 7.0, 5.0] },
+        BoxLook::Quote | BoxLook::Bare => ShapeLook { geom: "rect", fill: None, line: None, inset: [7.0, 5.0, 7.0, 5.0] },
+    };
+    // Word grows the shape to hold its text (`spAutoFit`), as Caprice does.
+    let rect = egui::Rect::from_min_size(b.pos.to_pos2(), b.size);
+    anchored_shape(id, rect, &look, &paragraphs).replace("<a:noAutofit/>", "<a:spAutoFit/>")
+}
+
+/// A header (`top`) or footer part showing `band`; `even` for the even pages of facing pages.
+/// Its text is in `font`.
+fn band_xml(band: &Band, top: bool, even: bool, font: &str, setup: &crate::model::PageSetup) -> String {
+    use crate::bands::BAND_SIZE;
+    let on_colour = matches!(band.look, BandLook::Banner | BandLook::Circle);
+    let st = Style {
+        size: BAND_SIZE,
+        color: Some(if on_colour { [255, 255, 255] } else { [96, 96, 96] }),
+        bold: band.look == BandLook::Circle,
+        ..Style::new(font)
+    };
+    let rpr = run_props(&st);
+    let runs = field_runs(&band.text, &rpr, ["1", "1", ""]);
+    let color = hex(band.color);
+    let side = if top { "bottom" } else { "top" };
+    let rule = format!("<w:pBdr><w:{side} w:val=\"single\" w:sz=\"4\" w:space=\"4\" w:color=\"{color}\"/></w:pBdr>");
+    let centre = "<w:jc w:val=\"center\"/>";
+    let para = |ppr: &str, runs: &str| format!("<w:p><w:pPr>{ppr}</w:pPr>{runs}</w:p>");
+    let body = match band.look {
+        BandLook::None | BandLook::Plain => para(centre, &runs),
+        BandLook::Rule => para(&format!("{rule}{centre}"), &runs),
+        BandLook::Filigree => {
+            let inset = twips(setup.content_size().x * 0.1);
+            let text = para(&format!("{rule}<w:ind w:left=\"{inset}\" w:right=\"{inset}\"/>{centre}"), &runs);
+            let fleuron = Style { font: "Segoe UI Symbol".into(), size: 12.0, color: Some(band.color), bold: false, ..st.clone() };
+            let fleuron = para(centre, &format!("<w:r><w:rPr>{}</w:rPr><w:t>\u{2766}</w:t></w:r>", run_props(&fleuron)));
+            // It hangs from the line, on the side of the text.
+            if top { text + &fleuron } else { fleuron + &text }
+        }
+        BandLook::Banner => para(&format!("<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{color}\"/>{centre}"), &runs),
+        BandLook::Facing => para(&format!("{rule}<w:jc w:val=\"{}\"/>", if even { "left" } else { "right" }), &runs),
+        BandLook::Circle => {
+            let size = setup.size();
+            let cy = if top { setup.margin_top / 2.0 } else { size.y - setup.margin_bottom / 2.0 };
+            let mid = (setup.margin_left + size.x - setup.margin_right) / 2.0;
+            // Word works out the text's width itself: the circle is made for two or three digits.
+            let shown = crate::bands::filled(&band.text, 99, 99, "");
+            let r = (shown.chars().count() as f32 * BAND_SIZE * 0.3).max(BAND_SIZE * 0.6) + 5.0;
+            let rect = egui::Rect::from_center_size(egui::pos2(mid, cy), egui::vec2(2.0 * r, 2.0 * r));
+            let look = ShapeLook { geom: "ellipse", fill: Some(band.color), line: None, inset: [0.0; 4] };
+            para("", &anchored_shape(3000 + u32::from(top), rect, &look, &para(centre, &runs)))
+        }
+    };
+    let tag = if top { "hdr" } else { "ftr" };
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+<w:{tag} xmlns:w=\"{NS_W}\" xmlns:r=\"{NS_R}\" xmlns:wp=\"{NS_WP}\" xmlns:a=\"{NS_A}\" xmlns:wps=\"{NS_WPS}\" xmlns:mc=\"{NS_MC}\" mc:Ignorable=\"wps\">{body}</w:{tag}>"
+    )
 }
 
 /// Builds `<w:body>` content. A paragraph's properties are only known at its end, so its runs are
@@ -223,6 +396,13 @@ impl Body {
         self.has_content = true;
     }
 
+    /// A shape anchored in the open paragraph (a text box).
+    fn push_shape(&mut self, xml: &str) {
+        self.flush_run();
+        self.para.push_str(xml);
+        self.has_content = true;
+    }
+
     fn push_char(&mut self, c: char, st: &Style) {
         if c == IMAGE_CHAR && st.image != 0 {
             return self.push_picture(st.image);
@@ -313,7 +493,8 @@ impl Body {
 }
 
 /// The body XML, how many separate numbered lists it uses, and the pictures it refers to.
-fn document_xml(doc: &Doc, has_footer: bool, media: &std::collections::HashMap<u32, (Vec<u8>, &'static str)>) -> (String, u32, Vec<u32>) {
+/// `refs` are the section's header and footer references.
+fn document_xml(doc: &Doc, refs: &str, media: &std::collections::HashMap<u32, (Vec<u8>, &'static str)>) -> (String, u32, Vec<u32>) {
     let mut body = Body::new();
     for img in &doc.images {
         let size = doc.image_size(img);
@@ -330,6 +511,9 @@ fn document_xml(doc: &Doc, has_footer: bool, media: &std::collections::HashMap<u
 
     let n = doc.total_chars();
     for k in 0..=n {
+        for (j, b) in doc.boxes.iter().enumerate().filter(|(_, b)| b.at == k) {
+            body.push_shape(&text_box_xml(b, 1000 + j as u32));
+        }
         for (id, note) in notes.iter().enumerate() {
             if note.start == k {
                 body.comment_start(id);
@@ -365,11 +549,11 @@ fn document_xml(doc: &Doc, has_footer: bool, media: &std::collections::HashMap<u
 
     let s = &doc.setup;
     let size = s.size();
-    let footer_ref = if has_footer { "<w:footerReference w:type=\"default\" r:id=\"rIdFooter\"/>" } else { "" };
     let orient = if size.x > size.y { " w:orient=\"landscape\"" } else { "" };
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
-<w:document xmlns:w=\"{NS_W}\" xmlns:r=\"{NS_R}\" xmlns:wp=\"{NS_WP}\" xmlns:a=\"{NS_A}\" xmlns:pic=\"{NS_PIC}\"><w:body>{}<w:sectPr>{footer_ref}\
+<w:document xmlns:w=\"{NS_W}\" xmlns:r=\"{NS_R}\" xmlns:wp=\"{NS_WP}\" xmlns:a=\"{NS_A}\" xmlns:pic=\"{NS_PIC}\" \
+xmlns:wps=\"{NS_WPS}\" xmlns:mc=\"{NS_MC}\" mc:Ignorable=\"wps\"><w:body>{}<w:sectPr>{refs}\
 <w:pgSz w:w=\"{}\" w:h=\"{}\"{orient}/>\
 <w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"{}\" w:footer=\"{}\" w:gutter=\"0\"/>\
 </w:sectPr></w:body></w:document>",
@@ -465,28 +649,32 @@ fn comments_xml(notes: &[Note]) -> String {
     s
 }
 
-fn footer_xml(default: &Style) -> String {
-    let font = esc(office_font(&default.font));
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
-<w:ftr xmlns:w=\"{NS_W}\"><w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>\
-<w:r><w:rPr><w:rFonts w:ascii=\"{font}\" w:hAnsi=\"{font}\"/><w:sz w:val=\"20\"/></w:rPr><w:fldChar w:fldCharType=\"begin\"/></w:r>\
-<w:r><w:rPr><w:sz w:val=\"20\"/></w:rPr><w:instrText xml:space=\"preserve\"> PAGE </w:instrText></w:r>\
-<w:r><w:rPr><w:sz w:val=\"20\"/></w:rPr><w:fldChar w:fldCharType=\"separate\"/></w:r>\
-<w:r><w:rPr><w:sz w:val=\"20\"/></w:rPr><w:t>1</w:t></w:r>\
-<w:r><w:rPr><w:sz w:val=\"20\"/></w:rPr><w:fldChar w:fldCharType=\"end\"/></w:r></w:p></w:ftr>"
-    )
-}
-
 /// The whole `.docx` file as bytes.
 pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
-    let has_footer = doc.setup.page_numbers;
+    // Each header and footer: its part, its id, and which pages it is for.
+    let font = doc.contents_style().font;
+    let mut bands: Vec<(String, String, &str, String)> = Vec::new();
+    for (band, top) in [(&doc.setup.header, true), (&doc.setup.footer, false)].into_iter().filter(|(b, _)| b.is_on()) {
+        let kind = if top { "header" } else { "footer" };
+        bands.push((format!("{kind}1.xml"), format!("rId{kind}"), "default", band_xml(band, top, false, &font, &doc.setup)));
+        if band.look == BandLook::Facing {
+            bands.push((format!("{kind}2.xml"), format!("rId{kind}Even"), "even", band_xml(band, top, true, &font, &doc.setup)));
+        }
+    }
+    let facing = [&doc.setup.header, &doc.setup.footer].iter().any(|b| b.look == BandLook::Facing);
+    let refs: String = bands
+        .iter()
+        .map(|(file, id, pages, _)| {
+            let kind = if file.starts_with("header") { "header" } else { "footer" };
+            format!("<w:{kind}Reference w:type=\"{pages}\" r:id=\"{id}\"/>")
+        })
+        .collect();
     let has_comments = !doc.notes.is_empty();
     let default = doc.flow.styles.first().cloned().unwrap_or_else(|| Style::new("Times New Roman"));
     // Rotated pictures are written with their pixels turned.
     let media: std::collections::HashMap<u32, (Vec<u8>, &'static str)> =
         doc.images.iter().map(|i| (i.id, crate::images::export_media(i))).collect();
-    let (document, numbered_lists, used_pics) = document_xml(doc, has_footer, &media);
+    let (document, numbered_lists, used_pics) = document_xml(doc, &refs, &media);
     let has_numbering = document.contains("<w:numPr>");
 
     let mut content_types = format!(
@@ -522,13 +710,15 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
     }
     // Word fills in the contents' page numbers by its own layout when it opens the file.
     let has_contents = doc.setup.contents;
-    if has_contents {
+    // Facing pages need Word told that odd and even pages have headers of their own.
+    if has_contents || facing {
         let _ = write!(content_types, "<Override PartName=\"/word/settings.xml\" ContentType=\"{CT}.settings+xml\"/>");
         let _ = write!(rels, "<Relationship Id=\"rIdSettings\" Type=\"{REL}/settings\" Target=\"settings.xml\"/>");
     }
-    if has_footer {
-        let _ = write!(content_types, "<Override PartName=\"/word/footer1.xml\" ContentType=\"{CT}.footer+xml\"/>");
-        let _ = write!(rels, "<Relationship Id=\"rIdFooter\" Type=\"{REL}/footer\" Target=\"footer1.xml\"/>");
+    for (file, id, _, _) in &bands {
+        let kind = if file.starts_with("header") { "header" } else { "footer" };
+        let _ = write!(content_types, "<Override PartName=\"/word/{file}\" ContentType=\"{CT}.{kind}+xml\"/>");
+        let _ = write!(rels, "<Relationship Id=\"{id}\" Type=\"{REL}/{kind}\" Target=\"{file}\"/>");
     }
     content_types.push_str("</Types>");
     rels.push_str("</Relationships>");
@@ -553,16 +743,16 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
     if has_numbering {
         text_parts.push(("word/numbering.xml", numbering_xml(numbered_lists)));
     }
-    if has_footer {
-        text_parts.push(("word/footer1.xml", footer_xml(&default)));
-    }
-    if has_contents {
+    if has_contents || facing {
+        let even = if facing { "<w:evenAndOddHeaders/>" } else { "" };
+        let update = if has_contents { "<w:updateFields w:val=\"true\"/>" } else { "" };
         let settings = format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:settings xmlns:w=\"{NS_W}\"><w:updateFields w:val=\"true\"/></w:settings>"
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:settings xmlns:w=\"{NS_W}\">{even}{update}</w:settings>"
         );
         text_parts.push(("word/settings.xml", settings));
     }
     parts.extend(text_parts.into_iter().map(|(n, s)| (n.to_owned(), s.into_bytes())));
+    parts.extend(bands.into_iter().map(|(file, _, _, xml)| (format!("word/{file}"), xml.into_bytes())));
     for &id in &used_pics {
         if let Some((bytes, ext)) = media.get(&id) {
             parts.push((format!("word/media/image{id}.{ext}"), bytes.clone()));
@@ -581,8 +771,13 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Orientation;
+    use crate::model::{Orientation, TextBox};
     use std::io::Read;
+
+    fn test_box(at: usize, text: &str, look: crate::model::BoxLook) -> TextBox {
+        let style = Style::new("Liberation Serif");
+        TextBox { id: 1, at, pos: egui::vec2(200.0, 300.0), size: egui::vec2(150.0, 40.0), text: text.into(), style, look, color: [10, 20, 30] }
+    }
 
     fn read_part(bytes: &[u8], name: &str) -> Option<String> {
         let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
@@ -609,7 +804,9 @@ mod tests {
     fn every_part_is_well_formed_xml() {
         let st = Style::new("Liberation Serif");
         let mut d = doc_with("a < b & c\n\u{c}tab\there\nitem\n", st.clone());
-        d.setup.page_numbers = true;
+        d.setup.header = Band { look: BandLook::Facing, text: "{chapter} & <the rest>".into(), ..Band::default() };
+        d.setup.footer = Band { look: BandLook::Circle, text: "{page}".into(), ..Band::default() };
+        d.boxes.push(test_box(2, "a < b\nand {page}", crate::model::BoxLook::Quote));
         let n = d.flow.styles.len();
         d.flow.styles[n - 1].para = ParaAttrs { list: ListKind::Numbered, ..Default::default() };
         d.notes.push(Note { id: 1, start: 0, end: 5, text: "x & <y>\nsecond".into(), color: 0 });
@@ -621,7 +818,10 @@ mod tests {
             "word/_rels/document.xml.rels",
             "word/styles.xml",
             "word/comments.xml",
+            "word/header1.xml",
+            "word/header2.xml",
             "word/footer1.xml",
+            "word/settings.xml",
             "word/numbering.xml",
         ] {
             let xml = read_part(&bytes, name).unwrap_or_else(|| panic!("missing {name}"));
@@ -825,18 +1025,32 @@ mod tests {
 #[cfg(test)]
 pub(crate) mod sample {
     use super::*;
-    use crate::model::is_terminator;
+    use crate::model::{BoxLook, TextBox, is_terminator};
 
     /// Writes a sample document for checking in real office suites:
     /// `CAPRICE_SAMPLE_OUT=/some/file.docx cargo test sample_docx`
     #[test]
     fn sample_docx() {
         let Some(out) = std::env::var_os("CAPRICE_SAMPLE_OUT") else { return };
-        let d = sample_doc();
+        let mut d = sample_doc();
+        // Laid out for the contents' page numbers, in a context that has its font: one that does not
+        // panics as soon as any other test has loaded it.
+        let ctx = egui::Context::default();
+        let mut fonts = crate::fonts::FontBook::new();
+        fonts.ensure(&ctx, "Liberation Serif", true);
+        for frame in 0..2 {
+            // Fonts set on a context are there from its next frame.
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                if frame == 1 {
+                    d.full_paginate(ui.ctx(), &Style::new("Liberation Serif"));
+                }
+            });
+            out.textures_delta.clear();
+        }
         std::fs::write(out, to_docx(&d).unwrap()).unwrap();
     }
 
-    /// Something of every kind of formatting, over a few pages, laid out.
+    /// Something of every kind of formatting, over a few pages, not yet laid out.
     pub(crate) fn sample_doc() -> Doc {
         let plain = Style::new("Liberation Serif");
         let bold = Style { bold: true, size: 20.0, ..plain.clone() };
@@ -894,12 +1108,16 @@ from the President of a far distant country.";
                 d.flow.styles.push(if is_terminator(ch) { s.with_para(p) } else { s.clone() });
             }
         }
-        d.setup.page_numbers = true;
+        d.setup.header = Band { look: BandLook::Filigree, text: "{chapter}".into(), ..Band::default() };
+        d.setup.footer = Band { look: BandLook::Circle, text: "{page}".into(), ..Band::default() };
+        let style = Style { size: 11.0, ..plain.clone() };
+        let text = "Set apart: a few words in a box\nof their own.".into();
+        let (pos, size) = (egui::vec2(330.0, 420.0), egui::vec2(180.0, 50.0));
+        d.boxes.push(TextBox { id: 1, at: 60, pos, size, text, style, look: BoxLook::Sidebar, color: crate::model::ACCENT_INK });
         d.setup.margin_left = 100.0;
         d.setup.drop_cap_lines = 3;
         d.setup.contents = true;
         d.notes.push(Note { id: 1, start: 26, end: 42, text: "Remember to rephrase this.".into(), color: 1 });
-        crate::layout::with_ctx(|ctx| d.full_paginate(ctx, &plain));
         d
     }
 

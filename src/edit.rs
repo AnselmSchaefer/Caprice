@@ -183,6 +183,7 @@ impl Doc {
                 self.flow.styles.splice(*at..*at + old.chars(), new.styles.iter().cloned());
                 rebase_notes(&mut self.notes, *at, old.chars(), new.chars());
                 rebase_scenes(&mut self.scenes, *at, old.chars(), new.chars());
+                rebase_boxes(&mut self.boxes, *at, old.chars(), new.chars());
             }
             Edit::Restyle { at, new, .. } => {
                 self.flow.styles[*at..*at + new.len()].clone_from_slice(new);
@@ -209,6 +210,14 @@ fn rebase_notes(notes: &mut [Note], at: usize, a: usize, b: usize) {
 fn rebase_scenes(scenes: &mut [crate::model::Scene], at: usize, a: usize, b: usize) {
     for s in scenes {
         s.at = if s.at <= at { s.at } else if s.at >= at + a { s.at + b - a } else { at };
+    }
+}
+
+/// Move text boxes' pins with the same replacement, as scene pins move: a box stays with the char
+/// it is pinned to, and one whose char is deleted stays where the text was.
+fn rebase_boxes(boxes: &mut [crate::model::TextBox], at: usize, a: usize, b: usize) {
+    for t in boxes {
+        t.at = if t.at <= at { t.at } else if t.at >= at + a { t.at + b - a } else { at };
     }
 }
 
@@ -266,6 +275,22 @@ mod tests {
         d.undo();
         d.apply(Edit::insert(0, "b", &st), 9.0);
         assert!(d.redo().is_none());
+    }
+
+    #[test]
+    fn text_boxes_stay_with_their_char_and_where_it_was_once_it_is_deleted() {
+        let (mut d, st) = doc("one two three");
+        let style = st.clone();
+        let pinned = |at| crate::model::TextBox {
+            id: 1, at, pos: Default::default(), size: Default::default(), text: String::new(), style: style.clone(),
+            look: Default::default(), color: [0, 0, 0],
+        };
+        d.boxes = vec![pinned(4), pinned(8)];
+        d.apply(Edit::Replace { at: 0, old: Piece::default(), new: Piece::plain("so ", &st) }, 0.0);
+        assert_eq!((d.boxes[0].at, d.boxes[1].at), (7, 11), "moved along with their text");
+        let old = Piece::plain("two ", &st);
+        d.apply(Edit::Replace { at: 7, old, new: Piece::default() }, 1.0);
+        assert_eq!((d.boxes[0].at, d.boxes[1].at), (7, 7), "the one whose char went stays where it was");
     }
 
     #[test]
