@@ -357,7 +357,8 @@ impl App {
         let mut delete = false;
         resp.context_menu(|ui| {
             for l in BoxLook::ALL {
-                if ui.add(egui::Button::new(l.name()).selected(l == look).frame(false)).clicked() {
+                // Selectable, so the one in use gets the highlight its dark text is meant for.
+                if ui.add(egui::Button::selectable(l == look, l.name())).clicked() {
                     new_look = Some(l);
                     ui.close();
                 }

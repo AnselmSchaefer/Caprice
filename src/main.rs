@@ -4546,6 +4546,45 @@ mod tests {
         assert_eq!((h.text(), h.app.caret), ("The story.".to_owned(), caret), "the story was not touched");
     }
 
+    /// How strongly the words `words` stand out from what was painted under them, as WCAG counts
+    /// it (1: not at all, 21: black on white).
+    fn painted_contrast(h: &Harness, words: &str) -> f32 {
+        let at = h.painted.iter().position(|cs| matches!(&cs.shape, egui::Shape::Text(t) if t.galley.job.text == words)).expect(words);
+        let egui::Shape::Text(t) = &h.painted[at].shape else { unreachable!() };
+        let section = t.galley.job.sections[0].format.color;
+        let ink = if section == egui::Color32::PLACEHOLDER { t.fallback_color } else { section };
+        let mid = t.visual_bounding_rect().center();
+        // The last fill drawn under it before it (a frame's fill comes with its shadow, in a list).
+        fn fill_at(shape: &egui::Shape, at: egui::Pos2) -> Option<egui::Color32> {
+            match shape {
+                egui::Shape::Rect(r) if r.rect.contains(at) && r.fill.a() == 255 => Some(r.fill),
+                egui::Shape::Vec(shapes) => shapes.iter().rev().find_map(|s| fill_at(s, at)),
+                _ => None,
+            }
+        }
+        let under = h.painted[..at].iter().rev().find_map(|cs| fill_at(&cs.shape, mid));
+        let lum = |c: egui::Color32| {
+            let f = |v: u8| {
+                let v = f32::from(v) / 255.0;
+                if v <= 0.039_28 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+        };
+        let (a, b) = (lum(ink), lum(under.expect("something under the words")));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn the_look_a_text_box_has_reads_clearly_in_its_menu() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let b = h.new_text_box("Shaded", "A box");
+        h.right_click_at(h.on_page(b.pos + egui::vec2(20.0, 12.0)));
+        h.frames(30, vec![], Modifiers::NONE); // done fading in
+        let (chosen, other) = (painted_contrast(&h, "Shaded"), painted_contrast(&h, "Simple"));
+        assert!(chosen >= 4.5 && other >= 4.5, "the look in use {chosen:.1}, another {other:.1}");
+    }
+
     /// Writes a sample PDF for checking by eye:
     /// `CAPRICE_SAMPLE_PDF=/some/file.pdf cargo test sample_pdf`, then `pdftoppm -png` it.
     #[test]

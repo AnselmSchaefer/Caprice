@@ -505,6 +505,10 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   1300 with a short and a long name, `at_any_width_the_docks_settle_and_hold_their_tools_apart`
   (in place, inside its dock, clear of the others, the same from one frame to the next). A new
   tool is covered by it without a change.
+- **An item marked as chosen in a menu is `Button::selectable` (or `selectable_label`), never
+  `.selected(true)` with `.frame(false)`**: the theme gives chosen items dark text meant for the
+  accent highlight, and without a frame there is none, so it was dark on the dark menu (the text
+  box's look). Guarded by `the_look_a_text_box_has_reads_clearly_in_its_menu` (`painted_contrast`).
 - **A popup that needs more input (a colour picker) holds it in itself**, never in a popup of its
   own: a click in a popup opened from a popup counts as outside the first, which closes both (the
   "Other colour" picker did nothing). Guarded by
