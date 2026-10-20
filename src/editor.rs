@@ -673,14 +673,24 @@ impl App {
     pub fn set_setup(&mut self, ctx: &egui::Context, mut setup: PageSetup) {
         setup.clamp_margins();
         let contents_added = setup.contents && !self.doc.setup.contents;
+        // The page being read stays in view: the one its first char goes to, not the caret's (R5).
+        let shown = self.target.min(self.last());
+        let story = self.doc.spans[shown].contents.is_none();
+        let first = self.doc.spans[shown].start;
         self.doc.setup = setup;
         self.doc.version += 1;
         self.doc.full_paginate(ctx, &self.typing);
-        let c = self.caret;
-        self.set_caret(ctx, c, false);
+        let (c, a) = (self.caret.min(self.max_caret()), self.anchor.min(self.max_caret()));
+        (self.caret, self.anchor) = (c, a);
         if contents_added {
             self.turn_to(ctx, 0, false);
+            return;
         }
+        // The same text, so no page turns: it is there at once.
+        let to = if story { self.doc.page_of(first) } else { shown.min(self.last()) };
+        self.target = to;
+        self.pos = to as f32;
+        ctx.request_repaint();
     }
 
     // ------------------------------------------------------------------ the page surface

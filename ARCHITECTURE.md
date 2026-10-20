@@ -169,6 +169,10 @@ returns them, so the caret is always in the story.
   selection) takes the caret along. Anything that acts at the caret must not assume it is on the
   page shown; what shows on the page shown without the caret (the scene, R14) comes from the page.
 - **`set_caret` shows the caret's page**, so typing, arrow keys and edits bring it back.
+- **A reflow that is not an edit keeps the page being read**, not the caret's: page settings
+  (`set_setup`) show the page the shown page's first char goes to, at once, and only keep the
+  caret in range, without `set_caret` (which turned to the caret's page: with the caret at the
+  end, switching A4 to Letter showed the last page). Adding the contents turns to them.
 - **A click only places the caret if the spot it hits is on the clicked page** (`editor_surface`).
 - Anything per page that uses `spans[i].start` (selection, notes, the pen) must cope with a page
   that holds no text.
@@ -185,6 +189,7 @@ returns them, so the caret is always in the story.
   `clicks_on_a_later_page_of_the_contents_stay_there_or_follow_a_line`,
   `the_caret_stays_in_the_story_around_long_contents`,
   `turning_pages_leaves_the_caret_where_it_is_until_typing_or_a_click`,
+  `changing_the_paper_keeps_the_page_being_read_in_view`,
   `an_empty_page_between_two_breaks_exists_and_can_hold_the_caret`,
   `dragging_a_selection_past_the_bottom_of_the_page_goes_on_to_the_next_pages`,
   `dragging_a_selection_past_the_top_of_the_page_goes_back_to_the_pages_before`,

@@ -1186,6 +1186,26 @@ mod tests {
     }
 
     #[test]
+    fn changing_the_paper_keeps_the_page_being_read_in_view() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        for k in 0..150 {
+            h.type_text(&format!("line {k} of the story\n"));
+        }
+        let ctx = h.ctx.clone();
+        h.app.turn_to(&ctx, 2, false);
+        assert_eq!(h.shown(), 2);
+        let first = h.app.doc.spans[2].start;
+        let caret = h.app.caret;
+        h.click_widget("Page");
+        h.click_widget("Letter");
+        assert_eq!(h.app.doc.setup.paper_h, 792.0);
+        let shown = h.shown();
+        assert_eq!(shown, h.app.doc.page_of(first), "the text read before is still shown, not the caret's last page");
+        assert_eq!(h.app.caret, caret, "the caret stays where it was");
+    }
+
+    #[test]
     fn undo_and_redo_work_on_typed_text() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
