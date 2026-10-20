@@ -587,6 +587,7 @@ impl App {
                 Self::paper(ui.painter(), page_rect);
                 ui.painter().extend(self.backdrop_shapes(&ctx, i, page_rect, &|p| p, 1.0, 1.0));
                 self.draw_bands(ui, page_rect, i);
+                self.text_boxes_behind(ui, page_rect, i);
                 self.editor_surface(ui, page_rect, i, !self.circling());
                 self.text_boxes(ui, page_rect, i);
                 self.draw_notes(ui, page_rect, i);
@@ -4544,6 +4545,75 @@ mod tests {
         h.click_widget("Delete text box");
         assert!(h.app.doc.boxes.is_empty());
         assert_eq!((h.text(), h.app.caret), ("The story.".to_owned(), caret), "the story was not touched");
+    }
+
+    #[test]
+    fn a_text_box_sent_to_the_back_lies_behind_the_text_and_pictures_and_comes_to_the_front_again() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Words over the box.");
+        h.key(Key::Enter, Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        h.app.insert_image_bytes(&ctx, images::test_png(200, 100, [10, 120, 200])).unwrap();
+        h.frames(3, vec![], Modifiers::NONE);
+        let b = h.new_text_box("Simple", "Under");
+        // Lying over the first line and the picture below it, right across the writing area.
+        let (origin, content) = (h.app.doc.setup.margin_origin(), h.app.doc.setup.content_size());
+        h.app.doc.boxes[0].pos = origin - egui::vec2(0.0, 4.0);
+        h.app.doc.boxes[0].size = egui::vec2(content.x, 120.0);
+        h.click_in_page(egui::vec2(5.0, 400.0));
+        assert_eq!(h.app.boxes.selected, None);
+
+        // Painted in this order, on screen and in print: the box, the story's text, its picture.
+        let order = |h: &Harness| {
+            let at = |f: &dyn Fn(&egui::Shape) -> bool| h.painted.iter().position(|cs| f(&cs.shape)).unwrap();
+            let text = |words: &'static str| move |s: &egui::Shape| matches!(s, egui::Shape::Text(t) if t.galley.job.text.starts_with(words));
+            let picture = |s: &egui::Shape| matches!(s, egui::Shape::Mesh(m) if m.texture_id != egui::TextureId::default());
+            (at(&text("Under")), at(&text("Words")), at(&picture))
+        };
+        let squeeze = |s: String| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        let (boxed, story, picture) = order(&h);
+        assert!(story < boxed && picture < boxed, "in front at first");
+        let mid = h.on_page(origin + egui::vec2(content.x - 20.0, 6.0));
+        h.right_click_at(mid);
+        h.click_widget("Send to back");
+        assert!(h.app.doc.boxes[0].behind);
+        h.frames(2, vec![], Modifiers::NONE);
+        let (boxed, story, picture) = order(&h);
+        assert!(boxed < story && boxed < picture, "behind now: {boxed} {story} {picture}");
+        let printed = squeeze(h.app.printed_text(&ctx, 0));
+        assert!(printed.find("Under") < printed.find("Words"), "{printed}");
+
+        // Behind, it leaves the story's text to the story; beside the text, it is still the box's.
+        h.click_in_page(egui::vec2(10.0, 6.0));
+        assert_eq!(h.app.boxes.selected, None);
+        assert!(h.app.caret <= 2, "the caret went into the line over the box: {}", h.app.caret);
+        h.frames(1, vec![egui::Event::PointerMoved(mid)], Modifiers::NONE);
+        h.press_at(mid, true);
+        h.press_at(mid, false);
+        h.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(h.app.boxes.selected, Some(b.id));
+
+        // Transparent, and kept so in the file and in Word.
+        h.right_click_at(mid);
+        h.click_widget("Transparent");
+        assert!(h.app.doc.boxes[0].clear);
+        let other = h.reopened("box-behind");
+        assert!(other.app.doc.boxes[0].behind && other.app.doc.boxes[0].clear);
+        let docx = export::to_docx(&h.app.doc).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(docx)).unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("word/document.xml").unwrap(), &mut xml).unwrap();
+        assert!(xml.contains("behindDoc=\"1\"") && !xml.contains("FFFFFF"), "behind, without a white fill");
+
+        // Brought to the front, it lies over them again.
+        h.right_click_at(mid);
+        h.click_widget("Bring to front");
+        assert!(!h.app.doc.boxes[0].behind);
+        h.click_in_page(egui::vec2(5.0, 400.0));
+        let (boxed, story, picture) = order(&h);
+        assert!(story < boxed && picture < boxed, "in front again");
+        assert_eq!(squeeze(h.text()), format!("Wordsoverthebox.{}", model::IMAGE_CHAR), "the story was not touched");
     }
 
     /// How strongly the words `words` stand out from what was painted under them, as WCAG counts

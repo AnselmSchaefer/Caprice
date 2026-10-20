@@ -68,8 +68,9 @@ Full list with reasons and tests in `ARCHITECTURE.md` §4.
    in `DocFile::into_doc`.
 9. **Every formatting feature needs a Word mapping** in `export.rs`, or a decision that it has none.
 10. **Tests never call Claude** unless marked `#[ignore]` and calling `claude::allow_live()`.
-11. **Print draws `PageLayout::ink` and `App::furniture`** (header, footer, text boxes). Anything new
-    drawn on a page goes into one of them, or it is not printed. Neither moves a page break.
+11. **Print draws `App::underlay`, `PageLayout::ink` and `App::furniture`**, in that order (boxes behind
+    the text; the text and pictures; header, footer, boxes in front). Anything new
+    drawn on a page goes into one of them, or it is not printed. None of them moves a page break.
     Tests never reach the system's printers: they set `App::print.spooler`.
 12. **A story with a file saves itself; every story keeps versions by its id.** Anything that
     starts another story sets `story_id` and calls `Keeper::opened`. Leaving still offers to drop

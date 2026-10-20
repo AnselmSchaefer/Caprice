@@ -440,7 +440,8 @@ impl App {
             let mut page = document.start_page_with(settings);
             let mut surface = page.surface();
             let layout = self.doc.layout_page(ctx, i, 1.0, &[]);
-            let mut ink = layout.ink(self.doc.setup.margin_origin().to_pos2());
+            let mut ink = self.underlay(ctx, i, 1.0);
+            ink.extend(layout.ink(self.doc.setup.margin_origin().to_pos2()));
             ink.extend(self.furniture(ctx, i, 1.0, &chapters));
             for ink in ink {
                 match ink {
@@ -690,7 +691,8 @@ impl App {
     pub fn printed_text(&self, ctx: &egui::Context, i: usize) -> String {
         let mut faces = Faces::new(self.fonts.defs());
         let layout = self.doc.layout_page(ctx, i, 1.0, &[]);
-        let mut ink = layout.ink(self.doc.setup.margin_origin().to_pos2());
+        let mut ink = self.underlay(ctx, i, 1.0);
+        ink.extend(layout.ink(self.doc.setup.margin_origin().to_pos2()));
         ink.extend(self.furniture(ctx, i, 1.0, &|| self.doc.chapters(false)));
         let texts = ink.iter().filter_map(|k| if let Ink::Text(g, at) = k { Some((g, *at)) } else { None });
         texts.flat_map(|(g, at)| runs(&mut faces, g, at)).map(|r| r.text).collect()

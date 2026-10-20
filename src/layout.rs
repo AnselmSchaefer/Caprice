@@ -204,6 +204,17 @@ impl PageLayout {
         }
         ink
     }
+
+    /// Whether a point, relative to the writing area, is on a row of text or a picture (the
+    /// room beside a short line, or between paragraphs, is not).
+    pub fn covers(&self, pos: Vec2) -> bool {
+        let at = pos.to_pos2();
+        self.ink(egui::Pos2::ZERO).iter().any(|ink| match ink {
+            Ink::Text(g, origin) => g.rows.iter().any(|r| !r.row.glyphs.is_empty() && r.rect().translate(origin.to_vec2()).contains(at)),
+            Ink::Picture(img) => img.rect.contains(at),
+            _ => false,
+        })
+    }
 }
 
 /// What the layout of a piece is built from.

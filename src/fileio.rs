@@ -125,6 +125,10 @@ struct BoxFile {
     look: crate::model::BoxLook,
     #[serde(default = "accent_ink")]
     color: [u8; 3],
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    behind: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    clear: bool,
 }
 
 fn accent_ink() -> [u8; 3] {
@@ -254,6 +258,8 @@ impl DocFile {
                 style: to_runs(" ", std::slice::from_ref(&b.style)).remove(0),
                 look: b.look,
                 color: b.color,
+                behind: b.behind,
+                clear: b.clear,
             })
             .collect();
         Self {
@@ -340,7 +346,7 @@ impl DocFile {
             let mut style = run_style(&b.style);
             style.image = 0;
             let pos = egui::vec2(b.pos[0], b.pos[1]);
-            doc.boxes.push(crate::model::TextBox { id, at, pos, size, text: b.text, style, look: b.look, color: b.color });
+            doc.boxes.push(crate::model::TextBox { id, at, pos, size, text: b.text, style, look: b.look, color: b.color, behind: b.behind, clear: b.clear });
         }
         for n in self.notes {
             let (start, end) = (shift(n.start).min(total), shift(n.end).min(total));

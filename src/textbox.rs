@@ -1,5 +1,7 @@
-//! Text boxes: text placed anywhere on a page, in front of the story, which does not flow around
-//! them (egui cannot flow text around a box, R11; Word calls this "In front of text"). A box is
+//! Text boxes: text placed anywhere on a page, in front of the story or behind it, which does not
+//! flow around them (egui cannot flow text around a box, R11; Word calls these "In front of text"
+//! and "Behind text"). The story's pictures are in its text, so a box lies in front of them or
+//! behind them too, and a box behind leaves the text and pictures over it to the story. A box is
 //! pinned to a char outside the text, like a note or a scene (R7), and shows on that char's page,
 //! so it goes along when the text it was put beside moves to another page. Where it is on the
 //! page is its own: moved, it is pinned again to the char under its top-left corner.
@@ -44,8 +46,12 @@ fn flag_of(key: Key) -> Option<fn(&mut Style) -> &mut bool> {
     }
 }
 
-/// White, tinted `t` of the way towards `c`.
-fn tint([r, g, b]: [u8; 3], t: f32) -> Color32 {
+/// White, tinted `t` of the way towards `c`. Clear, `c` that strong over whatever lies under it,
+/// which on blank paper is the same colour.
+fn tint([r, g, b]: [u8; 3], t: f32, clear: bool) -> Color32 {
+    if clear {
+        return Color32::from_rgba_unmultiplied(r, g, b, (255.0 * t).round() as u8);
+    }
     let mix = |c: u8| (255.0 - (255.0 - f32::from(c)) * t).round() as u8;
     Color32::from_rgb(mix(r), mix(g), mix(b))
 }
@@ -114,12 +120,13 @@ pub fn box_ink(ctx: &egui::Context, b: &TextBox, sc: f32, with_text: bool) -> Ve
         BoxLook::Simple => {
             let mut edge = quad(r);
             edge.push(r.left_top());
-            vec![Ink::Fill(quad(r), Color32::WHITE), Ink::Line(edge, 0.75 * sc, rgb(b.color))]
+            let line = Ink::Line(edge, 0.75 * sc, rgb(b.color));
+            if b.clear { vec![line] } else { vec![Ink::Fill(quad(r), Color32::WHITE), line] }
         }
-        BoxLook::Shaded => vec![Ink::Fill(quad(r), tint(b.color, 0.16))],
+        BoxLook::Shaded => vec![Ink::Fill(quad(r), tint(b.color, 0.16, b.clear))],
         BoxLook::Sidebar => {
             let bar = Rect::from_min_size(r.min, vec2(BAR * sc, r.height()));
-            vec![Ink::Fill(quad(r), tint(b.color, 0.07)), Ink::Fill(quad(bar), rgb(b.color))]
+            vec![Ink::Fill(quad(r), tint(b.color, 0.07, b.clear)), Ink::Fill(quad(bar), rgb(b.color))]
         }
         BoxLook::Quote => vec![line(r.top()), line(r.bottom())],
         BoxLook::Bare => Vec::new(),
@@ -183,7 +190,7 @@ impl App {
         let id = self.doc.next_box_id;
         self.doc.next_box_id += 1;
         let pos = vec2(origin.x + (content.x - w) / 2.0, y);
-        self.doc.boxes.push(TextBox { id, at, pos, size: vec2(w, h), text: String::new(), style, look, color: first_color(look) });
+        self.doc.boxes.push(TextBox { id, at, pos, size: vec2(w, h), text: String::new(), style, look, color: first_color(look), behind: false, clear: false });
         self.doc.version += 1;
         self.boxes = Boxes { selected: Some(id), editing: true, focus: true, drag: None };
         if self.target != i {
@@ -225,7 +232,50 @@ impl App {
     pub fn box_hits(&self, ctx: &egui::Context, page_rect: Rect, i: usize) -> Vec<Rect> {
         let sc = self.scale_of(page_rect);
         let grow = |r: Rect| r.expand(EDGE + if self.boxes.selected.is_some() { 4.0 } else { 0.0 });
-        self.doc.boxes_on(i).map(|b| grow(box_rect(ctx, b) * sc).translate(page_rect.min.to_vec2())).collect()
+        let on_text = self.pointer_on_text(ctx, page_rect, i);
+        let boxes = self.doc.boxes_on(i).filter(|b| self.takes_pointer(b, on_text));
+        boxes.map(|b| grow(box_rect(ctx, b) * sc).translate(page_rect.min.to_vec2())).collect()
+    }
+
+    /// Whether the pointer is on the story's text or a picture of page `i`, drawn at `page_rect`.
+    /// Only asked for if a box lies behind the story there.
+    fn pointer_on_text(&self, ctx: &egui::Context, page_rect: Rect, i: usize) -> bool {
+        let Some(p) = ctx.input(|inp| inp.pointer.latest_pos()) else { return false };
+        if !self.doc.boxes_on(i).any(|b| b.behind) {
+            return false;
+        }
+        let sc = self.scale_of(page_rect);
+        let layout = self.doc.layout_page(ctx, i, sc, &[]);
+        layout.covers(p - page_rect.min - self.doc.setup.margin_origin() * sc)
+    }
+
+    /// Whether box `b` takes the pointer, `on_text` saying if it is on the story's text. A box
+    /// behind the story leaves its text and pictures to it, unless it is selected, to be written
+    /// in, moved or resized.
+    fn takes_pointer(&self, b: &TextBox, on_text: bool) -> bool {
+        !b.behind || !on_text || self.boxes.selected == Some(b.id)
+    }
+
+    /// Draw the text boxes of the page being edited that lie behind the story, at `page_rect`,
+    /// before its text. `text_boxes` lets them be written in, moved and resized.
+    pub fn text_boxes_behind(&self, ui: &egui::Ui, page_rect: Rect, i: usize) {
+        let sc = self.scale_of(page_rect);
+        for b in self.doc.boxes_on(i).filter(|b| b.behind) {
+            let writing = self.boxes.selected == Some(b.id) && self.boxes.editing;
+            for ink in box_ink(ui.ctx(), b, sc, !writing) {
+                ui.painter().extend(ink.translate(page_rect.min.to_vec2()).shape());
+            }
+        }
+    }
+
+    /// Bring box `id` to the front of the story's text and pictures, over every other box, or
+    /// send it to the back, behind them and every other box.
+    pub fn stack_text_box(&mut self, id: u64, front: bool) {
+        let Some(k) = self.doc.boxes.iter().position(|b| b.id == id) else { return };
+        let mut b = self.doc.boxes.remove(k);
+        b.behind = !front;
+        if front { self.doc.boxes.push(b) } else { self.doc.boxes.insert(0, b) }
+        self.doc.version += 1;
     }
 
     /// Keys for a box selected but not being written in: Delete or Backspace takes it away,
@@ -257,14 +307,25 @@ impl App {
         let ctx = ui.ctx().clone();
         let sc = self.scale_of(page_rect);
         let origin = page_rect.min.to_vec2();
-        let ids: Vec<u64> = self.doc.boxes_on(i).map(|b| b.id).collect();
+        let on_text = self.pointer_on_text(&ctx, page_rect, i);
+        // Those behind the story come first, as they are drawn: a box in front takes the pointer over them.
+        let mut ids: Vec<&TextBox> = self.doc.boxes_on(i).collect();
+        ids.sort_by_key(|b| !b.behind);
+        let ids: Vec<u64> = ids.into_iter().map(|b| b.id).collect();
         for id in ids {
             let Some(b) = self.text_box(id).cloned() else { continue };
             let rect = (box_rect(&ctx, &b) * sc).translate(origin);
             let selected = self.boxes.selected == Some(id);
             let writing = selected && self.boxes.editing;
-            for ink in box_ink(&ctx, &b, sc, !writing) {
-                ui.painter().extend(ink.translate(origin).shape());
+            // Those behind were drawn before the story (`text_boxes_behind`).
+            if !b.behind {
+                for ink in box_ink(&ctx, &b, sc, !writing) {
+                    ui.painter().extend(ink.translate(origin).shape());
+                }
+            }
+            let dragged = self.boxes.drag.as_ref().is_some_and(|d| d.id == id);
+            if !self.takes_pointer(&b, on_text) && !dragged {
+                continue;
             }
 
             // The box (while writing, only its edge) takes drags to move it, and clicks to write.
@@ -352,9 +413,10 @@ impl App {
     /// The right-click menu of a box: its look, its colour, deleting it.
     fn box_menu(&mut self, resp: &egui::Response, id: u64) {
         let Some(b) = self.text_box(id) else { return };
-        let (look, color) = (b.look, b.color);
+        let (look, color, was_clear) = (b.look, b.color, b.clear);
+        let mut clear = was_clear;
         let (mut new_look, mut new_color) = (None, None);
-        let mut delete = false;
+        let (mut delete, mut stack) = (false, None);
         resp.context_menu(|ui| {
             for l in BoxLook::ALL {
                 // Selectable, so the one in use gets the highlight its dark text is meant for.
@@ -365,6 +427,19 @@ impl App {
             }
             ui.separator();
             new_color = crate::bands::accent_row(ui, color);
+            // A look without a fill is see-through already.
+            if matches!(look, BoxLook::Simple | BoxLook::Shaded | BoxLook::Sidebar) && ui.checkbox(&mut clear, "Transparent").changed() {
+                ui.close();
+            }
+            ui.separator();
+            if ui.add(egui::Button::new("Bring to front").frame(false)).on_hover_text("In front of the text and pictures").clicked() {
+                stack = Some(true);
+                ui.close();
+            }
+            if ui.add(egui::Button::new("Send to back").frame(false)).on_hover_text("Behind the text and pictures").clicked() {
+                stack = Some(false);
+                ui.close();
+            }
             ui.separator();
             if ui.add(egui::Button::new("Delete text box").frame(false)).clicked() {
                 delete = true;
@@ -373,9 +448,17 @@ impl App {
         });
         if delete {
             self.delete_text_box(id);
-        } else if new_look.is_some() || new_color.is_some() {
+            return;
+        }
+        if let Some(front) = stack {
+            self.stack_text_box(id, front);
+        }
+        if new_look.is_some() || new_color.is_some() || clear != was_clear {
             self.boxes.selected = Some(id);
-            self.edit_selected_box(|b| (b.look, b.color) = (new_look.unwrap_or(b.look), new_color.unwrap_or(b.color)));
+            self.edit_selected_box(|b| {
+                (b.look, b.color) = (new_look.unwrap_or(b.look), new_color.unwrap_or(b.color));
+                b.clear = clear;
+            });
         }
     }
 

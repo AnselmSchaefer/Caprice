@@ -129,19 +129,32 @@ impl App {
     }
 
     /// What page `i` holds besides the story, at scale `sc` relative to the page's top-left: its
-    /// header and footer, then its text boxes on top. Every look and print draw it (R20).
+    /// header and footer, then the text boxes in front of the story on top. Every look and print
+    /// draw it over the story's text and pictures, and `underlay` under them (R20, R24).
     /// `chapters` are `chapters(false)`, asked for only if a header or footer shows the chapter.
     pub fn furniture(&self, ctx: &egui::Context, i: usize, sc: f32, chapters: &dyn Fn() -> Vec<crate::contents::Entry>) -> Vec<Ink> {
         let mut ink = self.doc.bands_ink(ctx, i, sc, chapters);
-        for b in self.doc.boxes_on(i) {
+        for b in self.doc.boxes_on(i).filter(|b| !b.behind) {
             ink.extend(crate::textbox::box_ink(ctx, b, sc, true));
         }
         ink
     }
 
-    /// Page `i`'s header, footer and text boxes, drawn on a page at `rect`.
+    /// The text boxes of page `i` that lie behind the story's text and pictures, at scale `sc`
+    /// relative to the page's top-left.
+    pub fn underlay(&self, ctx: &egui::Context, i: usize, sc: f32) -> Vec<Ink> {
+        self.doc.boxes_on(i).filter(|b| b.behind).flat_map(|b| crate::textbox::box_ink(ctx, b, sc, true)).collect()
+    }
+
+    /// Page `i`'s header, footer and text boxes in front, drawn on a page at `rect`.
     pub fn draw_furniture(&self, ui: &egui::Ui, rect: Rect, i: usize) {
         let ink = self.furniture(ui.ctx(), i, self.scale_of(rect), &|| self.doc.chapters(false));
+        ui.painter().extend(ink.into_iter().filter_map(|k| k.translate(rect.min.to_vec2()).shape()));
+    }
+
+    /// Page `i`'s text boxes behind the story, drawn on a page at `rect`, before its text.
+    pub fn draw_underlay(&self, ui: &egui::Ui, rect: Rect, i: usize) {
+        let ink = self.underlay(ui.ctx(), i, self.scale_of(rect));
         ui.painter().extend(ink.into_iter().filter_map(|k| k.translate(rect.min.to_vec2()).shape()));
     }
 
@@ -149,6 +162,7 @@ impl App {
         Self::paper(ui.painter(), rect);
         ui.painter().extend(self.backdrop_shapes(ui.ctx(), i, rect, &|p| p, 1.0, 1.0));
         let sc = self.scale_of(rect);
+        self.draw_underlay(ui, rect, i);
         let layout = self.page_layout(ui.ctx(), i, sc);
         self.paint_layout(ui.painter(), &layout, rect.min + self.doc.setup.margin_origin() * sc);
         self.draw_furniture(ui, rect, i);
@@ -324,6 +338,7 @@ impl App {
         let sc = self.scale_of(sheet);
         if text {
             ui.painter().extend(self.backdrop_shapes(ctx, i, sheet, &|p| p, 1.0, 1.0));
+            self.draw_underlay(ui, sheet, i);
             let layout = self.page_layout(ctx, i, sc);
             self.paint_layout(ui.painter(), &layout, sheet.min + self.doc.setup.margin_origin() * sc);
             self.draw_furniture(ui, sheet, i);

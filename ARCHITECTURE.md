@@ -4,7 +4,7 @@ How Caprice is put together, and the rules that hold it together. The rules (§4
 read before changing anything: each says what depends on what, what to check when touching it, and
 which tests guard it. Keep this file true: a change that alters a rule updates it in the same commit.
 
-*Last brought up to date: 2026-10-19 (the Insert menu: headers and footers, text boxes).*
+*Last brought up to date: 2026-10-20 (text boxes behind the text, and transparent ones).*
 
 ---
 
@@ -36,11 +36,12 @@ PageSetup (paper, margins,     ├─ Doc::chapters() ─▶ contents pages  │
 images (bytes, width,          └──────────────────────────▶ layout_page(i, zoom) ─▶ drawing
   rotation)                                                 (PageLayout: galleys,     (render, book,
 notes (char ranges + text)                                   hit-testing, caret)       editor, notes)
-text boxes (a char + place)  ──boxes_on(i)──▶ drawn over page i (App::furniture, with the header and footer)
+text boxes (a char + place)  ──boxes_on(i)──▶ drawn over page i (App::furniture, with the header and footer),
+                                               or under its text (App::underlay)
 scenes (a char + drawings)   ──scene_at(caret) / page_scene(i)──▶ the drawing behind a page
 cast (names, looks, sheets)  ──named_in(what is painted, or just before)──▶ the people sent with a scene
                              export::to_docx(&Doc) ─▶ .docx (Word lays it out again itself)
-                             layout_page(i, 1) ─▶ PageLayout::ink + furniture ─▶ PDF ─▶ a file, or lp (CUPS)
+                             layout_page(i, 1) ─▶ underlay + PageLayout::ink + furniture ─▶ PDF ─▶ a file, or lp (CUPS)
 ```
 
 - **`Flow`** (`model.rs`) is one `String` plus one `Style` per char (font, size, bold, italic,
@@ -74,7 +75,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `words.rs` | The Document info window: dates, file, counts (words, chapter, selection…), today's words and the daily goal, kept in the data folder |
 | `ui.rs` | Top toolbar (formatting, Page and Insert menus, the text box gallery), bottom page bar and scrollbar |
 | `bands.rs` | Headers and footers: their looks drawn as `Ink`, fields filled in per page, the gallery tiles, accent colours |
-| `textbox.rs` | Text boxes: drawn as `Ink`, inserted, written in, moved, resized, pinned to a char; their selection |
+| `textbox.rs` | Text boxes: drawn as `Ink`, inserted, written in, moved, resized, pinned to a char, in front of the text or behind it; their selection |
 | `fileio.rs` | `.caprice` format (`DocFile`), open/save/export commands, unsaved-changes detection |
 | `export.rs` | Hand-written Office Open XML for `.docx` |
 | `versions.rs` | Autosaving a story with a file; versions of every story kept in the data folder; the Versions window |
@@ -616,8 +617,9 @@ Claude menu, not saved as open, their results not saved either.
 ### R20 — Print draws what the screen draws, from the same layout
 
 `App::pdf` lays every page out at page size (`layout_page(i, 1.0)`, no highlights) and draws
-`PageLayout::ink`, the list `paint_layout` draws on screen, plus `App::furniture` (header, footer,
-text boxes), which every look draws too. So a
+`PageLayout::ink`, the list `paint_layout` draws on screen, between `App::underlay` (text boxes
+behind the text) and `App::furniture` (header, footer, text boxes in front), which every look
+draws too, in that order (R24). So a
 printed page breaks, wraps and justifies where the page shown does.
 
 - **Anything new drawn on a page goes into `PageLayout::ink`**, not straight onto the painter in
@@ -735,13 +737,29 @@ must keep working: writers do it. A version (the whole `.caprice` file) is kept 
 
 Headers and footers (`PageSetup::header`, `footer`, a `Band` each: a look, a line of text, a
 colour) sit in the middle of the top and bottom margins; text boxes (`Doc::boxes`) lie wherever
-they were put, in front of the story's text. Neither changes where pages break, so pagination
-and R3 do not know them, and a header or footer change does not paginate (`set_band`).
+they were put, in front of the story's text or behind it. Neither changes where pages break, so
+pagination and R3 do not know them, and a header or footer change does not paginate (`set_band`).
 
-- **Everything they draw is `Ink`, from one place, `App::furniture`**: the page shown
-  (`draw_bands`, then `text_boxes` over the editor), the static and sliding pages
-  (`draw_furniture`), a book's turning page (tessellated and bent with the paper) and print (R20).
-  Something new drawn on a page that is not the story's text goes there too.
+- **Everything they draw is `Ink`, from two places**: `App::underlay` (boxes behind the text) and
+  `App::furniture` (header, footer, boxes in front). A page is drawn in layers: the scene, the
+  underlay, the story's text and its pictures (pictures are in the text, so always level with
+  it), then the furniture. Every path keeps that order: the page shown (`draw_bands`,
+  `text_boxes_behind`, the editor, then `text_boxes`), the static and sliding pages
+  (`draw_underlay`, `paint_layout`, `draw_furniture`), a book's turning page (the underlay in the
+  text's mesh before the text; the furniture in a mesh of its own after the pictures, which are
+  quads of their own) and print (R20). Something new drawn on a page that is not the story's text
+  goes into one of them.
+- **`Doc::boxes` is in stacking order**, bottom first; `behind` says which layer a box is in.
+  "Bring to front" and "Send to back" (`stack_text_box`) move a box into the front or back layer
+  and to the top or bottom of the list. Word gets the same: `behindDoc`, and `relativeHeight` from
+  the box's place in the list.
+- **A box behind the text leaves the text to the story.** It takes the pointer only where no row
+  of text or picture lies (`PageLayout::covers`, `takes_pointer`), unless it is selected; the
+  editor leaves presses alone where `box_hits` says a box takes them, so both ask the same thing.
+  egui hit-tests with the last frame's widgets, so this is one frame behind the pointer.
+- **Transparent (`clear`) changes the fill only**: none for a simple box, its tint for a shaded
+  box or a sidebar laid on with alpha, so on blank paper it looks the same. Looks without a fill
+  do not offer it. In Word: `noFill`, or `a:alpha` on the fill.
 - **A band shows one thing**, chosen with radio buttons: the page number (`{page}`), the
   chapter's title (`{chapter}`: the chapter that starts on the page, else the last before it,
   `chapter_of_page`), or text of the writer's own. The fields are filled in when drawn
@@ -756,12 +774,13 @@ and R3 do not know them, and a header or footer change does not paginate (`set_b
 - **Clicking a box writes in it; the story keeps its caret.** A selected box not being written in
   takes Delete, Backspace and Escape (`box_key`); any other key, a typed letter or a click on the
   story lets it go. Changes to headers, footers and boxes are not undoable (R1).
-- **A right click anywhere on a box opens its menu** (look, colour, delete). While it is written
+- **A right click anywhere on a box opens its menu** (look, colour, transparent, front or back, delete). While it is written
   in, its text field lies over it and takes the pointer there, so the field gets the same menu
   (`box_menu` on both); with it on the box alone, only the thin edge around the text opened it.
 - Tests: `a_header_and_footer_from_the_insert_menu_show_each_pages_chapter_and_number_and_print`,
   `a_text_box_is_written_in_moved_and_resized_and_goes_where_its_text_goes`,
   `a_right_click_anywhere_on_a_text_box_offers_its_menu_whether_written_in_or_not`,
+  `a_text_box_sent_to_the_back_lies_behind_the_text_and_pictures_and_comes_to_the_front_again`,
   `text_boxes_stay_with_their_char_and_where_it_was_once_it_is_deleted`,
   `files_from_before_footers_keep_their_page_numbers_as_a_footer`, and in `bands.rs`
   `fields_are_filled_in_for_each_page`, `a_leaf_is_convex_and_reaches_from_end_to_end`.
@@ -783,7 +802,8 @@ the gallery shows it) → its `Ink` in `band_ink`/`box_ink`, convex fills only �
 
 **Something new drawn on a page:** size at page size (R4) → pagination (`next_span`) and layout
 (`layout_page`) agree → incremental equals full (R3) → both looks (`render.rs` and `book.rs`) →
-hit-testing and caret (`PageLayout`) → into `PageLayout::ink`, so it prints (R20).
+hit-testing and caret (`PageLayout`) → into `PageLayout::ink`, so it prints (R20). Lying on the
+page rather than in the text: into `App::underlay` or `App::furniture`, which layer decided (R24).
 
 **Page navigation or a new way to move between pages:** use `turn_to` / `go_to_page` (R5); test it
 on the contents pages with `Harness::long_contents`.
@@ -885,5 +905,11 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
   (Word's "In front of text", which is how it is exported), and it is pinned to a char like a
   scene, not to a page, so it goes along when the text moves to another page. Headers and footers
   likewise take no room: they sit in the margins (R24). "Page numbers" became a footer.
+- **2026-10-20 — Text boxes in front of the text or behind it; pictures stay in the text.** Asked
+  for: a box's text before or behind a picture. Pictures are paragraphs of the story, so making
+  them float would bring back what the box decision avoided (R11). Instead a box is in one of two
+  layers, behind or in front of the story with its pictures, as Word's "Behind text" and "In front
+  of text", and ordered among boxes by its place in the list. Transparent lets the text under a
+  box in front show through (R24).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

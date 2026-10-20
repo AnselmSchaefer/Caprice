@@ -200,7 +200,7 @@ fn box_gallery(ui: &mut egui::Ui, typing: &Style) -> Option<BoxLook> {
                 style.para.align = if look == BoxLook::Quote { Align::Center } else { Align::Left };
                 let text = "A few words set apart from the story.".into();
                 let color = crate::textbox::first_color(look);
-                let sample = TextBox { id: 0, at: 0, pos: vec2(12.0, 9.0), size: vec2(146.0, 46.0), text, style, look, color };
+                let sample = TextBox { id: 0, at: 0, pos: vec2(12.0, 9.0), size: vec2(146.0, 46.0), text, style, look, color, behind: false, clear: false };
                 for ink in crate::textbox::box_ink(ui.ctx(), &sample, 1.0, true) {
                     p.extend(ink.translate(rect.min.to_vec2()).shape());
                 }

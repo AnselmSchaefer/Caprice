@@ -167,6 +167,10 @@ impl App {
             let mut tess = Tessellator::new(ctx.pixels_per_point(), TessellationOptions::default(), font_tex, vec![]);
             let mut text_mesh = Mesh::default();
             let origin = self.doc.setup.margin_origin() * sc;
+            // The header, footer and text boxes bend with the paper too, those behind the story under it.
+            for shape in self.underlay(ctx, i, sc).into_iter().filter_map(Ink::shape) {
+                tess.tessellate_shape(shape, &mut text_mesh);
+            }
             for p in &page.paras {
                 if let Some((g, at)) = &p.marker {
                     tess.tessellate_shape(Shape::galley(pos2(origin.x + at.x, origin.y + p.y + at.y), g.clone(), INK), &mut text_mesh);
@@ -178,21 +182,25 @@ impl App {
                     tess.tessellate_shape(Shape::galley(pos2(origin.x + p.x + at.x, origin.y + p.y + at.y), g.clone(), INK), &mut text_mesh);
                 }
             }
-            // The header, footer and text boxes bend with the paper too (pictures cannot be in them).
+            // Those in front go over the pictures, so they get a mesh of their own, drawn after them.
+            let mut front_mesh = Mesh::default();
             for shape in self.furniture(ctx, i, sc, &|| self.doc.chapters(false)).into_iter().filter_map(Ink::shape) {
-                tess.tessellate_shape(shape, &mut text_mesh);
+                tess.tessellate_shape(shape, &mut front_mesh);
             }
-            for v in &mut text_mesh.vertices {
-                v.pos = map(v.pos.x, rect.top() + v.pos.y);
-                let c = v.color;
-                v.color = Color32::from_rgba_premultiplied(
-                    (f32::from(c.r()) * shade) as u8,
-                    (f32::from(c.g()) * shade) as u8,
-                    (f32::from(c.b()) * shade) as u8,
-                    c.a(),
-                );
-            }
-            painter.add(Shape::mesh(text_mesh));
+            let bend = |mut mesh: Mesh| {
+                for v in &mut mesh.vertices {
+                    v.pos = map(v.pos.x, rect.top() + v.pos.y);
+                    let c = v.color;
+                    v.color = Color32::from_rgba_premultiplied(
+                        (f32::from(c.r()) * shade) as u8,
+                        (f32::from(c.g()) * shade) as u8,
+                        (f32::from(c.b()) * shade) as u8,
+                        c.a(),
+                    );
+                }
+                Shape::mesh(mesh)
+            };
+            painter.add(bend(text_mesh));
 
             // Pictures are textured quads that follow the paper the same way.
             for p in &page.paras {
@@ -221,6 +229,7 @@ impl App {
                 }
                 painter.add(Shape::mesh(quad));
             }
+            painter.add(bend(front_mesh));
 
             let look = NoteLook { map: &on_page, shade, ..NoteLook::FLAT };
             self.paint_notes(ctx, painter, rect, i, &look);

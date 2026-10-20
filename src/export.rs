@@ -127,26 +127,32 @@ fn field_runs(text: &str, rpr: &str, results: [&str; 2]) -> String {
     }
 }
 
-/// How a shape is drawn: its outline (`rect`, `ellipse`), fill, line (width in points), and the
-/// room inside it around its text, in points (left, top, right, bottom).
+/// How a shape is drawn: its outline (`rect`, `ellipse`), fill and how opaque it is (0 to 1), line
+/// (width in points), the room inside it around its text, in points (left, top, right, bottom),
+/// and whether it lies behind the text rather than in front.
 struct ShapeLook<'a> {
     geom: &'a str,
-    fill: Option<[u8; 3]>,
+    fill: Option<([u8; 3], f32)>,
     line: Option<(f32, [u8; 3])>,
     inset: [f32; 4],
+    behind: bool,
 }
 
 /// A shape holding `paragraphs`, placed at `rect` (points from the page's top-left) in front of
-/// the text, which does not wrap around it. Word 2010 and later, and LibreOffice, read it.
+/// the text or behind it, which does not wrap around it. Shapes later in the document lie on top.
+/// Word 2010 and later, and LibreOffice, read it.
 fn anchored_shape(id: u32, rect: egui::Rect, look: &ShapeLook, paragraphs: &str) -> String {
     let (cx, cy) = (emu(rect.width()), emu(rect.height()));
-    let fill = look.fill.map_or("<a:noFill/>".to_owned(), |c| format!("<a:solidFill><a:srgbClr val=\"{}\"/></a:solidFill>", hex(c)));
+    let fill = look.fill.map_or("<a:noFill/>".to_owned(), |(c, a)| {
+        let alpha = if a < 1.0 { format!("<a:alpha val=\"{}\"/>", (a * 100_000.0).round()) } else { String::new() };
+        format!("<a:solidFill><a:srgbClr val=\"{}\">{alpha}</a:srgbClr></a:solidFill>", hex(c))
+    });
     let line = look.line.map_or("<a:ln><a:noFill/></a:ln>".to_owned(), |(w, c)| {
         format!("<a:ln w=\"{}\"><a:solidFill><a:srgbClr val=\"{}\"/></a:solidFill></a:ln>", emu(w), hex(c))
     });
     let [l, t, r, b] = look.inset.map(emu);
     format!(
-        "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" \
+        "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"{}\" \
 locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/>\
 <wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH>\
 <wp:positionV relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionV>\
@@ -158,6 +164,7 @@ locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"
 <wps:bodyPr rot=\"0\" vert=\"horz\" wrap=\"square\" lIns=\"{l}\" tIns=\"{t}\" rIns=\"{r}\" bIns=\"{b}\" anchor=\"{}\" anchorCtr=\"0\"><a:noAutofit/></wps:bodyPr>\
 </wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
         251_659_264 + id,
+        u8::from(look.behind),
         emu(rect.left()),
         emu(rect.top()),
         look.geom,
@@ -190,13 +197,17 @@ fn text_box_xml(b: &crate::model::TextBox, id: u32) -> String {
         let border = if border.is_empty() { border } else { format!("<w:pBdr>{border}</w:pBdr>") };
         let _ = write!(paragraphs, "<w:p><w:pPr>{border}{jc}<w:rPr>{rpr}</w:rPr></w:pPr>{}</w:p>", field_runs(line, &rpr, ["1", ""]));
     }
-    let tint = |t: f32| b.color.map(|c| (255.0 - (255.0 - f32::from(c)) * t).round() as u8);
-    let look = match b.look {
-        BoxLook::Simple => ShapeLook { geom: "rect", fill: Some([255, 255, 255]), line: Some((0.75, b.color)), inset: [7.0, 5.0, 7.0, 5.0] },
-        BoxLook::Shaded => ShapeLook { geom: "rect", fill: Some(tint(0.16)), line: None, inset: [7.0, 5.0, 7.0, 5.0] },
-        BoxLook::Sidebar => ShapeLook { geom: "rect", fill: Some(tint(0.07)), line: None, inset: [2.0, 5.0, 7.0, 5.0] },
-        BoxLook::Quote | BoxLook::Bare => ShapeLook { geom: "rect", fill: None, line: None, inset: [7.0, 5.0, 7.0, 5.0] },
+    // A tint is the colour mixed into white, or, transparent, the colour that strong over what is under it.
+    let tint = |t: f32| {
+        if b.clear { (b.color, t) } else { (b.color.map(|c| (255.0 - (255.0 - f32::from(c)) * t).round() as u8), 1.0) }
     };
+    let (fill, line, inset) = match b.look {
+        BoxLook::Simple => ((!b.clear).then_some(([255, 255, 255], 1.0)), Some((0.75, b.color)), [7.0, 5.0, 7.0, 5.0]),
+        BoxLook::Shaded => (Some(tint(0.16)), None, [7.0, 5.0, 7.0, 5.0]),
+        BoxLook::Sidebar => (Some(tint(0.07)), None, [2.0, 5.0, 7.0, 5.0]),
+        BoxLook::Quote | BoxLook::Bare => (None, None, [7.0, 5.0, 7.0, 5.0]),
+    };
+    let look = ShapeLook { geom: "rect", fill, line, inset, behind: b.behind };
     // Word grows the shape to hold its text (`spAutoFit`), as Caprice does.
     let rect = egui::Rect::from_min_size(b.pos.to_pos2(), b.size);
     anchored_shape(id, rect, &look, &paragraphs).replace("<a:noAutofit/>", "<a:spAutoFit/>")
@@ -241,7 +252,7 @@ fn band_xml(band: &Band, top: bool, even: bool, font: &str, setup: &crate::model
             let shown = crate::bands::filled(&band.text, 99, "");
             let r = (shown.chars().count() as f32 * BAND_SIZE * 0.3).max(BAND_SIZE * 0.6) + 5.0;
             let rect = egui::Rect::from_center_size(egui::pos2(mid, cy), egui::vec2(2.0 * r, 2.0 * r));
-            let look = ShapeLook { geom: "ellipse", fill: Some(band.color), line: None, inset: [0.0; 4] };
+            let look = ShapeLook { geom: "ellipse", fill: Some((band.color, 1.0)), line: None, inset: [0.0; 4], behind: false };
             para("", &anchored_shape(3000 + u32::from(top), rect, &look, &para(centre, &runs)))
         }
     };
@@ -776,7 +787,7 @@ mod tests {
 
     fn test_box(at: usize, text: &str, look: crate::model::BoxLook) -> TextBox {
         let style = Style::new("Liberation Serif");
-        TextBox { id: 1, at, pos: egui::vec2(200.0, 300.0), size: egui::vec2(150.0, 40.0), text: text.into(), style, look, color: [10, 20, 30] }
+        TextBox { id: 1, at, pos: egui::vec2(200.0, 300.0), size: egui::vec2(150.0, 40.0), text: text.into(), style, look, color: [10, 20, 30], behind: false, clear: false }
     }
 
     fn read_part(bytes: &[u8], name: &str) -> Option<String> {
@@ -1113,7 +1124,11 @@ from the President of a far distant country.";
         let style = Style { size: 11.0, ..plain.clone() };
         let text = "Set apart: a few words in a box\nof their own.".into();
         let (pos, size) = (egui::vec2(330.0, 420.0), egui::vec2(180.0, 50.0));
-        d.boxes.push(TextBox { id: 1, at: 60, pos, size, text, style, look: BoxLook::Sidebar, color: crate::model::ACCENT_INK });
+        d.boxes.push(TextBox { id: 1, at: 60, pos, size, text, style, look: BoxLook::Sidebar, color: crate::model::ACCENT_INK, behind: false, clear: false });
+        // One behind the text, see-through, over the lines of the story.
+        let (text, pos, size) = ("BEHIND THE TEXT".into(), egui::vec2(140.0, 236.0), egui::vec2(260.0, 40.0));
+        let style = Style { size: 22.0, bold: true, ..plain.clone() };
+        d.boxes.push(TextBox { id: 2, at: 60, pos, size, text, style, look: BoxLook::Shaded, color: crate::model::ACCENT_INK, behind: true, clear: true });
         d.setup.margin_left = 100.0;
         d.setup.drop_cap_lines = 3;
         d.setup.contents = true;

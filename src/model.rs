@@ -438,9 +438,9 @@ impl BoxLook {
     }
 }
 
-/// A box of text placed on a page, in front of the story's text, which does not flow around it
-/// (as Word's "In front of text"). Like a note it is pinned to a char outside the text, and shows
-/// on that char's page, so it goes where the text it belongs with goes.
+/// A box of text placed on a page, in front of the story's text or behind it, which does not flow
+/// around it (as Word's "In front of text" and "Behind text"). Like a note it is pinned to a char
+/// outside the text, and shows on that char's page, so it goes where the text it belongs with goes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextBox {
     pub id: u64,
@@ -456,6 +456,10 @@ pub struct TextBox {
     pub look: BoxLook,
     /// The colour of its border, tint, bar or rules.
     pub color: [u8; 3],
+    /// Lies behind the story's text and pictures, rather than in front of them.
+    pub behind: bool,
+    /// Its fill lets what is under it show through: none for a simple box, a see-through tint for the others.
+    pub clear: bool,
 }
 
 pub const NOTE_COLORS: [(u8, u8, u8); 5] =
@@ -488,7 +492,7 @@ pub struct Doc {
     pub story_notes: String,
     /// The scratchpad's plain text, kept beside the story.
     pub scratchpad: String,
-    /// Text boxes, in the order they were made (later ones lie on top).
+    /// Text boxes, bottom first: later ones lie on top of earlier ones in their layer.
     pub boxes: Vec<TextBox>,
     pub next_box_id: u64,
 }

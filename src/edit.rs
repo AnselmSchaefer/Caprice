@@ -283,7 +283,7 @@ mod tests {
         let style = st.clone();
         let pinned = |at| crate::model::TextBox {
             id: 1, at, pos: Default::default(), size: Default::default(), text: String::new(), style: style.clone(),
-            look: Default::default(), color: [0, 0, 0],
+            look: Default::default(), color: [0, 0, 0], behind: false, clear: false,
         };
         d.boxes = vec![pinned(4), pinned(8)];
         d.apply(Edit::Replace { at: 0, old: Piece::default(), new: Piece::plain("so ", &st) }, 0.0);
