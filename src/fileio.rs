@@ -168,6 +168,9 @@ pub struct DocFile {
     pub created: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     boxes: Vec<BoxFile>,
+    /// Where page numbering changes (`numbers.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    numbers: Vec<crate::numbers::NumberMark>,
 }
 
 fn unknown(when: &u64) -> bool {
@@ -288,6 +291,7 @@ impl DocFile {
             id: String::new(),
             created: 0,
             boxes,
+            numbers: doc.number_marks.clone(),
         }
     }
 
@@ -348,6 +352,10 @@ impl DocFile {
             let pos = egui::vec2(b.pos[0], b.pos[1]);
             doc.boxes.push(crate::model::TextBox { id, at, pos, size, text: b.text, style, look: b.look, color: b.color, behind: b.behind, clear: b.clear });
         }
+        for m in self.numbers {
+            doc.number_marks.push(crate::numbers::NumberMark { at: shift(m.at).min(total - 1), ..m });
+        }
+        doc.number_marks.sort_by_key(|m| m.at);
         for n in self.notes {
             let (start, end) = (shift(n.start).min(total), shift(n.end).min(total));
             let id = doc.next_note_id;

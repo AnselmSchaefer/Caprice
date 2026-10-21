@@ -254,6 +254,9 @@ pub struct PageSetup {
     pub drop_cap_lines: u8,
     /// Pages listing the chapters go before the story.
     pub contents: bool,
+    /// How the contents pages are numbered (they hold no text to pin it to, `numbers.rs`).
+    #[serde(skip_serializing_if = "crate::numbers::Numbering::is_usual")]
+    pub contents_numbers: crate::numbers::Numbering,
 }
 
 impl Default for PageSetup {
@@ -271,6 +274,7 @@ impl Default for PageSetup {
             footer: Band::default(),
             drop_cap_lines: 0,
             contents: false,
+            contents_numbers: Default::default(),
         }
     }
 }
@@ -501,6 +505,8 @@ pub struct Doc {
     /// Text boxes, bottom first: later ones lie on top of earlier ones in their layer.
     pub boxes: Vec<TextBox>,
     pub next_box_id: u64,
+    /// Where page numbering changes, in the order of the story (`numbers.rs`).
+    pub number_marks: Vec<crate::numbers::NumberMark>,
 }
 
 impl Doc {
@@ -523,6 +529,7 @@ impl Doc {
             scratchpad: String::new(),
             boxes: Vec::new(),
             next_box_id: 1,
+            number_marks: Vec::new(),
         }
     }
 

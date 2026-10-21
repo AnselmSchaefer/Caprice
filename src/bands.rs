@@ -30,9 +30,9 @@ pub fn rgb([r, g, b]: [u8; 3]) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
-/// The band's text with its fields filled in for page `number` (from 1).
-pub fn filled(text: &str, number: usize, chapter: &str) -> String {
-    text.replace(PAGE_FIELD, &number.to_string()).replace(CHAPTER_FIELD, chapter)
+/// The band's text with its fields filled in: the page's `number` as written, its `chapter`.
+pub fn filled(text: &str, number: &str, chapter: &str) -> String {
+    text.replace(PAGE_FIELD, number).replace(CHAPTER_FIELD, chapter)
 }
 
 /// The text a band starts with when it is put on: the chapter on top, the page number below.
@@ -140,10 +140,13 @@ impl Doc {
         let wants_chapter = [&s.header, &s.footer].iter().any(|b| b.is_on() && b.text.contains(CHAPTER_FIELD));
         let chapter = if wants_chapter { self.chapter_of_page(&chapters(), i) } else { String::new() };
         let font = self.contents_style().font;
+        let number = self.page_number(i);
         let mut ink = Vec::new();
         for (band, top) in [(&s.header, true), (&s.footer, false)] {
-            let text = filled(&band.text, i + 1, &chapter);
-            ink.extend(band_ink(ctx, band, top, &text, i + 1, s, &font, sc));
+            // A page without its number shows none of a band showing it, not even its look.
+            let Some(shown) = number.label().or_else(|| (!band.text.contains(PAGE_FIELD)).then(String::new)) else { continue };
+            let text = filled(&band.text, &shown, &chapter);
+            ink.extend(band_ink(ctx, band, top, &text, number.count as usize, s, &font, sc));
         }
         ink
     }
@@ -170,7 +173,7 @@ pub fn band_tile(ui: &mut egui::Ui, band: &Band, top: bool, chosen: bool, font: 
         let r = Rect::from_min_max(pos2(rect.left() + setup.margin_left * sc, y), pos2(rect.right() - setup.margin_right * sc - k as f32 * 18.0, y + 2.5 * sc));
         p.rect_filled(r, 1.0, Color32::from_gray(222));
     }
-    let sample = filled(if band.text.is_empty() { first_text(band.look, top) } else { &band.text }, 2, "Chapter One");
+    let sample = filled(if band.text.is_empty() { first_text(band.look, top) } else { &band.text }, "2", "Chapter One");
     for ink in band_ink(ui.ctx(), band, top, &sample, 2, &setup, font, sc) {
         p.extend(ink.translate(vec2(rect.left(), page_top)).shape());
     }
@@ -235,9 +238,9 @@ mod tests {
 
     #[test]
     fn fields_are_filled_in_for_each_page() {
-        assert_eq!(filled("{page}", 3, "The Mill"), "3");
-        assert_eq!(filled("{chapter}", 3, "The Mill"), "The Mill");
-        assert_eq!(filled("no fields", 3, "x"), "no fields");
+        assert_eq!(filled("{page}", "3", "The Mill"), "3");
+        assert_eq!(filled("{chapter}", "iii", "The Mill"), "The Mill");
+        assert_eq!(filled("no fields", "3", "x"), "no fields");
     }
 
     #[test]

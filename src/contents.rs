@@ -22,6 +22,9 @@ pub struct Entry {
     pub at: usize,
     /// The page it is on (counting from 0), once the pages are known.
     pub page: Option<usize>,
+    /// That page's number as written (`numbers.rs`), once the pages are known; shown even where
+    /// headers and footers show none.
+    pub number: String,
 }
 
 /// The contents laid out, relative to the top-left of its paragraph.
@@ -36,6 +39,7 @@ impl Doc {
     /// The chapter titles, in order. Their pages are only filled in if `with_pages`.
     pub fn chapters(&self, with_pages: bool) -> Vec<Entry> {
         let mut out = Vec::new();
+        let numbers = if with_pages { self.page_numbers() } else { Vec::new() };
         let (mut pc, mut pb) = (0, 0);
         for (c, (b, ch)) in self.flow.text.char_indices().enumerate() {
             if !is_terminator(ch) {
@@ -46,7 +50,8 @@ impl Doc {
                 let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
                 if !title.is_empty() {
                     let page = (with_pages && !self.spans.is_empty()).then(|| self.page_of(pc));
-                    out.push(Entry { title, at: pc, page });
+                    let number = page.and_then(|p| numbers.get(p)).map_or_else(String::new, |n| n.text());
+                    out.push(Entry { title, at: pc, page, number });
                 }
             }
             (pc, pb) = (c + 1, b + ch.len_utf8());
@@ -180,7 +185,7 @@ pub fn layout_contents(ctx: &egui::Context, entries: &[Entry], st: &Style, width
         if let Some(page) = e.page {
             // The page number at the right, on the title's last line, with dots leading to it.
             let last = title.rows.last().map_or(Rect::ZERO, |r| r.rect());
-            let number = text(ctx, &(page + 1).to_string(), st, scale, f32::INFINITY);
+            let number = text(ctx, &e.number, st, scale, f32::INFINITY);
             let nx = width * scale - number.size().x;
             let dot = text(ctx, " .", st, scale, f32::INFINITY).size().x.max(1.0);
             let room = nx - last.right() - st.size * scale * 0.6;

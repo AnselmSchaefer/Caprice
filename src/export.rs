@@ -9,6 +9,8 @@
 //!   `PAGE` and `STYLEREF "Heading 1"` fields; their looks = paragraph
 //!   borders (Rule, Facing), shading (Banner), a "❦" under a border (Filigree), an ellipse shape
 //!   holding the text (Circle). Facing pages = different odd and even headers (`evenAndOddHeaders`).
+//! * page numbering changes = sections from the change's paragraph: `pgNumType` (start, roman), and
+//!   for pages without numbers an empty part in place of a header or footer showing them
 //! * text boxes = text box shapes anchored in the paragraph of the char they are pinned to, placed
 //!   on the page and in front of the text (`wrapNone`), as they are in Caprice
 //! * notes = Word comments anchored to the same text
@@ -24,7 +26,8 @@ use zip::write::SimpleFileOptions;
 use crate::contents::Entry;
 use eframe::egui;
 
-use crate::model::{Align, Band, BandLook, CHAPTER_TITLE_SCALE, Doc, IMAGE_CHAR, ListKind, Note, PAGE_BREAK, ParaAttrs, Style, is_terminator};
+use crate::model::{Align, Band, BandLook, CHAPTER_TITLE_SCALE, Doc, IMAGE_CHAR, ListKind, Note, PAGE_BREAK, PAGE_FIELD, ParaAttrs, Style, is_terminator};
+use crate::numbers::{Counting, Figures, Numbering};
 
 const NS_W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const NS_WP: &str = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
@@ -249,7 +252,7 @@ fn band_xml(band: &Band, top: bool, even: bool, font: &str, setup: &crate::model
             let cy = if top { setup.margin_top / 2.0 } else { size.y - setup.margin_bottom / 2.0 };
             let mid = (setup.margin_left + size.x - setup.margin_right) / 2.0;
             // Word works out the text's width itself: the circle is made for two or three digits.
-            let shown = crate::bands::filled(&band.text, 99, "");
+            let shown = crate::bands::filled(&band.text, "99", "");
             let r = (shown.chars().count() as f32 * BAND_SIZE * 0.3).max(BAND_SIZE * 0.6) + 5.0;
             let rect = egui::Rect::from_center_size(egui::pos2(mid, cy), egui::vec2(2.0 * r, 2.0 * r));
             let look = ShapeLook { geom: "ellipse", fill: Some((band.color, 1.0)), line: None, inset: [0.0; 4], behind: false };
@@ -285,6 +288,8 @@ struct Body {
     used_pics: Vec<u32>,
     /// Is the open paragraph a chapter title (whose text is drawn larger and bold)?
     title: bool,
+    /// Where the properties of the last paragraph written end in `xml`: a section ends there.
+    last_ppr_end: Option<usize>,
 }
 
 impl Body {
@@ -301,6 +306,7 @@ impl Body {
             pics: Default::default(),
             used_pics: Vec::new(),
             title: false,
+            last_ppr_end: None,
         }
     }
 
@@ -362,8 +368,8 @@ impl Body {
         for (k, e) in entries.iter().enumerate() {
             let mut runs = if k == 0 { begin.clone() } else { String::new() };
             runs.push_str(&text(&e.title));
-            if let Some(page) = e.page {
-                let _ = write!(runs, "<w:r><w:rPr>{props}</w:rPr><w:tab/></w:r>{}", text(&(page + 1).to_string()));
+            if e.page.is_some() {
+                let _ = write!(runs, "<w:r><w:rPr>{props}</w:rPr><w:tab/></w:r>{}", text(&e.number));
             }
             if k + 1 == entries.len() {
                 runs.push_str(&field("end"));
@@ -371,6 +377,19 @@ impl Body {
             let _ = write!(self.xml, "<w:p><w:pPr>{ppr}</w:pPr>{runs}</w:p>");
         }
         self.page_break_before = true;
+    }
+
+    /// End a section with the last paragraph written (`sect` is its `sectPr`), or with an empty
+    /// one if there is none. The contents always get an empty one: Word rewrites a `TOC` field's
+    /// paragraphs when it updates it, and would take the section's end with them.
+    fn end_section(&mut self, sect: &str, own_paragraph: bool) {
+        match self.last_ppr_end.filter(|_| !own_paragraph) {
+            Some(at) => self.xml.insert_str(at, sect),
+            None => {
+                let _ = write!(self.xml, "<w:p><w:pPr>{sect}</w:pPr></w:p>");
+            }
+        }
+        self.last_ppr_end = None;
     }
 
     fn flush_run(&mut self) {
@@ -495,6 +514,7 @@ impl Body {
         }
         // The paragraph mark's own size keeps empty lines the right height.
         let _ = write!(ppr, "<w:rPr>{}</w:rPr>", run_props(&self.shown(term)));
+        self.last_ppr_end = Some(self.xml.len() + "<w:p><w:pPr>".len() + ppr.len());
         let _ = write!(self.xml, "<w:p><w:pPr>{ppr}</w:pPr>{}</w:p>", std::mem::take(&mut self.para));
         self.has_content = false;
         self.at_page_start = false;
@@ -504,8 +524,9 @@ impl Body {
 }
 
 /// The body XML, how many separate numbered lists it uses, and the pictures it refers to.
-/// `refs` are the section's header and footer references.
-fn document_xml(doc: &Doc, refs: &str, media: &std::collections::HashMap<u32, (Vec<u8>, &'static str)>) -> (String, u32, Vec<u32>) {
+/// `sect` gives a section's properties from its page numbering and whether it goes on from the
+/// page before (continuous) rather than starting a page.
+fn document_xml(doc: &Doc, sect: &dyn Fn(Numbering, bool) -> String, media: &std::collections::HashMap<u32, (Vec<u8>, &'static str)>) -> (String, u32, Vec<u32>) {
     let mut body = Body::new();
     for img in &doc.images {
         let size = doc.image_size(img);
@@ -515,8 +536,29 @@ fn document_xml(doc: &Doc, refs: &str, media: &std::collections::HashMap<u32, (V
     let notes: &[Note] = &doc.notes;
     let fallback = Style::new("Times New Roman");
     let mut chars = doc.flow.text.char_indices().zip(doc.flow.styles.iter().chain(std::iter::repeat(&fallback)));
+    // Each change of page numbering starts a section at its paragraph (`numbers.rs`); the last
+    // change pinned in a paragraph counts.
+    let mut changes: Vec<(usize, Numbering)> = Vec::new();
+    for m in &doc.number_marks {
+        let p = doc.para_start(m.at.min(doc.total_chars().saturating_sub(1))).0;
+        match changes.last_mut() {
+            Some(last) if last.0 == p => last.1 = m.numbering,
+            _ => changes.push((p, m.numbering)),
+        }
+    }
+    let mut changes = changes.into_iter().peekable();
+    // The section being written: its numbering, and whether it went on from the page before.
+    let mut section = (Numbering::default(), false);
     if doc.setup.contents {
         body.push_contents(&doc.chapters(true), &doc.contents_style(), twips(doc.setup.content_size().x));
+        if !doc.setup.contents_numbers.is_usual() || !doc.number_marks.is_empty() {
+            body.end_section(&sect(doc.setup.contents_numbers, false), true);
+            body.page_break_before = false; // the story's section starts the page
+        }
+    }
+    // A change at the story's start is the numbering of its first section, with no break before.
+    if let Some((_, n)) = changes.next_if(|&(p, _)| p == 0) {
+        section.0 = n;
     }
     let mut para_start = true;
 
@@ -536,6 +578,12 @@ fn document_xml(doc: &Doc, refs: &str, media: &std::collections::HashMap<u32, (V
             }
         }
         if let Some(((b, c), st)) = chars.next() {
+            if let Some((_, n)) = changes.next_if(|&(p, _)| para_start && p == k) {
+                body.flush_run();
+                body.end_section(&sect(section.0, section.1), false);
+                // After a hard break the section starts the page; elsewhere it goes on from it.
+                section = (n, !std::mem::take(&mut body.page_break_before));
+            }
             // At a paragraph start, look at how the paragraph is formatted (that is on its mark).
             let cap = para_start.then(|| {
                 let (tc, _) = doc.term_from(k, b);
@@ -558,17 +606,31 @@ fn document_xml(doc: &Doc, refs: &str, media: &std::collections::HashMap<u32, (V
         body.emit(ParaAttrs::default(), &fallback); // markers after the final paragraph mark
     }
 
-    let s = &doc.setup;
-    let size = s.size();
-    let orient = if size.x > size.y { " w:orient=\"landscape\"" } else { "" };
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
 <w:document xmlns:w=\"{NS_W}\" xmlns:r=\"{NS_R}\" xmlns:wp=\"{NS_WP}\" xmlns:a=\"{NS_A}\" xmlns:pic=\"{NS_PIC}\" \
-xmlns:wps=\"{NS_WPS}\" xmlns:mc=\"{NS_MC}\" mc:Ignorable=\"wps\"><w:body>{}<w:sectPr>{refs}\
-<w:pgSz w:w=\"{}\" w:h=\"{}\"{orient}/>\
-<w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"{}\" w:footer=\"{}\" w:gutter=\"0\"/>\
-</w:sectPr></w:body></w:document>",
+xmlns:wps=\"{NS_WPS}\" xmlns:mc=\"{NS_MC}\" mc:Ignorable=\"wps\"><w:body>{}{}</w:body></w:document>",
         body.xml,
+        sect(section.0, section.1),
+    );
+    (xml, body.numbered_lists, body.used_pics)
+}
+
+/// A section's properties: the page setup, headers and footers (`refs`), how it starts and how
+/// its pages are numbered.
+fn sect_xml(s: &crate::model::PageSetup, refs: &str, numbering: Numbering, continuous: bool) -> String {
+    let size = s.size();
+    let orient = if size.x > size.y { " w:orient=\"landscape\"" } else { "" };
+    let kind = if continuous { "<w:type w:val=\"continuous\"/>" } else { "" };
+    let start = match numbering.counting {
+        Counting::From(k) => format!(" w:start=\"{k}\""),
+        _ => String::new(),
+    };
+    let fmt = if numbering.figures == Figures::Roman { " w:fmt=\"lowerRoman\"" } else { "" };
+    let numbers = if start.is_empty() && fmt.is_empty() { String::new() } else { format!("<w:pgNumType{fmt}{start}/>") };
+    format!(
+        "<w:sectPr>{refs}{kind}<w:pgSz w:w=\"{}\" w:h=\"{}\"{orient}/>\
+<w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"{}\" w:footer=\"{}\" w:gutter=\"0\"/>{numbers}</w:sectPr>",
         twips(size.x),
         twips(size.y),
         twips(s.margin_top),
@@ -577,8 +639,7 @@ xmlns:wps=\"{NS_WPS}\" xmlns:mc=\"{NS_MC}\" mc:Ignorable=\"wps\"><w:body>{}<w:se
         twips(s.margin_left),
         twips(s.margin_top / 2.0),
         twips(s.margin_bottom / 2.0),
-    );
-    (xml, body.numbered_lists, body.used_pics)
+    )
 }
 
 /// Bullet and numbering definitions: one bullet list, and one numbered list per run of numbered paragraphs.
@@ -673,19 +734,36 @@ pub fn to_docx(doc: &Doc) -> Result<Vec<u8>, String> {
         }
     }
     let facing = [&doc.setup.header, &doc.setup.footer].iter().any(|b| b.look == BandLook::Facing);
-    let refs: String = bands
-        .iter()
-        .map(|(file, id, pages, _)| {
-            let kind = if file.starts_with("header") { "header" } else { "footer" };
-            format!("<w:{kind}Reference w:type=\"{pages}\" r:id=\"{id}\"/>")
-        })
-        .collect();
+    // On pages without numbers, a band showing them is an empty part (none would carry on the
+    // section's before).
+    let numbered = |top: bool| if top { &doc.setup.header } else { &doc.setup.footer }.text.contains(PAGE_FIELD);
+    let any_off = doc.number_marks.iter().any(|m| m.numbering.counting == Counting::Off)
+        || (doc.setup.contents && doc.setup.contents_numbers.counting == Counting::Off);
+    let refs = |off: bool| -> String {
+        bands
+            .iter()
+            .map(|(file, id, pages, _)| {
+                let kind = if file.starts_with("header") { "header" } else { "footer" };
+                let id = if off && numbered(kind == "header") { format!("rId{kind}Blank") } else { id.clone() };
+                format!("<w:{kind}Reference w:type=\"{pages}\" r:id=\"{id}\"/>")
+            })
+            .collect()
+    };
+    let (on, off) = (refs(false), refs(true));
+    for top in [true, false].into_iter().filter(|&top| any_off && numbered(top) && if top { &doc.setup.header } else { &doc.setup.footer }.is_on()) {
+        let (kind, tag) = if top { ("header", "hdr") } else { ("footer", "ftr") };
+        let blank = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:{tag} xmlns:w=\"{NS_W}\"><w:p/></w:{tag}>"
+        );
+        bands.push((format!("{kind}3.xml"), format!("rId{kind}Blank"), "", blank));
+    }
+    let sect = |n: Numbering, continuous: bool| sect_xml(&doc.setup, if n.counting == Counting::Off { &off } else { &on }, n, continuous);
     let has_comments = !doc.notes.is_empty();
     let default = doc.flow.styles.first().cloned().unwrap_or_else(|| Style::new("Times New Roman"));
     // Rotated pictures are written with their pixels turned.
     let media: std::collections::HashMap<u32, (Vec<u8>, &'static str)> =
         doc.images.iter().map(|i| (i.id, crate::images::export_media(i))).collect();
-    let (document, numbered_lists, used_pics) = document_xml(doc, &refs, &media);
+    let (document, numbered_lists, used_pics) = document_xml(doc, &sect, &media);
     let has_numbering = document.contains("<w:numPr>");
 
     let mut content_types = format!(
@@ -1132,6 +1210,12 @@ from the President of a far distant country.";
         d.setup.margin_left = 100.0;
         d.setup.drop_cap_lines = 3;
         d.setup.contents = true;
+        // The contents in roman numerals, the story from 1, the last chapter without numbers.
+        use crate::numbers::{Counting, Figures, NumberMark, Numbering};
+        d.setup.contents_numbers = Numbering { counting: Counting::On, figures: Figures::Roman };
+        d.number_marks.push(NumberMark { at: 0, numbering: Numbering { counting: Counting::From(1), figures: Figures::Arabic } });
+        let last = d.flow.text[..d.flow.text.find("Hagrid?").unwrap()].chars().count();
+        d.number_marks.push(NumberMark { at: last, numbering: Numbering { counting: Counting::Off, figures: Figures::Arabic } });
         d.notes.push(Note { id: 1, start: 26, end: 42, text: "Remember to rephrase this.".into(), color: 1 });
         d
     }

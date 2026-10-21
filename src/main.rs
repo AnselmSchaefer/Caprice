@@ -15,6 +15,7 @@ mod images;
 mod layout;
 mod model;
 mod notes;
+mod numbers;
 mod paginate;
 mod print;
 mod render;
@@ -4509,6 +4510,83 @@ mod tests {
         assert!(!h.app.doc.setup.header.is_on());
         h.frames(2, vec![], Modifiers::NONE);
         assert_eq!(mills(&h), 1, "only the title");
+    }
+
+    /// Set how pages are numbered from the page shown on, through Page > Page numbers.
+    fn number_from_page_shown(h: &mut Harness, page: usize, choice: &str) {
+        let ctx = h.ctx.clone();
+        h.app.turn_to(&ctx, page, false);
+        h.frames(60, vec![], Modifiers::NONE);
+        h.click_widget("Page");
+        h.click_widget("Page numbers ⏵");
+        h.click_widget(choice);
+        h.key(Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![], Modifiers::NONE);
+    }
+
+    #[test]
+    fn page_numbers_start_again_after_the_contents_and_leave_out_the_appendix_wherever_its_text_goes() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let st = h.app.typing.clone();
+        let mut title = model::ParaAttrs::default();
+        title.set_chapter_title(true);
+        let text = "The Mill\nWords about the mill.\u{c}The River\nWords about the river.\u{c}Maps\nThe maps.\n";
+        let mut styles: Vec<model::Style> = text.chars().map(|c| if model::is_terminator(c) { st.with_para(Default::default()) } else { st.clone() }).collect();
+        for (c, ch) in text.chars().enumerate() {
+            if ch == '\n' && (c == 8 || c == 40 || c == 68) {
+                styles[c] = st.with_para(title);
+            }
+        }
+        h.app.doc.flow = model::Flow { text: text.into(), styles };
+        let ctx = h.ctx.clone();
+        h.app.doc.full_paginate(&ctx, &st);
+        h.click_widget("Insert");
+        h.click_widget("Footer ⏵");
+        h.click_widget("Plain");
+        h.key(Key::Escape, Modifiers::NONE);
+        h.click_widget("Page");
+        h.click_widget("Contents pages");
+        h.key(Key::Escape, Modifiers::NONE);
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!(h.app.doc.pages(), 4, "the contents, two chapters and the maps");
+        let shown = |h: &Harness| h.app.doc.page_numbers().iter().map(|n| n.label()).collect::<Vec<_>>();
+        let s = |t: &str| Some(t.to_owned());
+        assert_eq!(shown(&h), [s("1"), s("2"), s("3"), s("4")], "every page counts, as before");
+
+        // No number on the contents, the story from 1, none on the maps.
+        number_from_page_shown(&mut h, 0, "No numbers");
+        number_from_page_shown(&mut h, 1, "Start at");
+        number_from_page_shown(&mut h, 3, "No numbers");
+        assert_eq!(shown(&h), [None, s("1"), s("2"), None]);
+        let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        assert_eq!(squeeze(&h.app.printed_text(&ctx, 1)), "TheMillWordsaboutthemill.1");
+        assert_eq!(squeeze(&h.app.printed_text(&ctx, 3)), "MapsThemaps.", "no footer at all");
+        let contents = squeeze(&h.app.printed_text(&ctx, 0));
+        let numbers: String = contents.chars().filter(|c| c.is_ascii_digit()).collect();
+        let titles = ["Contents", "TheMill", "TheRiver", "Maps"].iter().all(|t| contents.contains(t));
+        assert!(titles && numbers == "123", "the contents list the pages by their numbers, and show none of their own: {contents}");
+
+        // A new page in the first chapter: the maps are still without, wherever they went.
+        let at = text.find("about the mill").unwrap();
+        h.app.set_caret(&ctx, at, false);
+        h.key(Key::Enter, Modifiers::COMMAND);
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!(shown(&h), [None, s("1"), s("2"), s("3"), None]);
+
+        // Kept in the file, and in Word as sections: the contents', the story's from 1, the maps'.
+        let other = h.reopened("page-numbers");
+        assert_eq!(shown(&other), shown(&h));
+        let docx = export::to_docx(&h.app.doc).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(docx)).unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("word/document.xml").unwrap(), &mut xml).unwrap();
+        let sections: Vec<&str> = xml.split("<w:sectPr>").skip(1).collect();
+        assert_eq!(sections.len(), 3, "{xml}");
+        assert!(sections[0].contains("rIdfooterBlank") && sections[2].contains("rIdfooterBlank"), "{xml}");
+        assert!(sections[1].contains("rIdfooter\"") && sections[1].contains("<w:pgNumType w:start=\"1\"/>"), "{}", sections[1]);
+        assert!(!xml.contains("continuous"), "each starts its page, after a hard break");
+        assert!(zip.by_name("word/footer3.xml").is_ok());
     }
 
     impl Harness {

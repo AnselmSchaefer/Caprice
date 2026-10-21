@@ -62,8 +62,9 @@ Full list with reasons and tests in `ARCHITECTURE.md` §4.
    `set_caret(spans[i].start)`. Contents pages hold no text.
 6. **Derived things must not depend on their own results** (the contents' page count comes from
    the titles only).
-7. **Notes, scenes and text boxes are char positions outside the text.** Anything that rewrites
-   text without `Doc::apply` must move them.
+7. **Notes, scenes, text boxes and page numbering changes are char positions outside the text.**
+   Anything that rewrites text without `Doc::apply` must move them. Page numbers come from
+   `Doc::page_numbers`, never `i + 1`.
 8. **Files hold only stored state.** New fields get `#[serde(default)]`; old formats are converted
    in `DocFile::into_doc`.
 9. **Every formatting feature needs a Word mapping** in `export.rs`, or a decision that it has none.

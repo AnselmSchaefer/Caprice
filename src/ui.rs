@@ -5,7 +5,8 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, FontId, Id, Rect, Sense, Stroke, UiBuilder, pos2, vec2};
 
 use crate::{App, Appearance};
-use crate::model::{Align, Band, BandLook, BoxLook, CM, ListKind, Orientation, Style, TextBox};
+use crate::model::{Align, Band, BandLook, BoxLook, CM, ListKind, Orientation, PAGE_FIELD, Style, TextBox};
+use crate::numbers::{Counting, Figures, Numbering};
 use crate::theme::{ACCENT, BTN, BTN_HOVER, DOCK, DOCK_EDGE, TEXT, TEXT_DIM};
 
 pub const DOCK_H: f32 = 48.0;
@@ -254,6 +255,10 @@ struct Tools {
     brush: bool,
     para: Option<ParaChange>,
     setup: Option<crate::model::PageSetup>,
+    /// Numbering set from a page on, or taken off it (`None`).
+    numbering: Option<(usize, Option<Numbering>)>,
+    /// A page to turn to.
+    turn_to: Option<usize>,
     insert: Option<InsertAction>,
     add_note: bool,
     find: bool,
@@ -445,7 +450,7 @@ impl App {
                 2 => self.letter_tools(ui, out),
                 3 => self.paragraph_tools(ui, out),
                 4 => {
-                    out.setup = self.page_menu(ui);
+                    out.setup = self.page_menu(ui, out);
                     self.insert_menu(ui, out);
                 }
                 5 => {
@@ -719,6 +724,14 @@ impl App {
         if let Some(setup) = out.setup {
             self.set_setup(ctx, setup);
         }
+        match out.numbering {
+            Some((page, Some(n))) => self.doc.set_numbering(page, n),
+            Some((page, None)) => self.doc.clear_numbering(page),
+            None => {}
+        }
+        if let Some(page) = out.turn_to {
+            self.turn_to(ctx, page, false);
+        }
         if out.add_note {
             self.add_note(ctx);
         }
@@ -781,7 +794,7 @@ impl App {
     }
 
     /// The Page menu: new page settings, if they were changed.
-    fn page_menu(&mut self, ui: &mut egui::Ui) -> Option<crate::model::PageSetup> {
+    fn page_menu(&mut self, ui: &mut egui::Ui, out: &mut Tools) -> Option<crate::model::PageSetup> {
         let mut setup = self.doc.setup.clone();
         let mut look = self.appearance;
         egui::containers::menu::MenuButton::new("Page")
@@ -839,6 +852,8 @@ impl App {
                 });
                 ui.checkbox(&mut setup.contents, "Contents pages")
                     .on_hover_text("Pages before the story listing the chapter titles and their pages. Mark titles with the Chapter button.");
+                ui.separator();
+                ui.menu_button("Page numbers", |ui| self.numbers_menu(ui, out));
             });
         if look != self.appearance {
             self.appearance = look;
@@ -846,6 +861,76 @@ impl App {
             (self.held, self.batch) = (0.0, None);
         }
         (setup != self.doc.setup).then_some(setup)
+    }
+
+    /// How pages are numbered from the page shown on (the contents' numbering, on a contents
+    /// page), and every page where the numbering changes.
+    fn numbers_menu(&self, ui: &mut egui::Ui, out: &mut Tools) {
+        ui.set_min_width(270.0);
+        let page = self.target.min(self.last());
+        let contents = self.doc.spans[page].contents.is_some();
+        let now = self.doc.numbering_on(page);
+        let dim = |t: String| egui::RichText::new(t).size(12.0).color(TEXT_DIM);
+        ui.label(dim(if contents { "The contents pages".into() } else { format!("From page {} on", page + 1) }));
+        let mut new = now;
+        let start = match now.counting {
+            Counting::From(k) => k,
+            _ => 1,
+        };
+        ui.horizontal(|ui| {
+            if ui.radio(now.counting == Counting::On, "Count on").on_hover_text("Go on from the page before").clicked() {
+                new.counting = Counting::On;
+            }
+            if ui.radio(matches!(now.counting, Counting::From(_)), "Start at").clicked() {
+                new.counting = Counting::From(start);
+            }
+            let mut k = start;
+            if ui.add(egui::DragValue::new(&mut k).range(0..=9999).speed(0.1)).changed() {
+                new.counting = Counting::From(k);
+            }
+        });
+        if ui.radio(now.counting == Counting::Off, "No numbers").on_hover_text("These pages show none; counting goes on").clicked() {
+            new.counting = Counting::Off;
+        }
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut new.figures, Figures::Arabic, "1, 2, 3");
+            ui.selectable_value(&mut new.figures, Figures::Roman, "i, ii, iii");
+        });
+        if new != now {
+            out.numbering = Some((page, Some(new)));
+        }
+
+        let changes = self.doc.numbering_changes();
+        if !changes.is_empty() {
+            ui.separator();
+            ui.label(dim("Where numbering changes".into()));
+        }
+        let numbers = self.doc.page_numbers();
+        for (at, n) in changes {
+            let first = numbers.get(at).map_or(String::new(), |p| p.text());
+            let what = match n.counting {
+                Counting::On => format!("counts on ({first})"),
+                Counting::From(_) => format!("starts at {first}"),
+                Counting::Off => "no numbers".into(),
+            };
+            let place = if self.doc.spans[at].contents.is_some() { "Contents".to_owned() } else { format!("Page {}", at + 1) };
+            ui.horizontal(|ui| {
+                ui.label(format!("{place}: {what}"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Remove").on_hover_text(format!("{place}: go on as before")).clicked() {
+                        out.numbering = Some((at, None));
+                    }
+                    if ui.small_button("Show").on_hover_text(format!("Turn to {}", place.to_lowercase())).clicked() {
+                        out.turn_to = Some(at);
+                    }
+                });
+            });
+        }
+        let shown = [&self.doc.setup.header, &self.doc.setup.footer].iter().any(|b| b.is_on() && b.text.contains(PAGE_FIELD));
+        if !shown {
+            ui.separator();
+            ui.label(dim("A header or footer showing the page number shows them (Insert)".into()));
+        }
     }
 
     pub fn scrollbar(&mut self, ui: &mut egui::Ui, r: Rect) {

@@ -184,6 +184,7 @@ impl Doc {
                 rebase_notes(&mut self.notes, *at, old.chars(), new.chars());
                 rebase_scenes(&mut self.scenes, *at, old.chars(), new.chars());
                 rebase_boxes(&mut self.boxes, *at, old.chars(), new.chars());
+                rebase_number_marks(&mut self.number_marks, *at, old.chars(), new.chars());
             }
             Edit::Restyle { at, new, .. } => {
                 self.flow.styles[*at..*at + new.len()].clone_from_slice(new);
@@ -218,6 +219,14 @@ fn rebase_scenes(scenes: &mut [crate::model::Scene], at: usize, a: usize, b: usi
 fn rebase_boxes(boxes: &mut [crate::model::TextBox], at: usize, a: usize, b: usize) {
     for t in boxes {
         t.at = if t.at <= at { t.at } else if t.at >= at + a { t.at + b - a } else { at };
+    }
+}
+
+/// Move where page numbering changes the same way: text typed at the start of the page it was
+/// set on goes after it, so that page keeps the change.
+fn rebase_number_marks(marks: &mut [crate::numbers::NumberMark], at: usize, a: usize, b: usize) {
+    for m in marks {
+        m.at = if m.at <= at { m.at } else if m.at >= at + a { m.at + b - a } else { at };
     }
 }
 

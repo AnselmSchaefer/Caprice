@@ -4,7 +4,7 @@ How Caprice is put together, and the rules that hold it together. The rules (§4
 read before changing anything: each says what depends on what, what to check when touching it, and
 which tests guard it. Keep this file true: a change that alters a rule updates it in the same commit.
 
-*Last brought up to date: 2026-10-21 (copying formatting with the brush).*
+*Last brought up to date: 2026-10-21 (page numbering: starting again, pages without numbers).*
 
 ---
 
@@ -13,8 +13,8 @@ which tests guard it. Keep this file true: a change that alters a rule updates i
 A desktop word processor in Rust on egui/eframe 0.36. It shows one page at a time on a desk, with
 the pages before and after it as piles, and turns pages with an animation ("Book": hinged like a
 book; "Paperstack": sliding into the pile). Post-its stick out of the page's edge. Chapters get
-titles, drop caps and contents pages; headers and footers in a few looks, and text boxes placed
-anywhere on a page. It saves `.caprice` (JSON), exports `.docx`, and prints, to a
+titles, drop caps and contents pages; headers and footers in a few looks, page numbers that can
+start again or be left off some pages, and text boxes placed anywhere on a page. It saves `.caprice` (JSON), exports `.docx`, and prints, to a
 printer or a PDF file, the pages as it shows them. Claude Code
 (the CLI) can review a passage drawn around with the pen or selected with the cursor, and paint scenes that show faintly behind the pages, each
 for its part of the story, drawing the people of the story's cast the same in every scene. On the
@@ -36,6 +36,7 @@ PageSetup (paper, margins,     ├─ Doc::chapters() ─▶ contents pages  │
 images (bytes, width,          └──────────────────────────▶ layout_page(i, zoom) ─▶ drawing
   rotation)                                                 (PageLayout: galleys,     (render, book,
 notes (char ranges + text)                                   hit-testing, caret)       editor, notes)
+numbering (a char + change)  ──page_numbers()──▶ what {page} and the contents show on each page
 text boxes (a char + place)  ──boxes_on(i)──▶ drawn over page i (App::furniture, with the header and footer),
                                                or under its text (App::underlay)
 scenes (a char + drawings)   ──scene_at(caret) / page_scene(i)──▶ the drawing behind a page
@@ -75,6 +76,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `words.rs` | The Document info window: dates, file, counts (words, chapter, selection…), today's words and the daily goal, kept in the data folder |
 | `ui.rs` | Top toolbar (formatting, Page and Insert menus, the text box gallery), bottom page bar and scrollbar |
 | `bands.rs` | Headers and footers: their looks drawn as `Ink`, fields filled in per page, the gallery tiles, accent colours |
+| `numbers.rs` | Page numbering: changes pinned to a char (start again, count on, none; figures or roman), the number of each page, setting one from a page |
 | `textbox.rs` | Text boxes: drawn as `Ink`, inserted, written in, moved, resized, pinned to a char, in front of the text or behind it; their selection |
 | `fileio.rs` | `.caprice` format (`DocFile`), open/save/export commands, unsaved-changes detection |
 | `export.rs` | Hand-written Office Open XML for `.docx` |
@@ -209,7 +211,7 @@ paginating).
 
 ### R7 — Notes and scenes are char positions outside the text
 
-- `rebase_notes`, `rebase_scenes` and `rebase_boxes` move them with every `Edit`. A text box pin
+- `rebase_notes`, `rebase_scenes`, `rebase_boxes` and `rebase_number_marks` move them with every `Edit`. A text box pin
   moves like a scene pin. A scene pin is a point: text
   typed right at it goes after it (it still starts its paragraph or sentence), and deleted around, it stays
   where the text was. A rewrite of the text that bypasses `Doc::apply`
@@ -251,6 +253,8 @@ paginating).
 - `PageSetup::page_numbers` is read only from files from before footers: `into_doc` makes it a
   plain footer of the page number (`Band::page_numbers`) and it is never written again. (Older
   Caprice opening a newer file shows no page numbers.)
+- Page numbering: `DocFile::numbers` (the changes pinned in the story, moved by `into_doc` like
+  the boxes) and `PageSetup::contents_numbers`, both left out of the file while unused (R26).
 - `DocFile::id` names the story for its versions (R22). Older files have none: they get one on
   opening, which counts as saved (it is written with the next save). `DocFile::created` likewise:
   older files take the file's own date (created, else modified) on opening, and keep it once saved.
@@ -283,6 +287,14 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
 - Text boxes are text box shapes (`wps:wsp`) anchored in the paragraph of their char, at their
   place on the page, `wrapNone` (in front of the text, as in Caprice), growing to their text
   (`spAutoFit`). Quote and sidebar lines are paragraph borders inside the box.
+- Page numbering is sections (R26): each change starts one at its paragraph, its `sectPr` in the
+  last paragraph before (`end_section`), starting a page where a hard break was (the break is
+  taken by it) and `continuous` elsewhere. `pgNumType` holds the start and `lowerRoman`. A section
+  without numbers refers to an empty header or footer part (`header3.xml`, `footer3.xml`) in
+  place of one showing the page number: with no reference it would carry on the one before. The
+  contents end their section in an empty paragraph of their own, as Word rewrites the `TOC`
+  field's paragraphs. Known difference: Word changes the numbering of a continuous section from
+  the next page that begins in it, Caprice from the page its char is on.
 - Character formatting maps to run properties (`run_props`): bold, italic (`<w:i/>`), underline,
   and colour (`<w:color>`; none is Word's automatic colour, as it is Caprice's usual ink).
 - The sample checks (`sample_docx`, `sample_pdf`) lay the sample out in a context that has its
@@ -767,7 +779,8 @@ pagination and R3 do not know them, and a header or footer change does not pagin
 - **Transparent (`clear`) changes the fill only**: none for a simple box, its tint for a shaded
   box or a sidebar laid on with alpha, so on blank paper it looks the same. Looks without a fill
   do not offer it. In Word: `noFill`, or `a:alpha` on the fill.
-- **A band shows one thing**, chosen with radio buttons: the page number (`{page}`), the
+- **A band shows one thing**, chosen with radio buttons: the page number (`{page}`, as numbered
+  by R26; a band showing it is not drawn at all, look and all, on a page without one), the
   chapter's title (`{chapter}`: the chapter that starts on the page, else the last before it,
   `chapter_of_page`), or text of the writer's own. The fields are filled in when drawn
   (`bands::filled`). There is no page count (not wanted). Their size never
@@ -814,6 +827,34 @@ and alignment, `textbox.rs`). Then the brush is put down; Escape or the button a
   all when the clipboard holds no text.
 - Tests: `formatting_copied_from_one_place_goes_onto_the_text_selected_next_and_whole_paragraphs_take_its_alignment`,
   `formatting_copied_from_the_story_goes_onto_a_text_box_clicked`.
+
+### R26 — Page numbering changes are pinned to the text and hold until the next one
+
+Every page counts, from 1 on the first (contents included). A change (`numbers::Numbering`:
+count on, start again at a number, or no numbers; figures or small roman) holds from the page it
+is set on until the next change. "No numbers" hides them but the count goes on underneath, as in
+Word. Set in Page > Page numbers for the page shown, which also lists every change.
+
+- **A change is pinned to the first char of the page it was set on** (`NumberMark`, in
+  `Doc::number_marks`, kept in the story's order) and holds from the page that char is on
+  (`page_of`), so an appendix without numbers stays so wherever its text goes. It moves with
+  edits like a text box (R7). The contents pages hold no text: theirs is
+  `PageSetup::contents_numbers`, which holds from the first contents page; the story goes on from it
+  unless a change is pinned at its start.
+- **Everything that shows a page's number asks `Doc::page_numbers` / `page_number`**: bands
+  (`bands_ink`, R24, and the Facing look's sides, by the count), the contents' entries
+  (`Entry::number`, shown even for a page whose own number is hidden, as Word's `TOC` does), and
+  Word (R10). The page bar and the Print window count pages as they lie (1 to n), not by these
+  numbers. Something new showing a page number uses `page_number`, not `i + 1`.
+- **Setting a change that changes nothing keeps nothing** (`set_numbering` compares the numbers
+  with and without it), and a page has at most one; a page without one shows the numbering in
+  force there (`numbering_on`). Not undoable, like page settings (R1).
+- Numbers never change where pages break (R6): the contents keep room for four figures, and a
+  wider roman number runs into the dots.
+- Tests: `page_numbers_start_again_after_the_contents_and_leave_out_the_appendix_wherever_its_text_goes`,
+  and in `numbers.rs` `numbering_holds_from_the_page_it_is_set_on_until_the_next_change`,
+  `roman_numerals_are_written_small`. Check Word with `sample_docx` (its contents are roman, its
+  story from 1, its last chapter without).
 
 ---
 
@@ -946,5 +987,10 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
   layers, behind or in front of the story with its pictures, as Word's "Behind text" and "In front
   of text", and ordered among boxes by its place in the list. Transparent lets the text under a
   box in front show through (R24).
+- **2026-10-21 — Page numbering is pinned to the text, not to page numbers.** Asked for: numbers
+  starting again, and pages without them (the contents, an appendix). Ranges of pages ("none from
+  page 120") would hide the wrong pages as soon as text before them grew or shrank, so a change
+  is pinned to a char like a text box, and holds until the next one, as Word's sections do. Word
+  gets sections; "no numbers" keeps counting, as Word does (R26).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.
