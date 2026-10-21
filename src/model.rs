@@ -111,6 +111,12 @@ impl Style {
     pub fn with_para(&self, para: ParaAttrs) -> Style {
         Style { para, ..self.clone() }
     }
+
+    /// The look of `from`'s letters, keeping this char's paragraph and picture. Copying formatting
+    /// goes through here, so a new kind of character formatting is copied without more work.
+    pub fn take_look(&mut self, from: &Style) {
+        *self = Style { para: self.para, image: self.image, ..from.clone() };
+    }
 }
 
 /// Stands in the text for a picture (which sits in a paragraph of its own).

@@ -163,6 +163,9 @@ pub struct App {
     pub pic_drag: Option<images::PicDrag>,
     /// A selection being dragged out with the mouse, which can carry on over other pages.
     pub sel_drag: Option<editor::SelDrag>,
+    /// Formatting taken up to copy (the look of the letters, and the paragraph's format in `para`),
+    /// put down on the next text selected with the mouse.
+    pub brush: Option<Style>,
     pub resize: Option<images::ResizeDrag>,
     pub status_at: f64,
     pub title: String,
@@ -265,6 +268,7 @@ impl App {
             pic_menu_fresh: false,
             pic_drag: None,
             sel_drag: None,
+            brush: None,
             resize: None,
             status_at: f64::NEG_INFINITY,
             title: String::new(),
@@ -664,7 +668,7 @@ mod tests {
             // Nothing written behind a test's back: the tests about it turn these on.
             (app.keep.autosave, app.keep.dir, app.words.file) = (false, None, None);
             app.words.progress = Default::default();
-            Self { ctx, app, time: 0.0, mods: Modifiers::NONE, access: None, painted: Vec::new(), width: 1200.0 }
+            Self { ctx, app, time: 0.0, mods: Modifiers::NONE, access: None, painted: Vec::new(), width: 1240.0 }
         }
 
         fn frames(&mut self, n: usize, events: Vec<egui::Event>, modifiers: Modifiers) {
@@ -798,6 +802,82 @@ mod tests {
         h.click_widget("Black");
         h.frames(2, vec![], Modifiers::NONE);
         assert_eq!(painted_look(&h, "Plain words and red italic words."), Some((false, theme::INK)));
+    }
+
+    #[test]
+    fn formatting_copied_from_one_place_goes_onto_the_text_selected_next_and_whole_paragraphs_take_its_alignment() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        // Paragraphs at 0..16, 17..39 and 40..50.
+        h.type_text("A red bold line.\nSome plain words here.\nLast line.");
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, 2, false);
+        h.app.set_caret(&ctx, 10, true);
+        h.key(Key::B, Modifiers::COMMAND);
+        h.key(Key::E, Modifiers::COMMAND);
+        h.click_widget("Text colour");
+        h.click_widget("Red");
+        let red = egui::Color32::from_rgb(205, 40, 40);
+
+        // Taken up at the caret, put down on the words selected next: their letters only.
+        h.app.set_caret(&ctx, 4, false);
+        h.click_widget("Copy formatting");
+        let layout = h.app.page_layout(&ctx, 0, 1.0);
+        let at = |c| layout.caret_rect(c, true).center().to_vec2();
+        h.drag_in_page(at(22), at(33));
+        assert_eq!(h.app.selection(), (22, 33));
+        assert_eq!(painted_look(&h, "plain words"), Some((false, red)));
+        let st = &h.app.doc.flow.styles;
+        assert!(st[22].bold && st[32].bold && !st[21].bold && !st[33].bold);
+        assert_eq!(h.app.doc.para_attrs_at(22).align, model::Align::Left, "not the whole paragraph");
+        assert!(h.app.brush.is_none(), "used once");
+
+        // A paragraph selected whole takes the paragraph's format too.
+        h.app.set_caret(&ctx, 4, false);
+        h.click_widget("Copy formatting");
+        h.drag_in_page(at(40), at(50));
+        assert_eq!(painted_look(&h, "Last line."), Some((false, red)));
+        assert_eq!(h.app.doc.para_attrs_at(45).align, model::Align::Center);
+
+        // A click paints the word under it, in one undo step.
+        h.app.set_caret(&ctx, 4, false);
+        h.click_widget("Copy formatting");
+        h.click_in_page(at(19));
+        assert!((17..21).all(|c| h.app.doc.flow.styles[c].bold) && !h.app.doc.flow.styles[21].bold);
+        h.key(Key::Z, Modifiers::COMMAND);
+        assert!((17..21).all(|c| !h.app.doc.flow.styles[c].bold), "undone at once");
+        assert_eq!(h.text(), "A red bold line.\nSome plain words here.\nLast line.");
+
+        // Put down with Escape, a selection is only a selection.
+        h.app.set_caret(&ctx, 4, false);
+        h.click_widget("Copy formatting");
+        h.key(Key::Escape, Modifiers::NONE);
+        h.drag_in_page(at(17), at(21));
+        assert!(!h.app.doc.flow.styles[18].bold);
+    }
+
+    #[test]
+    fn formatting_copied_from_the_story_goes_onto_a_text_box_clicked() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Bold words.");
+        let b = h.new_text_box("Simple", "In the box");
+        h.click_in_page(egui::vec2(5.0, 400.0));
+        assert_eq!(h.app.boxes.selected, None);
+        let ctx = h.ctx.clone();
+        h.app.set_caret(&ctx, 0, false);
+        h.app.set_caret(&ctx, 4, true);
+        h.key(Key::B, Modifiers::COMMAND);
+        h.click_widget("Copy formatting");
+        h.click_widget("Text colour");
+        h.click_widget("Red");
+        assert!(h.app.brush.as_ref().is_some_and(|s| s.bold && s.color.is_none()), "taken up before the colour");
+        h.press_at(h.on_page(b.pos + egui::vec2(20.0, 12.0)), true);
+        h.press_at(h.on_page(b.pos + egui::vec2(20.0, 12.0)), false);
+        h.frames(2, vec![], Modifiers::NONE);
+        let st = &h.app.doc.boxes[0].style;
+        assert!(st.bold && st.color.is_none() && h.app.brush.is_none(), "{st:?}");
+        assert_eq!(h.app.doc.boxes[0].text, "In the box");
     }
 
     #[test]

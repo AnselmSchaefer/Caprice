@@ -4,7 +4,7 @@ How Caprice is put together, and the rules that hold it together. The rules (§4
 read before changing anything: each says what depends on what, what to check when touching it, and
 which tests guard it. Keep this file true: a change that alters a rule updates it in the same commit.
 
-*Last brought up to date: 2026-10-20 (text boxes behind the text, and transparent ones).*
+*Last brought up to date: 2026-10-21 (copying formatting with the brush).*
 
 ---
 
@@ -487,8 +487,10 @@ scratchpad's text is the document's (`Doc::scratchpad`, saved, R9); whether it s
   every frame. Guarded by `the_toolbar_settles_at_every_width_and_its_second_row_holds_its_tools`.
   The second row closes on a click on the pages, but not on one in a menu opened from it (a popup
   is on a higher layer); the search bar goes under it (`tools_bottom`). All the tools take about
-  1000 points, so they fit in the test window (`Harness`, 1200 wide) and the tests reach every
-  menu; `Harness::width` narrows it. A new toggle goes in the page bar (like Fit and Scratchpad)
+  1020 points, about 1090 while a scene is painted (the Claude group grows), so they fit in the
+  test window (`Harness`, 1240 wide, where the dock is its widest, `DOCK_MAX_W`) and the tests
+  reach every menu; `Harness::width` narrows it. A new tool that makes them too wide shows as a
+  test failing to find a menu of the last group ("Scene"). A new toggle goes in the page bar (like Fit and Scratchpad)
   or into a menu.
 - **The document's name is always at the toolbar's right end.** The tools get the room first, but
   the name keeps about four of its characters' width; when it has less than it needs it runs past
@@ -790,13 +792,41 @@ pagination and R3 do not know them, and a header or footer change does not pagin
   `files_from_before_footers_keep_their_page_numbers_as_a_footer`, and in `bands.rs`
   `fields_are_filled_in_for_each_page`, `a_leaf_is_convex_and_reaches_from_end_to_end`.
 
+### R25 — Copying formatting: the letters' look always, the paragraph's only onto whole paragraphs
+
+The brush in the letters group (`toggle_brush`) takes up a `Style` in `App::brush`: the selected
+text box's, else the look at the start of the selection (at the caret, the typing style), with
+the paragraph's `ParaAttrs` in `para`. Letting go of the next mouse selection puts it down
+(`paint_format`, from `mouse`), as does a click: on the word under it, or on a text box (its look
+and alignment, `textbox.rs`). Then the brush is put down; Escape or the button again do so too.
+
+- **The look goes through `Style::take_look`**: everything but `para` and `image`. A new field of
+  `Style` that is character formatting is copied without more work; one that is not (like
+  `image`) must be kept there.
+- **Paragraph format goes only onto paragraphs selected whole** (first char to terminator, R2),
+  all of `ParaAttrs`, chapter title too. A word painted inside a title would otherwise make its
+  paragraph a chapter.
+- It is one `Edit::Restyle` through `Doc::apply` (one undo step, R1) and `paginate_after` from
+  the first paragraph touched, like `set_para`. No Word mapping of its own (R10): it copies
+  formatting that has one.
+- Taking up the selection with a key and pasting it (Word's Ctrl+Shift+C/V) is not offered:
+  egui-winit turns any Ctrl+C/V into `Copy`/`Paste` events without the key, and sends no paste at
+  all when the clipboard holds no text.
+- Tests: `formatting_copied_from_one_place_goes_onto_the_text_selected_next_and_whole_paragraphs_take_its_alignment`,
+  `formatting_copied_from_the_story_goes_onto_a_text_box_clicked`.
+
 ---
 
 ## 5. Checklists for common changes
 
 **A new paragraph attribute** (like line spacing or chapter title): `ParaAttrs` → `run_format` /
 `paragraph_job` → the toolbar (`ui.rs`) → file format default (R9) → Word mapping (R10) → whether
-it changes drop caps (`has_drop_cap`) or the contents (`chapters`).
+it changes drop caps (`has_drop_cap`) or the contents (`chapters`). The brush copies it with the
+rest of `ParaAttrs` (R25).
+
+**A new kind of character formatting** (like colour): a `Style` field (in `same_char`) →
+`run_format` → the toolbar and `format_box` → Word's `run_props` (R10). It prints (R20) and the
+brush copies it (R25) without more work.
 
 **A new page setting:** `PageSetup` field + default → Page menu (`ui.rs`, applied through
 `set_setup`) → pagination/layout → Word section or settings (R10) → round-trip test.

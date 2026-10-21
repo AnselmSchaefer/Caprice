@@ -588,6 +588,7 @@ impl App {
             }
         }
         match key {
+            Key::Escape if self.brush.is_some() => self.brush = None,
             Key::Escape if self.pen && self.lasso.is_none() => self.toggle_pen(),
             Key::PageDown | Key::PageUp => {
                 // Jump to the start of the next / previous page.
@@ -649,6 +650,65 @@ impl App {
                 edit(&mut st.para);
             }
         }
+        if new == old {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        let len = range.len();
+        self.doc.apply(Edit::Restyle { at: ps, old, new }, now);
+        self.doc.paginate_after(ctx, &self.typing, ps, ps + len, 0, 0);
+        ctx.request_repaint();
+    }
+
+    /// Take up the formatting to copy, or put it down again: the selected text box's, else the look
+    /// of the letters at the start of the selection (at the caret, what would be typed) and the
+    /// format of their paragraph.
+    pub fn toggle_brush(&mut self) {
+        if self.brush.take().is_some() {
+            return;
+        }
+        let picked = match self.boxes.selected.and_then(|id| self.text_box(id)) {
+            Some(b) => b.style.clone(),
+            None => {
+                let (a, b) = self.selection();
+                let look = if a < b { &self.doc.flow.styles[a] } else { &self.typing };
+                look.with_para(self.doc.para_attrs_at(a))
+            }
+        };
+        self.brush = Some(picked);
+    }
+
+    /// Put the formatting taken up onto the selection, or onto the word at the caret, in one undo
+    /// step: the letters take its look, and paragraphs selected whole its paragraph format too. A
+    /// word painted reformats only its letters, since the brush is used once and a click is how it
+    /// lands. Then the brush is put down.
+    pub fn paint_format(&mut self, ctx: &egui::Context) {
+        let Some(brush) = self.brush.take() else { return };
+        let (a, b) = if self.has_selection() { self.selection() } else { self.word_range_at(self.caret) };
+        if a == b {
+            return;
+        }
+        let (ps, _) = self.doc.para_start(a);
+        let last_char = b.min(self.max_caret());
+        let (end, _) = self.doc.term_from(last_char, self.doc.char_to_byte(last_char));
+        let range = ps..end + 1;
+        let old = self.doc.flow.styles[range.clone()].to_vec();
+        let mut new = old.clone();
+        let mut para = ps;
+        for (k, st) in new.iter_mut().enumerate() {
+            let c = ps + k;
+            if (a..b).contains(&c) {
+                st.take_look(&brush);
+            }
+            if self.doc.char_at(c).is_some_and(is_terminator) {
+                // Whole: from its first char to its end, an empty one by its mark.
+                if a <= para && b >= c && b > para {
+                    st.para = brush.para;
+                }
+                para = c + 1;
+            }
+        }
+        self.typing.take_look(&brush);
         if new == old {
             return;
         }
@@ -827,6 +887,7 @@ impl App {
                 o.cursor_icon = match (on_picture, on_link) {
                     (true, _) => egui::CursorIcon::Grab,
                     (_, true) => egui::CursorIcon::PointingHand,
+                    _ if self.brush.is_some() => egui::CursorIcon::Copy,
                     _ => egui::CursorIcon::Text,
                 }
             });
@@ -907,8 +968,10 @@ impl App {
                 }
             }
         }
+        // With formatting taken up, letting go of a selection (or a click) puts it down there.
+        let paint = released && self.sel_drag.is_some() && self.brush.is_some();
         // Asking Claude by cursor, letting go of a selection offers the commands for it.
-        let offer = released && self.sel_drag.is_some() && self.pen && self.picking == crate::claude::Picking::Cursor;
+        let offer = released && self.sel_drag.is_some() && !paint && self.pen && self.picking == crate::claude::Picking::Cursor;
         if !down {
             self.sel_drag = None;
         }
@@ -932,6 +995,9 @@ impl App {
                 self.anchor = ps;
                 self.set_caret(&ctx, (end + 1).min(self.max_caret()), true);
             }
+        }
+        if paint {
+            self.paint_format(&ctx);
         }
         if let (true, true, Some(p)) = (offer, self.has_selection(), pos) {
             self.offer_commands(p);

@@ -339,6 +339,14 @@ impl App {
             }
             if resp.clicked() && !writing {
                 self.boxes = Boxes { selected: Some(id), editing: true, focus: true, drag: None };
+                // With formatting taken up, the click puts it down on the box: its text is one style.
+                if let Some(brush) = self.brush.take() {
+                    self.edit_selected_box(|b| {
+                        let align = brush.para.align;
+                        b.style.take_look(&brush);
+                        b.style.para.align = align;
+                    });
+                }
             }
             if resp.drag_started() {
                 self.boxes.selected = Some(id);

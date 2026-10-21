@@ -50,6 +50,7 @@ enum Icon {
     Align(Align),
     Bullets,
     Numbers,
+    Brush,
 }
 
 /// Draw an icon into a 30x30 square.
@@ -79,6 +80,15 @@ fn paint_icon(p: &egui::Painter, rect: Rect, icon: Icon, ink: Color32) {
                 }
                 p.line_segment([pos2(area.left() + 6.5, y), pos2(area.right(), y)], stroke);
             }
+        }
+        Icon::Brush => {
+            // A broad brush, bristles down: the head, its band, and the handle above.
+            let (l, r, t, b) = (area.left() + 1.0, area.right() - 1.0, area.top(), area.bottom());
+            let head = vec![pos2(l, b - 5.0), pos2(r, b - 5.0), pos2(r, b - 1.0), pos2(r - 2.0, b), pos2(l + 2.0, b), pos2(l, b - 1.0)];
+            p.add(egui::Shape::convex_polygon(head, ink, Stroke::NONE));
+            p.rect_stroke(Rect::from_min_max(pos2(l + 1.0, b - 8.5), pos2(r - 1.0, b - 6.0)), 1.0, stroke, egui::StrokeKind::Inside);
+            let x = area.center().x;
+            p.line_segment([pos2(x, t), pos2(x, b - 8.5)], Stroke::new(3.0, ink));
         }
     }
 }
@@ -241,6 +251,7 @@ struct Tools {
     italic: bool,
     underline: bool,
     color: Option<Option<[u8; 3]>>,
+    brush: bool,
     para: Option<ParaChange>,
     setup: Option<crate::model::PageSetup>,
     insert: Option<InsertAction>,
@@ -516,6 +527,10 @@ impl App {
         let u = egui::Button::new(egui::RichText::new("U").underline()).selected(t.underline).min_size(small);
         out.underline ^= ui.add(u).on_hover_text("Underline (Ctrl+U)").clicked();
         out.color = color_dropdown(ui, t.color).or(out.color);
+        let tip = "Copy formatting: take up the look here, then select where it goes (Esc: put it down)";
+        let brush = icon_button(ui, Icon::Brush, self.brush.is_some(), tip);
+        brush.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Copy formatting"));
+        out.brush ^= brush.clicked();
     }
 
     /// Paragraph format of the paragraph the caret is in. Alignment (with line spacing) and lists
@@ -686,6 +701,9 @@ impl App {
         }
         if let Some(color) = out.color {
             self.apply_style(ctx, |s| s.color = color);
+        }
+        if out.brush {
+            self.toggle_brush();
         }
         match out.para {
             Some(ParaChange::Align(a)) => self.set_para(ctx, |p| p.align = a),
