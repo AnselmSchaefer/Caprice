@@ -141,14 +141,24 @@ impl Doc {
         };
 
         // Scale the letter so it reaches from the top of the first line's capitals down to the
-        // baseline of the last line it sinks into.
-        let full = baselines(&layout(width), lines);
-        let small = letter(first_st.size);
-        let rise = -glyph(&small)?.uv_rect.offset.y;
-        if rise < 1.0 {
+        // baseline of the last line it sinks into. A letter that hangs below its baseline (j, p, q,
+        // y) is made smaller instead, so its tail ends with the last line rather than reaching into
+        // the next: it fits the lines set, top to tail.
+        let whole = layout(width);
+        let full = baselines(&whole, lines);
+        let below = whole.rows.first().map_or(0.0, |r| r.pos.y + r.size.y - full[0]);
+        // Measured large: at text size its ink is a few whole pixels, too coarse to scale from.
+        const REF: f32 = 200.0;
+        let large = letter(REF);
+        let g0 = glyph(&large)?;
+        let (rise, descent) = (-g0.uv_rect.offset.y / REF, (g0.uv_rect.offset.y + g0.uv_rect.size.y).max(0.0) / REF);
+        if rise * first_st.size < 1.0 {
             return None;
         }
-        let size = first_st.size * (full[lines - 1] - full[0] + rise) / rise;
+        // In units of the letter's size: from its top on the first line to the last line's baseline.
+        let span = full[lines - 1] - full[0] + rise * first_st.size;
+        let size = (span / rise).min((span + below) / (rise + descent));
+        let (k, rise) = (size / first_st.size, rise * first_st.size);
         let cap = letter(size);
         let g = glyph(&cap)?;
         let gap = first_st.size * 0.35;
@@ -157,17 +167,21 @@ impl Doc {
             return None; // a huge letter on a narrow page: leave the text be
         }
 
+        // Its top where the first line's letters' tops are; its baseline follows from its size
+        // (the last line's, unless it was made smaller to keep its tail in).
         let narrow = layout(width - indent);
-        let base = baselines(&narrow, lines)[lines - 1];
+        let base = baselines(&narrow, lines)[0] - rise + k * rise;
         let dy = base - (cap.rows[0].pos.y + g.pos.y);
         let cap_bottom = base + g.uv_rect.offset.y + g.uv_rect.size.y;
-        // A letter that hangs below its baseline (j, p, q, y) reaches into the next line: that line
-        // goes beside it too, like the others, rather than the text below starting under its tail
-        // and leaving a line empty beside it.
-        let reached = narrow.rows.iter().take_while(|r| r.pos.y < cap_bottom - 0.5).count();
+        // Should a tail still reach into the next line (a font whose letters run deeper than its
+        // lines), that line goes beside it too, rather than the text below starting under the
+        // tail and leaving a line empty beside it.
+        let reached = narrow.rows.iter().take_while(|r| r.pos.y < cap_bottom - 1.0).count();
         let n = reached.max(lines).min(narrow.rows.len());
         let beside: usize = narrow.rows[..n].iter().map(|r| usize::from(r.row.char_count_excluding_newline())).sum();
         let beside_bottom = if beside == 0 { 0.0 } else { narrow.rows[n - 1].pos.y + narrow.rows[n - 1].size.y };
+        // A tail ending within a point of the last line is in it (its ink is rounded to pixels).
+        let cap_bottom = if cap_bottom <= beside_bottom + 1.0 { cap_bottom.min(beside_bottom) } else { cap_bottom };
         let height = cap_bottom.max(beside_bottom);
         Some(DropCap { size, dy, indent, beside, height, bottom: cap_bottom, beside_height: beside_bottom })
     }
@@ -421,20 +435,20 @@ for anything else.";
     }
 
     #[test]
-    fn a_cap_hanging_below_its_line_has_the_next_line_beside_it_and_no_gap_under_it() {
+    fn a_cap_hanging_below_its_line_is_made_smaller_to_keep_its_tail_in_the_lines_set() {
         with_ctx(|ctx| {
             let story = format!("p{}", &STORY[1..]);
-            for (text, hangs) in [(story.as_str(), true), (STORY, false)] {
+            for text in [story.as_str(), STORY] {
                 let mut d = doc(&[("One", title()), (text, ParaAttrs { align: Align::Justify, ..body() })], 3);
                 d.full_paginate(ctx, &Style::new("x"));
                 let cap = d.drop_cap(ctx, 4, 4).unwrap();
                 let l = d.layout_page(ctx, 0, 1.0, &[]);
                 let (cap_p, beside, rest) = (&l.paras[1], &l.paras[2], &l.paras[3]);
                 let tail = cap_p.y + cap_p.galley.mesh_bounds.max.y;
-                let rows = if hangs { 4 } else { 3 };
-                assert_eq!(beside.galley.rows.len(), rows, "{:?}: lines beside the cap", &text[..1]);
-                assert!((rest.y - (beside.y + beside.height)).abs() < 0.01, "{:?}: the rest goes on at once, no line left empty", &text[..1]);
-                assert!(tail <= rest.y + 0.5, "{:?}: and below the cap's tail: {tail} > {}", &text[..1], rest.y);
+                let first = &text[..1];
+                assert_eq!(beside.galley.rows.len(), 3, "{first:?}: three lines beside the cap, as set");
+                assert!((rest.y - (beside.y + beside.height)).abs() < 0.01, "{first:?}: the rest goes on at once");
+                assert!(tail <= rest.y + 1.0, "{first:?}: its tail within the three lines: {tail} > {}", rest.y);
                 assert_eq!(rest.start, 5 + cap.beside);
             }
         });

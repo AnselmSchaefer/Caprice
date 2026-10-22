@@ -1051,6 +1051,8 @@ mod tests {
         let mut h = Harness::new();
         short_paragraph_beside_a_cap(&mut h);
         let ctx = h.ctx.clone();
+        // Justified, like a novel: egui leaves out the whitespace at a row's ends (`justified_edges`).
+        h.app.set_para(&ctx, |p| p.align = model::Align::Justify);
         let caret_x = |h: &Harness| h.app.doc.layout_page(&ctx, 0, 1.0, &[]).caret_rect(h.app.caret, h.app.prefer_next).left();
         let before = caret_x(&h);
         h.key(Key::Tab, Modifiers::NONE);

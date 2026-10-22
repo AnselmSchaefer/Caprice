@@ -242,6 +242,9 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
     let wrap = (spec.content_width - indent).max(10.0);
     let job = paragraph_job(ctx, spec.text, spec.styles, spec.term, spec.attrs, spec.scale, wrap, spec.marks);
     let mut galley = ctx.fonts_mut(|f| f.layout_job(job));
+    if spec.attrs.align == Align::Justify {
+        galley = justified_edges(galley);
+    }
     if !spec.marks.is_empty() {
         galley = tight_highlights(galley, ctx.pixels_per_point());
     }
@@ -320,6 +323,73 @@ pub fn layout_piece(ctx: &egui::Context, spec: &PieceSpec, local_start: usize, l
         contents: None,
         image: None,
     }
+}
+
+/// egui lines up every row of justified text by its first and last letters, leaving out the
+/// spaces and tabs before and after them: a tab at the start of a row (an indent, or typed after a
+/// drop cap) went out to the left of the text, and a tab or space typed at the end of a paragraph
+/// left the caret where it was until a letter came after it. Put them back: the whitespace in
+/// front takes its room again (on a stretched row, the gaps between words give it up), and the
+/// last row is as wide as all its chars.
+fn justified_edges(mut galley: Arc<egui::Galley>) -> Arc<egui::Galley> {
+    let edged = |r: &egui::epaint::text::PlacedRow| {
+        let g = &r.row.glyphs;
+        g.first().is_some_and(|f| f.chr.is_whitespace()) || g.last().is_some_and(|l| l.chr.is_whitespace())
+    };
+    if !galley.rows.iter().any(edged) {
+        return galley;
+    }
+    let g = Arc::make_mut(&mut galley);
+    let wrap = g.job.wrap.max_width;
+    let last_row = g.rows.len().saturating_sub(1);
+    for (i, placed) in g.rows.iter_mut().enumerate() {
+        let stretched = !placed.ends_with_newline && i < last_row;
+        let row = Arc::make_mut(&mut placed.row);
+        let lead = row.glyphs.iter().take_while(|gl| gl.chr.is_whitespace()).count();
+        if lead == row.glyphs.len() {
+            continue; // only whitespace: egui keeps it as it is
+        }
+        let room: f32 = row.glyphs[..lead].iter().map(|gl| gl.advance_width).sum();
+        // The first letter belongs after the whitespace in front; on a stretched row the last one
+        // ends at the margin. egui put them elsewhere (with whitespace in front, even past the
+        // margin), so each glyph moves by a share of both: the gaps between words before it say how much.
+        let end = row.glyphs.len() - row.glyphs.iter().rev().take_while(|gl| gl.chr.is_whitespace()).count();
+        let first_by = room - row.glyphs[lead].pos.x;
+        let last = &row.glyphs[end - 1];
+        let last_by = if stretched { wrap - (last.pos.x + last.advance_width) } else { first_by };
+        if lead > 0 && (first_by.abs() > 0.01 || last_by.abs() > 0.01) {
+            let spaces = row.glyphs[lead..end].iter().filter(|gl| gl.chr.is_whitespace()).count();
+            let mut seen = 0usize;
+            let n = row.glyphs.len();
+            for k in 0..n {
+                let t = if k < lead {
+                    0.0
+                } else if k >= end {
+                    1.0
+                } else if spaces > 0 {
+                    seen as f32 / spaces as f32
+                } else {
+                    (k - lead) as f32 / (end - lead - 1).max(1) as f32
+                };
+                if k >= lead && row.glyphs[k].chr.is_whitespace() {
+                    seen += 1;
+                }
+                let by = first_by + (last_by - first_by) * t;
+                let gl = &mut row.glyphs[k];
+                gl.pos.x += by;
+                if !gl.uv_rect.is_nothing() {
+                    let v = gl.first_vertex as usize;
+                    for vert in row.visuals.mesh.vertices.iter_mut().skip(v).take(4) {
+                        vert.pos.x += by;
+                    }
+                }
+            }
+        }
+        if !stretched && let Some(end) = row.glyphs.last().map(|gl| gl.pos.x + gl.advance_width) {
+            row.size.x = row.size.x.max(end);
+        }
+    }
+    galley
 }
 
 /// egui paints a highlight over the whole line height, so with line spacing above 1 it reaches far
@@ -763,6 +833,35 @@ mod tests {
             let text_w = left.1 - left.0;
             assert!((center.0 - (width - text_w) / 2.0).abs() < 2.0, "centered: {center:?} text_w {text_w}");
             assert!((right.1 - width).abs() < 2.0, "right aligned ends at the edge: {right:?}");
+        });
+    }
+
+    #[test]
+    fn justified_text_keeps_a_tab_before_it_and_after_it() {
+        with_ctx(|ctx| {
+            let justified = ParaAttrs { align: Align::Justify, ..Default::default() };
+            let plain = ParaAttrs::default();
+            let long = format!("\t{}", "an indented paragraph long enough to wrap onto a few rows. ".repeat(4).trim_end());
+            let row0 = |text: &str, attrs| {
+                let mut d = doc_with(text, attrs);
+                d.full_paginate(ctx, &Style::new("x"));
+                let l = d.layout_page(ctx, 0, 1.0, &[]);
+                let r = &l.paras[0].galley.rows[0];
+                let letter = &r.row.glyphs[1];
+                let right = r.row.glyphs.iter().rev().find(|g| !g.chr.is_whitespace()).map(|g| r.pos.x + g.pos.x + g.advance_width);
+                (r.pos.x + letter.pos.x, right.unwrap(), d.setup.content_size().x, l)
+            };
+            let (indent, _, _, _) = row0(&long, plain);
+            let (first, right, width, _) = row0(&long, justified);
+            assert!(indent > 5.0 && (first - indent).abs() < 0.5, "indented by the tab, like left aligned text: {first} vs {indent}");
+            assert!((right - width).abs() < 1.5, "and still out to the margin: {right} of {width}");
+
+            // At the end, the caret goes past a tab or a space as soon as it is typed.
+            for end in ['\t', ' '] {
+                let (_, _, _, l) = row0(&format!("Short{end}"), justified);
+                let (_, _, _, without) = row0("Short", justified);
+                assert!(l.caret_rect(6, true).left() > without.caret_rect(5, true).left() + 2.0, "{end:?} at the end");
+            }
         });
     }
 

@@ -151,12 +151,14 @@ rounds line heights to whole pixels and can **wrap a word differently**. So:
   (Per paragraph spread or squeezed lines whenever the zoomed text wrapped into a different number
   of lines.)
 - Drop caps, the contents and pictures are measured at page size and scaled.
-- **A drop cap's block is the lines its letter reaches into** (`Doc::drop_cap`): `drop_cap_lines`,
-  and the next line too when the letter hangs below its baseline (j, p, q, y), so that line wraps
-  around its tail like the others. The rest of the paragraph starts below both, never under the
-  tail with a line left empty beside it (it did). Pagination and drawing both take the block from
-  `DropCap`. Tests: `the_cap_sinks_as_many_lines_deep_as_set`,
-  `a_cap_hanging_below_its_line_has_the_next_line_beside_it_and_no_gap_under_it`.
+- **A drop cap fits the lines set, top to tail** (`Doc::drop_cap`): its top is where the first
+  line's letters' tops are and its baseline the last line's; a letter that hangs below its
+  baseline (j, p, q, y) is made smaller instead, so its tail ends with the last line. It is
+  measured at a large size (`REF`), since at text size its ink is a few whole pixels. Should a tail
+  still reach into the next line, that line goes beside it too; the rest of the paragraph never
+  starts under the tail with a line left empty beside it (it did). Pagination and drawing both
+  take the block from `DropCap`. Tests: `the_cap_sinks_as_many_lines_deep_as_set`,
+  `a_cap_hanging_below_its_line_is_made_smaller_to_keep_its_tail_in_the_lines_set`.
 - **A paragraph that ends beside its cap leaves the room there to the next ones** (`Float`): they
   go on beside the letter, narrower, until it ends (`DropCap::bottom`); one that runs past it goes
   on at full width below. Enter beside a cap used to send the new line below the whole letter.
@@ -333,6 +335,7 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
 | Modifiers unreliable on Hyprland | Track Ctrl from key events | `view.rs` |
 | The UI font has no symbols like ✕ (drawn as an empty box) | Draw icons with lines, labelled for tests | `ui.rs::paint_icon`, `search.rs::bar_button` |
 | `ctx.fonts_mut` inside `ctx.fonts_mut` hangs (the context's lock is taken twice) | Build a job (`paragraph_job`, `run_format`, which ask the fonts for a row's height) before taking the fonts to lay it out. Drop caps with line spacing hung: `a_new_novel_begins_on_book_pages_at_chapter_one_and_a_journal_at_today` | `dropcap.rs::drop_cap` |
+| Justified rows are lined up by their first and last letters: whitespace in front goes out to the left, a tab or space at a paragraph's end gives the caret no room | `justified_edges` moves the glyphs (and their quads) back: the whitespace in front keeps its room, a stretched row still ends at the margin, the last row is as wide as all its chars. Underlines and highlights of such a row are not moved. `justified_text_keeps_a_tab_before_it_and_after_it` | `layout.rs::justified_edges` |
 | Tab moves egui's keyboard focus to the next widget, even when the page took the key | The editor cancels the move when it types a tab (`move_focus(FocusDirection::None)`); the caret is hidden while a widget has the keyboard. `a_tab_typed_beside_a_drop_cap_moves_the_caret_at_once` | `editor.rs` (keys) |
 | `set_fonts` takes effect the next frame; a family named before then panics | `FontBook::ensure` in mid-frame with `immediate: false`, and draw with `family_for` (the usual font until it is there). `fonts::LOADED` is one for the process, so tests running alongside share it: a test that loads a font for the first time is the only one to | `fonts.rs`, `start.rs::welcome_page` |
 
