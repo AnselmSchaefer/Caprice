@@ -157,8 +157,12 @@ rounds line heights to whole pixels and can **wrap a word differently**. So:
   measured at a large size (`REF`), since at text size its ink is a few whole pixels. Should a tail
   still reach into the next line, that line goes beside it too; the rest of the paragraph never
   starts under the tail with a line left empty beside it (it did). Pagination and drawing both
-  take the block from `DropCap`. Tests: `the_cap_sinks_as_many_lines_deep_as_set`,
-  `a_cap_hanging_below_its_line_is_made_smaller_to_keep_its_tail_in_the_lines_set`.
+  take the block from `DropCap`. With nothing after the letter yet, its lines are measured with
+  a stand-in letter in its style (an empty line has no baseline: the cap sat lower, then jumped up
+  as the first letter was typed). Tests: `the_cap_sinks_as_many_lines_deep_as_set`,
+  `a_cap_hanging_below_its_line_is_made_smaller_to_keep_its_tail_in_the_lines_set`,
+  `the_cap_stays_put_when_the_first_letter_after_it_is_typed`,
+  `the_drop_cap_stays_put_while_the_first_words_are_typed`.
 - **A paragraph that ends beside its cap leaves the room there to the next ones** (`Float`): they
   go on beside the letter, narrower, until it ends (`DropCap::bottom`); one that runs past it goes
   on at full width below. Enter beside a cap used to send the new line below the whole letter.

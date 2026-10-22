@@ -128,6 +128,12 @@ impl Doc {
         let (cb, end) = (b + first.len_utf8(), tc.min(c + 1 + WINDOW));
         let eb = cb + self.flow.text[cb..].char_indices().nth(end - c - 1).map_or(self.flow.text.len() - cb, |(o, _)| o);
         let (text, styles) = (&self.flow.text[cb..eb], &self.flow.styles[c + 1..end]);
+        // Nothing after the letter yet: its lines are measured with a stand-in in its style, as the
+        // first one typed will be, or it sat a little lower until then (an empty line has no
+        // baseline to measure).
+        let stand_in = [first_st.clone()];
+        let empty = text.is_empty();
+        let (text, styles) = if empty { ("x", &stand_in[..]) } else { (text, styles) };
         let width = self.setup.content_size().x;
         // The job is built before taking the fonts: with line spacing it asks them for a row's height.
         let layout = |w: f32| {
@@ -178,7 +184,7 @@ impl Doc {
         // tail and leaving a line empty beside it.
         let reached = narrow.rows.iter().take_while(|r| r.pos.y < cap_bottom - 1.0).count();
         let n = reached.max(lines).min(narrow.rows.len());
-        let beside: usize = narrow.rows[..n].iter().map(|r| usize::from(r.row.char_count_excluding_newline())).sum();
+        let beside: usize = if empty { 0 } else { narrow.rows[..n].iter().map(|r| usize::from(r.row.char_count_excluding_newline())).sum() };
         let beside_bottom = if beside == 0 { 0.0 } else { narrow.rows[n - 1].pos.y + narrow.rows[n - 1].size.y };
         // A tail ending within a point of the last line is in it (its ink is rounded to pixels).
         let cap_bottom = if cap_bottom <= beside_bottom + 1.0 { cap_bottom.min(beside_bottom) } else { cap_bottom };
@@ -450,6 +456,23 @@ for anything else.";
                 assert!((rest.y - (beside.y + beside.height)).abs() < 0.01, "{first:?}: the rest goes on at once");
                 assert!(tail <= rest.y + 1.0, "{first:?}: its tail within the three lines: {tail} > {}", rest.y);
                 assert_eq!(rest.start, 5 + cap.beside);
+            }
+        });
+    }
+
+    #[test]
+    fn the_cap_stays_put_when_the_first_letter_after_it_is_typed() {
+        with_ctx(|ctx| {
+            let spaced = ParaAttrs { align: Align::Justify, spacing: 1.15, ..body() };
+            for attrs in [body(), spaced] {
+                let cap_of = |text: &str| {
+                    let mut d = doc(&[("One", title()), (text, attrs)], 3);
+                    d.full_paginate(ctx, &Style::new("x"));
+                    d.drop_cap(ctx, 4, 4).unwrap()
+                };
+                let (alone, typed) = (cap_of("I"), cap_of("It"));
+                assert!((alone.dy - typed.dy).abs() < 0.01 && (alone.size - typed.size).abs() < 0.01, "{alone:?} then {typed:?}");
+                assert_eq!(alone.beside, 0, "nothing beside it yet");
             }
         });
     }

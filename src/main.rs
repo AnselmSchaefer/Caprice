@@ -1013,6 +1013,31 @@ mod tests {
     }
 
     #[test]
+    fn the_drop_cap_stays_put_while_the_first_words_are_typed() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Chapter One");
+        let ctx = h.ctx.clone();
+        h.app.set_para(&ctx, |p| p.set_chapter_title(true));
+        h.key(Key::Enter, Modifiers::NONE);
+        h.app.set_para(&ctx, |p| (p.align, p.spacing) = (model::Align::Justify, 1.15));
+        let setup = model::PageSetup { drop_cap_lines: 3, ..h.app.doc.setup.clone() };
+        h.app.set_setup(&ctx, setup);
+        // Where the cap's ink is on the page.
+        let ink = |h: &Harness| {
+            let l = h.app.doc.layout_page(&ctx, 0, 1.0, &[]);
+            l.paras.iter().find(|p| p.cap).map(|p| p.galley.mesh_bounds.translate(egui::vec2(p.x, p.y)))
+        };
+        h.type_text("I");
+        let alone = ink(&h).expect("a cap once the letter is typed");
+        for more in ["t", " was"] {
+            h.type_text(more);
+            let now = ink(&h).unwrap();
+            assert!((now.min.y - alone.min.y).abs() < 0.01 && (now.max.y - alone.max.y).abs() < 0.01, "after {more:?}: {alone:?} then {now:?}");
+        }
+    }
+
+    #[test]
     fn enter_beside_a_drop_cap_goes_on_to_the_next_line_beside_it() {
         let mut h = Harness::new();
         short_paragraph_beside_a_cap(&mut h);
