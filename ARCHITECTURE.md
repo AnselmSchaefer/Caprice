@@ -150,6 +150,12 @@ rounds line heights to whole pixels and can **wrap a word differently**. So:
   (Per paragraph spread or squeezed lines whenever the zoomed text wrapped into a different number
   of lines.)
 - Drop caps, the contents and pictures are measured at page size and scaled.
+- **A drop cap's block is the lines its letter reaches into** (`Doc::drop_cap`): `drop_cap_lines`,
+  and the next line too when the letter hangs below its baseline (j, p, q, y), so that line wraps
+  around its tail like the others. The rest of the paragraph starts below both, never under the
+  tail with a line left empty beside it (it did). Pagination and drawing both take the block from
+  `DropCap`. Tests: `the_cap_sinks_as_many_lines_deep_as_set`,
+  `a_cap_hanging_below_its_line_has_the_next_line_beside_it_and_no_gap_under_it`.
 - **If you add anything drawn on a page,** measure it at page size and multiply by the scale; never
   let its height come from the zoomed layout.
 - Known gap: when zoomed text wraps into one line more than at page size, its paragraph is a line

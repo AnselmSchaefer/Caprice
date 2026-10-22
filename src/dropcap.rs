@@ -138,11 +138,15 @@ impl Doc {
         }
 
         let narrow = layout(width - indent);
-        let n = lines.min(narrow.rows.len());
-        let beside: usize = narrow.rows[..n].iter().map(|r| usize::from(r.row.char_count_excluding_newline())).sum();
         let base = baselines(&narrow, lines)[lines - 1];
         let dy = base - (cap.rows[0].pos.y + g.pos.y);
         let cap_bottom = base + g.uv_rect.offset.y + g.uv_rect.size.y;
+        // A letter that hangs below its baseline (j, p, q, y) reaches into the next line: that line
+        // goes beside it too, like the others, rather than the text below starting under its tail
+        // and leaving a line empty beside it.
+        let reached = narrow.rows.iter().take_while(|r| r.pos.y < cap_bottom - 0.5).count();
+        let n = reached.max(lines).min(narrow.rows.len());
+        let beside: usize = narrow.rows[..n].iter().map(|r| usize::from(r.row.char_count_excluding_newline())).sum();
         let beside_bottom = if beside == 0 { 0.0 } else { narrow.rows[n - 1].pos.y + narrow.rows[n - 1].size.y };
         Some(DropCap { size, dy, indent, beside, height: cap_bottom.max(beside_bottom) })
     }
@@ -336,6 +340,26 @@ for anything else.";
                 assert_eq!((beside.start, beside.end, rest.start), (5, 5 + cap.beside, 5 + cap.beside));
                 assert!((rest.y - (head.height + cap.height)).abs() < 0.01 && rest.x == 0.0, "the rest goes on below the cap");
                 assert_eq!(rest.end, 4 + STORY.chars().count(), "and ends the paragraph");
+            }
+        });
+    }
+
+    #[test]
+    fn a_cap_hanging_below_its_line_has_the_next_line_beside_it_and_no_gap_under_it() {
+        with_ctx(|ctx| {
+            let story = format!("p{}", &STORY[1..]);
+            for (text, hangs) in [(story.as_str(), true), (STORY, false)] {
+                let mut d = doc(&[("One", title()), (text, ParaAttrs { align: Align::Justify, ..body() })], 3);
+                d.full_paginate(ctx, &Style::new("x"));
+                let cap = d.drop_cap(ctx, 4, 4).unwrap();
+                let l = d.layout_page(ctx, 0, 1.0, &[]);
+                let (cap_p, beside, rest) = (&l.paras[1], &l.paras[2], &l.paras[3]);
+                let tail = cap_p.y + cap_p.galley.mesh_bounds.max.y;
+                let rows = if hangs { 4 } else { 3 };
+                assert_eq!(beside.galley.rows.len(), rows, "{:?}: lines beside the cap", &text[..1]);
+                assert!((rest.y - (beside.y + beside.height)).abs() < 0.01, "{:?}: the rest goes on at once, no line left empty", &text[..1]);
+                assert!(tail <= rest.y + 0.5, "{:?}: and below the cap's tail: {tail} > {}", &text[..1], rest.y);
+                assert_eq!(rest.start, 5 + cap.beside);
             }
         });
     }
