@@ -108,7 +108,7 @@ impl Keeper {
         }
     }
 
-    fn now(&self) -> u64 {
+    pub fn now(&self) -> u64 {
         self.clock.unwrap_or_else(|| SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()))
     }
 

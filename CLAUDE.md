@@ -75,8 +75,8 @@ Full list with reasons and tests in `ARCHITECTURE.md` §4.
     Tests never reach the system's printers: they set `App::print.spooler`.
 12. **A story with a file saves itself; every story keeps versions by its id.** Anything that
     starts another story sets `story_id` and calls `Keeper::opened`. Leaving still offers to drop
-    the changes since saving by hand (`as_saved`). `Harness` turns autosave, versions and the
-    word goal's file off: tests write nothing outside their own folders.
+    the changes since saving by hand (`as_saved`). `Harness` turns autosave, versions, the
+    word goal's file and the list of stories last opened off: tests write nothing outside their own folders.
 
 ## Files
 

@@ -427,6 +427,7 @@ impl App {
         let written = json.map_err(|e| e.to_string()).and_then(|j| std::fs::write(&path, j).map_err(|e| e.to_string()));
         self.status = match written {
             Ok(()) => {
+                self.start.remember(&path, self.keep.now());
                 self.path = Some(path);
                 self.saved_hash = self.content_hash();
                 self.as_saved = serde_json::to_string(&self.doc_file()).ok().map(|j| (self.saved_hash, j));
@@ -612,6 +613,8 @@ impl App {
                 let made = made.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
                 self.created = if file.created > 0 { file.created } else { made };
                 self.adopt(ctx, file);
+                self.start.remember(&path, self.keep.now());
+                self.start.open = false;
                 self.path = Some(path);
                 self.status = "- opened".into();
                 self.saved_hash = self.content_hash();

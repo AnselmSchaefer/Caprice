@@ -22,6 +22,7 @@ mod render;
 mod review;
 mod scratchpad;
 mod search;
+mod start;
 mod textbox;
 mod theme;
 mod ui;
@@ -72,6 +73,8 @@ fn main() -> eframe::Result {
             let mut app = App::new(&cc.egui_ctx);
             // `caprice some.caprice` opens that document (once the first frame has fonts to lay it out).
             app.startup_file = std::env::args_os().nth(1).map(Into::into);
+            // Without one, it asks what to write in (`start.rs`).
+            app.start.open = app.startup_file.is_none();
             Ok(Box::new(app))
         }),
     )
@@ -213,6 +216,8 @@ pub struct App {
     pub clip: Option<editor::Clip>,
     /// The text box selected, and whether it is being written in.
     pub boxes: textbox::Boxes,
+    /// The start screen, and the stories opened lately.
+    pub start: start::Start,
 }
 
 impl App {
@@ -295,6 +300,7 @@ impl App {
             after_save: None,
             may_close: false,
             boxes: textbox::Boxes::default(),
+            start: start::Start::new(),
         };
         app.saved_hash = app.content_hash();
         app
@@ -504,7 +510,11 @@ impl App {
         self.poll_dialog(&ctx);
         self.guard_close(&ctx);
         self.ensure_textures(&ctx);
-        if self.leaving.is_none() {
+        // On the start screen only Ctrl+O, like its Open button, goes on behind it.
+        if self.start.open && self.leaving.is_none() && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)) {
+            self.open(&ctx);
+        }
+        if self.leaving.is_none() && !self.start.open {
             if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
                 self.save(&ctx, false);
             }
@@ -517,15 +527,15 @@ impl App {
             }
         }
 
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
+        if !self.start.open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
             self.open_search();
         }
         // Ctrl even on a Mac, where Cmd+H hides the app (Word on a Mac takes Ctrl+H too).
-        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::H)) {
+        if !self.start.open && ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::H)) {
             self.open_replace();
         }
 
-        if self.leaving.is_none() {
+        if self.leaving.is_none() && !self.start.open {
             self.process_input(&ctx);
             self.swipe_pages(&ctx, area);
         }
@@ -641,6 +651,7 @@ impl App {
         self.scene_list(&ctx);
         self.cast_window(&ctx);
         self.unsaved_prompt(&ctx);
+        self.start_screen(&ctx);
     }
 }
 
@@ -667,7 +678,8 @@ mod tests {
             apply_theme(&ctx);
             let mut app = App::new(&ctx);
             // Nothing written behind a test's back: the tests about it turn these on.
-            (app.keep.autosave, app.keep.dir, app.words.file) = (false, None, None);
+            (app.keep.autosave, app.keep.dir, app.words.file, app.start.file) = (false, None, None, None);
+            app.start.recent.clear();
             app.words.progress = Default::default();
             Self { ctx, app, time: 0.0, mods: Modifiers::NONE, access: None, painted: Vec::new(), width: 1240.0 }
         }
@@ -4203,6 +4215,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A harness as Caprice is opened without a file: the start screen up, the stories opened
+    /// lately kept in `dir`.
+    fn started_without_a_file(dir: &std::path::Path) -> Harness {
+        let mut h = Harness::new();
+        h.app.start = start::Start::kept_in(Some(dir.join("recent.json")));
+        h.app.start.open = true;
+        h.frames(3, vec![], Modifiers::NONE);
+        h
+    }
+
+    #[test]
+    fn opened_without_a_file_caprice_asks_for_a_new_story_or_one_last_opened() {
+        let dir = test_dir("start");
+        let mut h = started_without_a_file(&dir);
+        assert!(h.labels().contains("New story") && h.labels().contains("Open\u{2026}"));
+        assert!(!h.labels().contains("Last opened"), "nothing opened yet");
+        h.type_text("x");
+        assert_eq!(h.text(), "", "the page takes no typing behind it");
+
+        h.click_widget("New story");
+        assert!(!h.app.start.open);
+        h.type_text("Chapter one");
+        h.app.save_to(dir.join("first.caprice"));
+        h.app.keep.clock = Some(10_000);
+        h.app.save_to(dir.join("second.caprice"));
+        let mut gone = Harness::new();
+        gone.frames(3, vec![], Modifiers::NONE);
+        gone.app.start = start::Start::kept_in(Some(dir.join("recent.json")));
+        gone.app.save_to(dir.join("gone.caprice"));
+        std::fs::remove_file(dir.join("gone.caprice")).unwrap();
+
+        // Opened again, it lists them newest first, with when each was last opened.
+        let mut again = started_without_a_file(&dir);
+        again.app.keep.clock = Some(10_000 + 3 * 3600);
+        let labels = again.labels();
+        assert!(labels.contains("Last opened"));
+        assert!(!labels.contains("gone"), "a file deleted since is left out");
+        let (first, second) = (labels.find("first").unwrap(), labels.find("second").unwrap());
+        assert!(second < first, "newest first:\n{labels}");
+        assert!(labels.contains("3 hours ago"), "{labels}");
+
+        again.click_widget("first");
+        assert!(!again.app.start.open);
+        assert_eq!(again.text(), "Chapter one");
+        assert_eq!(again.app.path.as_deref().and_then(|p| p.file_name()), Some(std::ffi::OsStr::new("first.caprice")));
+        assert_eq!(again.app.start.recent[0].path.file_name(), Some(std::ffi::OsStr::new("first.caprice")), "now on top");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn escape_on_the_start_screen_begins_a_new_story() {
+        let dir = test_dir("start-escape");
+        let mut h = started_without_a_file(&dir);
+        h.key(Key::Escape, Modifiers::NONE);
+        assert!(!h.app.start.open);
+        h.type_text("Once");
+        assert_eq!(h.text(), "Once");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

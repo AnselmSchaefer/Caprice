@@ -4,7 +4,7 @@ How Caprice is put together, and the rules that hold it together. The rules (§4
 read before changing anything: each says what depends on what, what to check when touching it, and
 which tests guard it. Keep this file true: a change that alters a rule updates it in the same commit.
 
-*Last brought up to date: 2026-10-21 (page numbering: starting again, pages without numbers).*
+*Last brought up to date: 2026-10-22 (the start screen: New, Open…, last opened).*
 
 ---
 
@@ -85,6 +85,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `claude.rs` | Pen loop or cursor selection → passage → `claude -p` → streamed answer panel, a conversation; story notes |
 | `backdrop.rs` | Scenes Claude paints (SVG), pinned to the story, faintly behind the pages; the Scene menu and list |
 | `cast.rs` | The cast: people found by name in what is painted, their looks and model sheets in the scene's prompt; the Cast window and its example |
+| `start.rs` | The start screen (New, Open…, the stories last opened) when Caprice opens without a file; the list of stories last opened, kept in the data folder |
 | `scratchpad.rs` | The scratchpad: plain text saved with the document, in a window on the right |
 | `review.rs` | The Review window (upper left): a chapter or the selection read for mistakes, style, detail, wordiness; findings found again by their quote |
 | `ideas.rs` | The What next window (lower left): ways the story could go on from the caret, kept in the scratchpad |
@@ -717,8 +718,8 @@ must keep working: writers do it. A version (the whole `.caprice` file) is kept 
 - Timing uses the frame clock (`ctx.input time`), so tests move it (`Harness::wait`); version names
   use the wall clock, or `Keeper::clock` in tests. Nothing waits on a frame: while saving or keeping
   is due, `keep_safe` asks for one.
-- **Tests never write behind your back**: `Harness::new` turns autosave off and sets no folder; the
-  tests about it turn them on with a folder of their own (`test_dir`).
+- **Tests never write behind your back**: `Harness::new` turns autosave off and sets no folder (nor
+  one for the stories last opened, R27); the tests about it turn them on with a folder of their own (`test_dir`).
 - Tests: `a_story_with_a_file_saves_itself_half_a_minute_after_a_change`,
   `closing_a_story_with_a_file_asks_whether_to_keep_the_changes_already_saved`,
   `closing_can_drop_the_changes_since_saving_and_they_stay_in_the_versions`,
@@ -856,6 +857,30 @@ Word. Set in Page > Page numbers for the page shown, which also lists every chan
   `roman_numerals_are_written_small`. Check Word with `sample_docx` (its contents are roman, its
   story from 1, its last chapter without).
 
+### R27 — Opened without a file, Caprice asks what to write in; opening and saving remember the story
+
+`main()` puts the start screen up (`Start::open`) only when no file was named on the command line;
+`App::new` and so `Harness` leave it down. It is a modal over the empty story: New (or Escape, or a
+click beside it) takes it away and leaves that empty story; Open… and Ctrl+O show the file dialog
+and leave the screen up until a story opens, so giving up on the dialog comes back to it; a story
+last opened is opened by `open_path`.
+
+- **Nothing behind it takes keys while it shows**: `frame` skips `process_input`, saving, printing
+  and find with it up, as it does while `leaving`. Anything new that reads keys in `frame` checks
+  `start.open` too, or typing on the start screen lands in the empty story.
+- **`open_path` and `save_to` call `Start::remember`**, and `open_path` takes the screen away. A new
+  way to open or save a story goes through them, or it is missing from the list. Paths are kept
+  canonical, so a story named on the command line is the same entry as from the dialog. Autosave
+  saves through `save_to` every half minute: `remember` writes the list only when the story is not
+  already on top, so it does not write every time.
+- The list (`recent.json` in the data folder, beside `progress.json`) holds paths and when each
+  was last opened (`Keeper::now`, so tests set the clock), newest first, at most `REMEMBER`. A file
+  moved or deleted since is left out of what is shown, not out of the list.
+- **Tests never write it behind your back**: `Harness::new` sets no file and an empty list; the
+  tests about it use `Start::kept_in` with a folder of their own.
+- Tests: `opened_without_a_file_caprice_asks_for_a_new_story_or_one_last_opened`,
+  `escape_on_the_start_screen_begins_a_new_story`.
+
 ---
 
 ## 5. Checklists for common changes
@@ -908,7 +933,7 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
 
 ## 6. Tests
 
-- `cargo test` runs everything headlessly (about 220 tests, ~13 s). They drive the real `App`
+- `cargo test` runs everything headlessly (about 235 tests, ~13 s). They drive the real `App`
   through an egui `Context`: `layout::with_ctx` for model/layout tests, `Harness` (in `main.rs`)
   for app-level ones (`frames`, `key`, `type_text`, `click_in_page`, `scrub_to`, `long_contents`,
   `shown`, and `click_widget`, which finds a button by its label or a field by its hint through
@@ -992,5 +1017,9 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
   page 120") would hide the wrong pages as soon as text before them grew or shrank, so a change
   is pinned to a char like a text box, and holds until the next one, as Word's sections do. Word
   gets sections; "no numbers" keeps counting, as Word does (R26).
+- **2026-10-22 — Opened without a file, Caprice asks first.** It used to show an empty story at
+  once, and going back to yesterday's story meant the file dialog every time. Now a start screen
+  offers a new story, the file dialog, and the stories last opened. The empty story is still
+  underneath, so New costs nothing and Escape leaves the screen as Caprice used to be (R27).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.
