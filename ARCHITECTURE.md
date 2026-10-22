@@ -4,7 +4,7 @@ How Caprice is put together, and the rules that hold it together. The rules (§4
 read before changing anything: each says what depends on what, what to check when touching it, and
 which tests guard it. Keep this file true: a change that alters a rule updates it in the same commit.
 
-*Last brought up to date: 2026-10-22 (the welcome page: kinds of new story, stories last opened, the flight to the desk).*
+*Last brought up to date: 2026-10-22 (the cast peeking out from behind the page).*
 
 ---
 
@@ -88,6 +88,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `backdrop.rs` | Scenes Claude paints (SVG), pinned to the story, faintly behind the pages; the Scene menu and list |
 | `cast.rs` | The cast: people found by name in what is painted, their looks and model sheets in the scene's prompt; the Cast window and its example |
 | `start.rs` | The welcome page when Caprice opens without a file: kinds of new story (`Kind`), the stories last opened with what they hold, the sheet flying to the desk; the list of stories last opened, kept in the data folder |
+| `peek.rs` | The cast peeking out from behind the page: the puppet asked of Claude, cut into parts, who peeks when, where they look, the peek drawn |
 | `scratchpad.rs` | The scratchpad: plain text saved with the document, in a window on the right |
 | `review.rs` | The Review window (upper left): a chapter or the selection read for mistakes, style, detail, wordiness; findings found again by their quote |
 | `ideas.rs` | The What next window (lower left): ways the story could go on from the caret, kept in the scratchpad |
@@ -283,7 +284,10 @@ paginating).
 - `DocFile::id` names the story for its versions (R22). Older files have none: they get one on
   opening, which counts as saved (it is written with the next save). `DocFile::created` likewise:
   older files take the file's own date (created, else modified) on opening, and keep it once saved.
+- A look's peek (`Look::peek`, an SVG) and whether the cast peeks (`Doc::peeks`, on unless turned
+  off: older files peek) are left out of the file while unused (R28).
 - Tests: `roundtrip_keeps_text_styles_breaks_and_setup`, `version_1_files_still_load_as_separate_pages`,
+  `a_peek_and_whether_the_cast_peeks_are_saved_and_older_files_peek`,
   `files_from_before_footers_keep_their_page_numbers_as_a_footer`,
   `chapter_titles_are_saved_and_older_files_have_none`,
   `the_contents_setting_is_saved_opened_and_exported_through_the_app`,
@@ -942,6 +946,43 @@ file dialog, or a story that cannot be read, leaves the page up.
   `a_new_novel_begins_on_book_pages_at_chapter_one_and_a_journal_at_today`,
   `escape_on_the_welcome_page_begins_a_blank_story`.
 
+### R28 — The cast peeks out: a puppet in parts, behind the page, only while the writer rests
+
+Someone of the cast with a peek drawn (`Look::peek`) comes out from behind the side of the page
+now and then, holds its edge, looks at the line that names them, blinks, glances at the writer and
+ducks away (`peek.rs`). Claude draws the peek once per look, from its model sheet (`puppet_prompt`,
+through the same job as model sheets, `SheetJob::peek`).
+
+- **A puppet is its parts** (`PARTS`): groups with those ids in the drawing, rendered one by one
+  (`cut`), each a texture placed where it lies in the drawing. Only a drawing with all of them
+  (the body may be missing) is kept: `draw_sheet` cuts it before taking it. A new part needs its id
+  in the prompt and in `PARTS`.
+- **Behind the page, then the hand in front**: `draw_peek` is called in the settled page's branch
+  of `frame`, before `paper` (body, head, irises, lids: the page hides what is behind its edge) and
+  after the post-its (the hand, its fingers over the edge). It is drawn only on a settled page; a
+  page turned ends it. Nothing of it is printed or exported: it is not on the page.
+- **Its course is a function of time** (`pose`): rising with an overshoot, looking at the line,
+  blinks at set times, a glance at the writer, ducking. Typing, clicking or scrolling makes it duck
+  at once (`Peek::duck`). It is placed from the page's rect each frame (`SIZE` of its height), so
+  zoom and window size need nothing more. It is worked out as if on the right side and mirrored
+  about the page's middle on the left, so **it leans out, away from the page, on either side**: the
+  whole figure turns on its hips (`LEAN`), its top outwards, and the head tilts only a little back
+  towards the line, on its neck (it once leaned in, towards the page).
+- **Who, when, where** (`update_peeks`): every `EVERY` seconds at random (the first after
+  `FIRST`), once the writer has left keys and mouse alone for `QUIET`; someone named on the page,
+  else in its chapter, else anyone with a peek; looking at where their name first stands on the
+  page, else the caret, from the side nearer it. "Peek now" in the Cast window asks for someone at
+  once. While a peek is due it asks for a frame then (`request_repaint_after`), and every frame while
+  one is under way. "Cast peeks out" in the Scene menu turns it off (`Doc::peeks`, saved).
+- Tests: in `peek.rs` `a_puppet_is_cut_into_its_parts_each_where_it_lies`,
+  `a_peek_rises_looks_blinks_glances_and_ducks`; and
+  `someone_named_on_the_page_peeks_out_looks_at_their_name_blinks_and_ducks_away`,
+  `a_peek_leans_out_away_from_the_page_on_either_side`,
+  `a_peek_blinks_and_ducks_at_once_when_the_writer_types`,
+  `the_cast_peeks_every_minute_or_two_while_the_writer_rests_and_not_when_turned_off`,
+  `only_someone_named_on_the_page_peeks_out_when_the_page_names_anyone`. The prompt with the real
+  Claude: `live_peek` (ignored).
+
 ---
 
 ## 5. Checklists for common changes
@@ -989,6 +1030,10 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
 
 **A new kind of story on the welcome page:** a `Kind` variant in `ALL` and each match (`setup`,
 `body`, `fonts`, `title`, `about`); a test that begins one and checks its pages and first text (R27).
+
+**Something new drawn on the desk around the page** (like a peek): draw it in the settled
+branch of `frame`, behind the paper or in front of it as it should hide or not; end it when the
+page turns; leave it out of print (R20 is for what is on the page) (R28).
 
 **Something new pinned to the text** (like notes and scenes): move it in `apply_raw` and in
 `into_doc` (R7), save it (R9), decide its Word mapping (R10).
@@ -1087,5 +1132,11 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
   about each story, with ways to begin that set things up differently. So the welcome stands in
   for the desk, a new story is begun as a kind (its settings, nothing stored about the kind), and
   the sheet chosen flies to the desk so the welcome visibly turns into the page (R27).
+- **2026-10-22 — The cast peeks out as puppets in parts.** Asked for: someone of the story
+  looking out from behind the page now and then, as a proper animation. A model sheet is a still
+  figure; cut from it, a person could only slide and tilt. So Claude draws each look once more,
+  peeking, in named parts, and Caprice moves the parts: the eyes look about and blink, the head
+  tilts, a hand holds the edge. It costs one more drawing per look, asked for in the Cast window,
+  never by itself (R12, R28).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

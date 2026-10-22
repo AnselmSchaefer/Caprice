@@ -19,6 +19,7 @@ mod model;
 mod notes;
 mod numbers;
 mod paginate;
+mod peek;
 mod print;
 mod render;
 mod review;
@@ -224,6 +225,8 @@ pub struct App {
     pub boxes: textbox::Boxes,
     /// The welcome page, and the stories opened lately.
     pub start: start::Start,
+    /// The cast peeking out from behind the page now and then.
+    pub peeks: peek::Peeks,
 }
 
 impl App {
@@ -309,6 +312,7 @@ impl App {
             may_close: false,
             boxes: textbox::Boxes::default(),
             start: start::Start::new(),
+            peeks: peek::Peeks::default(),
         };
         app.saved_hash = app.content_hash();
         app
@@ -612,6 +616,9 @@ impl App {
                         self.go_to_note(&ctx, id);
                     }
                 }
+                // Someone of the cast may be behind the page, peeking out (`peek.rs`).
+                self.update_peeks(&ctx, i);
+                self.draw_peek(ui, page_rect, i, true);
                 Self::paper(ui.painter(), page_rect);
                 ui.painter().extend(self.backdrop_shapes(&ctx, i, page_rect, &|p| p, 1.0, 1.0));
                 self.draw_bands(ui, page_rect, i);
@@ -619,6 +626,7 @@ impl App {
                 self.editor_surface(ui, page_rect, i, !self.circling());
                 self.text_boxes(ui, page_rect, i);
                 self.draw_notes(ui, page_rect, i);
+                self.draw_peek(ui, page_rect, i, false);
                 self.pen_surface(ui, page_rect, i);
             }
         } else if self.slides_in(base) && self.appearance == Appearance::Book {
@@ -3159,6 +3167,153 @@ mod tests {
         assert!(h.app.doc.cast.is_empty());
         h.click_widget("See an example");
         assert!(h.app.cast_panel.example_shown(), "the example picture is read and shown");
+    }
+
+    impl Harness {
+        /// Mara and Tom in the cast, Mara named on the first page, with a peek drawn for each (as if
+        /// by Claude), ready to draw.
+        fn cast_who_can_peek(&mut self) -> (u64, u64) {
+            self.frames(3, vec![], Modifiers::NONE);
+            self.type_text("The mill stood by the river. Mara walked down to it in the rain.");
+            self.add_to_cast("Mara", "a girl of ten, red coat");
+            self.add_to_cast("Tom", "an old miller");
+            let ids: Vec<u64> = self.app.doc.cast.iter().map(|c| c.id).collect();
+            // Tom's coat is another colour, to tell them apart.
+            for (&id, svg) in ids.iter().zip([peek::tests::PUPPET.to_owned(), peek::tests::PUPPET.replace("#556", "#a33")]) {
+                self.app.fake_peek(id, &svg);
+                self.frames(1, vec![], Modifiers::NONE);
+            }
+            assert!(self.app.doc.cast.iter().all(|c| c.look().peek.is_some()), "each has a peek");
+            (ids[0], ids[1])
+        }
+
+        /// Frames until someone peeks out (their puppet is rendered on a thread first).
+        fn until_peeking(&mut self) {
+            for _ in 0..300 {
+                self.frames(1, vec![], Modifiers::NONE);
+                if self.app.peeks.peeking() {
+                    return;
+                }
+            }
+            panic!("no one peeked");
+        }
+
+        /// Where the part `k` of the peek was drawn last frame.
+        fn peek_part(&self, k: usize) -> Option<egui::Rect> {
+            self.peek_corners(k).map(|c| egui::Rect::from_points(&c))
+        }
+
+        /// The corners of part `k` of the peek last frame: the drawing's top left, top right,
+        /// bottom right, bottom left (left and right swapped on the left side, mirrored).
+        fn peek_corners(&self, k: usize) -> Option<[egui::Pos2; 4]> {
+            self.app.peeks.drawn.iter().find(|(p, _)| *p == k).map(|(_, c)| *c)
+        }
+    }
+
+    #[test]
+    fn someone_named_on_the_page_peeks_out_looks_at_their_name_blinks_and_ducks_away() {
+        let mut h = Harness::new();
+        let (mara, _) = h.cast_who_can_peek();
+        h.app.peek_now(mara);
+        h.until_peeking();
+        h.frames(70, vec![], Modifiers::NONE); // risen out
+        let page = h.app.last_page_rect;
+        let head = h.peek_part(1).expect("the head is drawn");
+        // "Mara" is at the left of the line: they come out on the left, from behind the page.
+        assert!(head.left() < page.left() && head.right() > page.left(), "half out from behind the left edge: {head:?} {page:?}");
+        let hand = h.peek_part(4).expect("a hand holds the edge");
+        assert!(hand.left() < page.left() && hand.right() > page.left(), "over the edge: {hand:?}");
+
+        // The eyes are on the line (onto the page, to the right), then on the writer.
+        let gaze = |h: &Harness| h.peek_part(2).unwrap().center().x - h.peek_part(1).unwrap().center().x;
+        let on_line = gaze(&h);
+        h.frames(((5.0 - 1.2) * 60.0) as usize, vec![], Modifiers::NONE);
+        let on_writer = gaze(&h);
+        assert!(on_line > on_writer + 1.0, "looking towards the name, then out: {on_line} then {on_writer}");
+
+        // It blinked on the way (the lids were drawn at some frame), and is gone after.
+        h.frames(90, vec![], Modifiers::NONE);
+        assert!(!h.app.peeks.peeking() && h.peek_part(1).is_none(), "ducked away");
+    }
+
+    #[test]
+    fn a_peek_leans_out_away_from_the_page_on_either_side() {
+        // Mara named at the start of the line: the left side. At its end: the right.
+        for (text, left) in [("Mara walked down to the mill.", true), ("It had rained all night on the roofs of the old town, said Mara.", false)] {
+            let mut h = Harness::new();
+            h.frames(3, vec![], Modifiers::NONE);
+            h.type_text(text);
+            h.add_to_cast("Mara", "a girl of ten");
+            let id = h.app.doc.cast[0].id;
+            h.app.fake_peek(id, peek::tests::PUPPET);
+            h.frames(1, vec![], Modifiers::NONE);
+            h.app.peek_now(id);
+            h.until_peeking();
+            h.frames(70, vec![], Modifiers::NONE);
+            let page = h.app.last_page_rect;
+            let [top_a, _, _, bottom_a] = h.peek_corners(1).unwrap();
+            // The drawing's left edge of the head: on the left side it is mirrored to the outer edge.
+            let out = if left { bottom_a.x - top_a.x } else { top_a.x - bottom_a.x };
+            assert!(out > 1.0, "{text:?}: the top of the head leans out, away from the page: {top_a:?} over {bottom_a:?}");
+            let head = h.peek_part(1).unwrap();
+            let edge = if left { page.left() } else { page.right() };
+            assert!(head.min.x < edge && head.max.x > edge, "{text:?}: out from behind the edge: {head:?} at {edge}");
+            assert!(head.height() < page.height() * 0.2, "{text:?}: small beside the page: {head:?}");
+        }
+    }
+
+    #[test]
+    fn a_peek_blinks_and_ducks_at_once_when_the_writer_types() {
+        let mut h = Harness::new();
+        let (mara, _) = h.cast_who_can_peek();
+        h.app.peek_now(mara);
+        h.until_peeking();
+        let mut blinked = false;
+        for _ in 0..150 {
+            h.frames(1, vec![], Modifiers::NONE);
+            blinked |= h.peek_part(3).is_some();
+        }
+        assert!(blinked, "the lids closed for a blink");
+        h.type_text(" More.");
+        assert!(h.app.doc.visible_text().ends_with("More."), "the typing goes into the story");
+        h.frames(60, vec![], Modifiers::NONE);
+        assert!(!h.app.peeks.peeking(), "and they duck away");
+    }
+
+    #[test]
+    fn the_cast_peeks_every_minute_or_two_while_the_writer_rests_and_not_when_turned_off() {
+        let mut h = Harness::new();
+        h.cast_who_can_peek();
+        h.wait(15.0);
+        assert!(!h.app.peeks.peeking(), "not in the first seconds");
+        // Writing all along (a key every two seconds), no one comes.
+        for _ in 0..200 {
+            h.wait(2.0);
+            h.type_text("x");
+            assert!(!h.app.peeks.peeking(), "not while writing");
+        }
+        assert!(!h.app.peeks.peeking(), "not while writing");
+        h.wait(5.0);
+        h.until_peeking();
+
+        h.frames(400, vec![], Modifiers::NONE);
+        h.app.doc.peeks = false;
+        h.wait(400.0);
+        h.wait(5.0);
+        assert!(!h.app.peeks.peeking(), "turned off, no one peeks");
+    }
+
+    #[test]
+    fn only_someone_named_on_the_page_peeks_out_when_the_page_names_anyone() {
+        let mut h = Harness::new();
+        let (mara, _) = h.cast_who_can_peek();
+        h.wait(200.0);
+        h.wait(5.0);
+        h.until_peeking();
+        let drawing = |id: u64| h.app.doc.cast.iter().find(|c| c.id == id).unwrap().look().peek.clone().unwrap();
+        assert!(h.app.peeks.peeking_with(&drawing(mara)), "Mara, named on the page; Tom is not");
+        h.frames(70, vec![], Modifiers::NONE);
+        assert!(h.peek_part(1).unwrap().left() < h.app.last_page_rect.left(), "on the side of her name");
     }
 
     impl Harness {

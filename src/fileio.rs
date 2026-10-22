@@ -109,6 +109,8 @@ struct LookEntry {
     look: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sheet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    peek: Option<String>,
 }
 
 /// A text box, pinned to char `at`; its text in one style.
@@ -156,6 +158,9 @@ pub struct DocFile {
     scenes: Vec<SceneEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     cast: Vec<CharacterEntry>,
+    /// The cast peeks out now and then (`peek.rs`); on unless turned off.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    peeks: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     story_notes: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -171,6 +176,14 @@ pub struct DocFile {
     /// Where page numbering changes (`numbers.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     numbers: Vec<crate::numbers::NumberMark>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_yes(b: &bool) -> bool {
+    *b
 }
 
 fn unknown(when: &u64) -> bool {
@@ -280,12 +293,17 @@ impl DocFile {
                 .map(|c| CharacterEntry {
                     name: c.name.clone(),
                     aliases: c.aliases.clone(),
-                    looks: c.looks.iter().map(|l| LookEntry { label: l.label.clone(), look: l.words.clone(), sheet: l.sheet.clone() }).collect(),
+                    looks: c
+                        .looks
+                        .iter()
+                        .map(|l| LookEntry { label: l.label.clone(), look: l.words.clone(), sheet: l.sheet.clone(), peek: l.peek.clone() })
+                        .collect(),
                     active: c.active,
                     look: String::new(),
                     sheet: None,
                 })
                 .collect(),
+            peeks: doc.peeks,
             story_notes: doc.story_notes.clone(),
             scratchpad: doc.scratchpad.clone(),
             id: String::new(),
@@ -318,12 +336,14 @@ impl DocFile {
         }
         doc.story_notes = self.story_notes;
         doc.scratchpad = self.scratchpad;
+        doc.peeks = self.peeks;
         for mut c in self.cast {
             if c.looks.is_empty() {
-                c.looks.push(LookEntry { label: String::new(), look: c.look, sheet: c.sheet });
+                c.looks.push(LookEntry { label: String::new(), look: c.look, sheet: c.sheet, peek: None });
             }
             let id = doc.take_cast_id();
-            let looks = c.looks.into_iter().map(|l| Look { id: doc.take_cast_id(), label: l.label, words: l.look, sheet: l.sheet }).collect::<Vec<_>>();
+            let looks = c.looks.into_iter().map(|l| Look { id: doc.take_cast_id(), label: l.label, words: l.look, sheet: l.sheet, peek: l.peek });
+            let looks = looks.collect::<Vec<_>>();
             let active = c.active.min(looks.len() - 1);
             doc.cast.push(Character { id, name: c.name, aliases: c.aliases, looks, active });
         }
@@ -679,6 +699,22 @@ mod tests {
         assert_eq!((mara.look().words.as_str(), mara.look().sheet.as_deref()), ("grey braid", Some("<svg/>")));
         let saved = serde_json::to_string(&DocFile::from_doc(&doc)).unwrap();
         assert!(saved.contains(r#""looks":[{"look":"grey braid","sheet":"<svg/>"}],"active":0"#), "{saved}");
+    }
+
+    #[test]
+    fn a_peek_and_whether_the_cast_peeks_are_saved_and_older_files_peek() {
+        let json = r#"{"version":2,"content":[{"text":"Mara\n","font":"F","size":12.0,"bold":false,"underline":false}],
+                       "cast":[{"name":"Mara","looks":[{"look":"grey braid","sheet":"<svg/>"}]}]}"#;
+        let mut doc = serde_json::from_str::<DocFile>(json).unwrap().into_doc();
+        assert!(doc.peeks && doc.cast[0].look().peek.is_none(), "older files: on, and no one drawn peeking yet");
+        let saved = serde_json::to_string(&DocFile::from_doc(&doc)).unwrap();
+        assert!(!saved.contains("peek"), "nothing written while unused: {saved}");
+
+        (doc.cast[0].looks[0].peek, doc.peeks) = (Some("<svg id='peek'/>".into()), false);
+        let saved = serde_json::to_string(&DocFile::from_doc(&doc)).unwrap();
+        let again = serde_json::from_str::<DocFile>(&saved).unwrap().into_doc();
+        assert_eq!(again.cast[0].look().peek.as_deref(), Some("<svg id='peek'/>"));
+        assert!(!again.peeks, "turned off stays off");
     }
 
     #[test]

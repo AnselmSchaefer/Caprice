@@ -47,7 +47,7 @@ impl Character {
     }
 
     /// Where `text` first calls them by one of their names, if it does.
-    fn first_named(&self, text: &str) -> Option<usize> {
+    pub(crate) fn first_named(&self, text: &str) -> Option<usize> {
         self.names().filter_map(|n| find_word(text, n)).min()
     }
 }
@@ -183,15 +183,20 @@ fn sheet_prompt(c: &Character, look: &Look) -> String {
     )
 }
 
-/// Ask Claude for a model sheet with `prompt`. Only a drawing that renders is kept.
-fn draw_sheet(prompt: &str, cancel: &AtomicBool) -> Result<Option<String>, String> {
+/// Ask Claude for a model sheet (or, with `peek`, a peek) with `prompt`. Only a drawing that
+/// renders is kept; a peek only with all its parts.
+fn draw_sheet(prompt: &str, peek: bool, cancel: &AtomicBool) -> Result<Option<String>, String> {
     let mut reply = String::new();
     match run_claude(MODEL, SYSTEM, prompt, "medium", cancel, &mut |t| reply.push_str(t))? {
         Outcome::Cancelled => Ok(None),
         Outcome::Refused => Err("Claude declined to draw this character".into()),
         Outcome::Finished => {
             let svg = extract_svg(&reply).ok_or("Claude's reply held no drawing")?;
-            rasterize(svg, SHEET_WIDTH)?;
+            if peek {
+                crate::peek::cut(svg)?;
+            } else {
+                rasterize(svg, SHEET_WIDTH)?;
+            }
             Ok(Some(svg.to_owned()))
         }
     }
@@ -220,6 +225,8 @@ struct SheetJob {
     cancel: Arc<AtomicBool>,
     character: u64,
     look: u64,
+    /// It is their peek being drawn (`peek.rs`), not their model sheet.
+    peek: bool,
 }
 
 impl Drop for SheetJob {
@@ -306,25 +313,25 @@ impl CastPanel {
 impl App {
     /// Start drawing the model sheet of look `look` of the character with id `id` (stopping one
     /// under way).
-    fn start_sheet(&mut self, ctx: &egui::Context, id: u64, look: u64) {
+    fn start_sheet(&mut self, ctx: &egui::Context, id: u64, look: u64, peek: bool) {
         let Some(c) = self.doc.cast.iter().find(|c| c.id == id) else { return };
         let Some(l) = c.looks.iter().find(|l| l.id == look) else { return };
-        let prompt = sheet_prompt(c, l);
-        let (tx, cancel) = self.sheet_job(id, look);
+        let prompt = if peek { crate::peek::puppet_prompt(c, l) } else { sheet_prompt(c, l) };
+        let (tx, cancel) = self.sheet_job(id, look, peek);
         self.cast_panel.asked = prompt.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            if let Some(result) = draw_sheet(&prompt, &cancel).transpose() {
+            if let Some(result) = draw_sheet(&prompt, peek, &cancel).transpose() {
                 let _ = tx.send(result);
             }
             ctx.request_repaint();
         });
     }
 
-    fn sheet_job(&mut self, id: u64, look: u64) -> (Sender<Result<String, String>>, Arc<AtomicBool>) {
+    fn sheet_job(&mut self, id: u64, look: u64, peek: bool) -> (Sender<Result<String, String>>, Arc<AtomicBool>) {
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        self.cast_panel.job = Some(SheetJob { rx, cancel: cancel.clone(), character: id, look });
+        self.cast_panel.job = Some(SheetJob { rx, cancel: cancel.clone(), character: id, look, peek });
         (tx, cancel)
     }
 
@@ -333,13 +340,20 @@ impl App {
     #[cfg(test)]
     pub fn fake_sheet(&mut self, id: u64, svg: &str) {
         let look = self.doc.cast.iter().find(|c| c.id == id).unwrap().look().id;
-        self.sheet_job(id, look).0.send(Ok(svg.to_owned())).unwrap();
+        self.sheet_job(id, look, false).0.send(Ok(svg.to_owned())).unwrap();
+    }
+
+    /// A peek `svg` for the look in use of the character with id `id`, as if Claude had just drawn it.
+    #[cfg(test)]
+    pub fn fake_peek(&mut self, id: u64, svg: &str) {
+        let look = self.doc.cast.iter().find(|c| c.id == id).unwrap().look().id;
+        self.sheet_job(id, look, true).0.send(Ok(svg.to_owned())).unwrap();
     }
 
     /// Take in a finished model sheet and the sheets rendered.
     fn update_cast(&mut self, ctx: &egui::Context) {
         if let Some(job) = &self.cast_panel.job {
-            let (id, look) = (job.character, job.look);
+            let (id, look, peek) = (job.character, job.look, job.peek);
             match job.rx.try_recv() {
                 Ok(Ok(svg)) => {
                     self.cast_panel.job = None;
@@ -348,14 +362,19 @@ impl App {
                         let several = c.looks.len() > 1;
                         if let Some(l) = c.looks.iter_mut().find(|l| l.id == look) {
                             let label = if several && !l.label.trim().is_empty() { format!(" ({})", l.label.trim()) } else { String::new() };
-                            self.status = format!("- {}{label} has a model sheet", c.name.trim());
-                            l.sheet = Some(svg);
+                            if peek {
+                                self.status = format!("- {}{label} can peek out now", c.name.trim());
+                                l.peek = Some(svg);
+                            } else {
+                                self.status = format!("- {}{label} has a model sheet", c.name.trim());
+                                l.sheet = Some(svg);
+                            }
                         }
                     }
                 }
                 Ok(Err(e)) => {
                     self.cast_panel.job = None;
-                    self.status = format!("- no model sheet: {e}");
+                    self.status = if peek { format!("- no peek: {e}") } else { format!("- no model sheet: {e}") };
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.cast_panel.job = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -388,6 +407,9 @@ impl App {
         enum Do {
             Add,
             Draw(u64, u64),
+            DrawPeek(u64, u64),
+            PeekNow(u64),
+            RemovePeek(u64, u64),
             Stop,
             RemoveSheet(u64, u64),
             AddLook(u64),
@@ -402,13 +424,14 @@ impl App {
         for svg in sheets {
             self.cast_panel.render(ctx, &svg);
         }
-        let drawing = self.cast_panel.job.as_ref().map(|j| j.look);
+        let drawing = self.cast_panel.job.as_ref().map(|j| (j.look, j.peek));
         let panel = &self.cast_panel;
         egui::Window::new("Cast")
             .id(Id::new("cast"))
             .open(&mut open)
             .default_width(400.0)
-            .default_height(560.0)
+            // Room for someone with a model sheet and all its buttons, without scrolling.
+            .default_height(620.0)
             .collapsible(false)
             .show(ctx, |ui| {
                 let about = "The people of the story. When a scene is painted, those its passage names are painted \
@@ -474,9 +497,10 @@ impl App {
                                     ui.add(egui::Image::new((t.id(), size)).bg_fill(egui::Color32::WHITE));
                                 }
                                 ui.horizontal(|ui| {
-                                    if drawing == Some(l.id) {
+                                    if let Some((_, peek)) = drawing.filter(|(look, _)| *look == l.id) {
                                         ui.spinner();
-                                        ui.label(egui::RichText::new("Drawing the model sheet\u{2026}").color(TEXT_DIM));
+                                        let doing = if peek { "Drawing them peeking out\u{2026}" } else { "Drawing the model sheet\u{2026}" };
+                                        ui.label(egui::RichText::new(doing).color(TEXT_DIM));
                                         if ui.small_button("Stop").clicked() {
                                             action = Some(Do::Stop);
                                         }
@@ -496,6 +520,25 @@ impl App {
                                         action = Some(Do::RemoveSheet(c.id, l.id));
                                     }
                                 });
+                                // Peeking out, drawn from the model sheet (`peek.rs`); one drawn shows without it too.
+                                if (l.sheet.is_some() || l.peek.is_some()) && drawing.is_none_or(|(look, _)| look != l.id) {
+                                    ui.horizontal(|ui| {
+                                        let label = if l.peek.is_some() { "Draw the peek again" } else { "Draw them peeking out" };
+                                        let tip = "Claude draws them from their model sheet, peeking, in parts to move";
+                                        let draw = ui.add_enabled(l.sheet.is_some(), egui::Button::new(label).small());
+                                        if draw.on_hover_text(tip).on_disabled_hover_text("Draw a model sheet first").clicked() {
+                                            action = Some(Do::DrawPeek(c.id, l.id));
+                                        }
+                                        if l.peek.is_some() {
+                                            if ui.small_button("Peek now").on_hover_text("See them peek out from behind the page").clicked() {
+                                                action = Some(Do::PeekNow(c.id));
+                                            }
+                                            if ui.small_button("Remove the peek").clicked() {
+                                                action = Some(Do::RemovePeek(c.id, l.id));
+                                            }
+                                        }
+                                    });
+                                }
                             }
                             ui.separator();
                             ui.horizontal(|ui| {
@@ -519,7 +562,14 @@ impl App {
                 self.doc.cast.push(Character::new(id, look, ""));
                 ctx.memory_mut(|m| m.request_focus(Id::new(("cast_name", id))));
             }
-            Some(Do::Draw(id, look)) => self.start_sheet(ctx, id, look),
+            Some(Do::Draw(id, look)) => self.start_sheet(ctx, id, look, false),
+            Some(Do::DrawPeek(id, look)) => self.start_sheet(ctx, id, look, true),
+            Some(Do::PeekNow(id)) => self.peek_now(id),
+            Some(Do::RemovePeek(id, look)) => {
+                if let Some(l) = self.doc.cast.iter_mut().filter(|c| c.id == id).flat_map(|c| c.looks.iter_mut()).find(|l| l.id == look) {
+                    l.peek = None;
+                }
+            }
             Some(Do::Stop) => self.cast_panel.job = None,
             Some(Do::RemoveSheet(id, look)) => {
                 if let Some(l) = self.doc.cast.iter_mut().filter(|c| c.id == id).flat_map(|c| c.looks.iter_mut()).find(|l| l.id == look) {
@@ -531,7 +581,7 @@ impl App {
                 if let Some(c) = self.doc.cast.iter_mut().find(|c| c.id == id) {
                     // It starts from the words of the look in use, to change what is different.
                     let words = c.look().words.clone();
-                    c.looks.push(Look { id: look, label: String::new(), words, sheet: None });
+                    c.looks.push(Look { id: look, label: String::new(), words, sheet: None, peek: None });
                     ctx.memory_mut(|m| m.request_focus(Id::new(("cast_label", look))));
                 }
             }
@@ -541,7 +591,7 @@ impl App {
                 }
             }
             Some(Do::DeleteLook(id, look)) => {
-                if drawing == Some(look) {
+                if drawing.is_some_and(|(l, _)| l == look) {
                     self.cast_panel.job = None;
                 }
                 if let Some(c) = self.doc.cast.iter_mut().find(|c| c.id == id && c.looks.len() > 1) {
@@ -606,7 +656,7 @@ mod tests {
     use super::*;
 
     fn character(name: &str, aliases: &str, look: &str, sheet: Option<&str>) -> Character {
-        let look = Look { id: 2, label: String::new(), words: look.into(), sheet: sheet.map(Into::into) };
+        let look = Look { id: 2, label: String::new(), words: look.into(), sheet: sheet.map(Into::into), peek: None };
         Character { id: 1, name: name.into(), aliases: aliases.into(), looks: vec![look], active: 0 }
     }
 
@@ -665,9 +715,25 @@ mod tests {
         crate::claude::allow_live();
         let mara = character("Mara", "", "a woman of about sixty, tall and wiry, long grey braid, red wool scarf, \
                                          long dark-green oilskin coat, black boots, carries a brass lantern", None);
-        let svg = draw_sheet(&sheet_prompt(&mara, mara.look()), &AtomicBool::new(false)).unwrap().unwrap();
+        let svg = draw_sheet(&sheet_prompt(&mara, mara.look()), false, &AtomicBool::new(false)).unwrap().unwrap();
         let path = std::env::temp_dir().join("caprice-live-sheet.svg");
         std::fs::write(&path, svg).unwrap();
         println!("model sheet saved to {}", path.display());
+    }
+
+    /// Claude draws Mara peeking, from a model sheet it drew first; the drawing has all its parts.
+    /// `cargo test live_peek -- --ignored --nocapture`, then look at the SVG saved.
+    #[test]
+    #[ignore]
+    fn live_peek() {
+        crate::claude::allow_live();
+        let mut mara = character("Mara", "", "a girl of ten, freckles, short red hair, a blue smock", None);
+        let sheet = draw_sheet(&sheet_prompt(&mara, mara.look()), false, &AtomicBool::new(false)).unwrap().unwrap();
+        mara.looks[0].sheet = Some(sheet);
+        let svg = draw_sheet(&crate::peek::puppet_prompt(&mara, mara.look()), true, &AtomicBool::new(false)).unwrap().unwrap();
+        assert!(crate::peek::cut(&svg).is_ok(), "all its parts are there");
+        let path = std::env::temp_dir().join("caprice-live-peek.svg");
+        std::fs::write(&path, svg).unwrap();
+        println!("peek saved to {}", path.display());
     }
 }

@@ -404,6 +404,8 @@ pub struct Look {
     pub words: String,
     /// The model sheet (SVG), once drawn: the figures scenes copy them from.
     pub sheet: Option<String>,
+    /// Them peeking out from behind a page, once drawn: an SVG in parts to move (`peek.rs`).
+    pub peek: Option<String>,
 }
 
 impl Character {
@@ -496,6 +498,8 @@ pub struct Doc {
     pub next_scene_id: u64,
     /// The people of the story, in the order the writer added them.
     pub cast: Vec<Character>,
+    /// Those of them with a peek drawn peek out from behind the pages now and then.
+    pub peeks: bool,
     /// The next id for someone of the cast or one of their looks.
     pub next_cast_id: u64,
     /// What the writer wants Claude to know about the story whenever it is asked about it.
@@ -524,6 +528,7 @@ impl Doc {
             scenes: Vec::new(),
             next_scene_id: 1,
             cast: Vec::new(),
+            peeks: true,
             next_cast_id: 1,
             story_notes: String::new(),
             scratchpad: String::new(),
