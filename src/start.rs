@@ -24,7 +24,7 @@ use crate::theme::{self, DESK, INK, PAPER, TEXT, TEXT_DIM};
 /// How many stories the list remembers.
 const REMEMBER: usize = 8;
 /// How long (seconds) the sheet chosen takes to fly to the desk.
-pub const FLIGHT: f64 = 0.75;
+pub const FLIGHT: f64 = 1.1;
 /// The widest the page's column grows, and the room between the cards.
 const COLUMN: f32 = 940.0;
 const GAP: f32 = 18.0;
@@ -606,18 +606,30 @@ impl App {
         ctx.request_repaint();
         let from = flight.from.clone();
         let screen = ui.max_rect();
+        // First the welcome fades, leaving the sheet chosen; it flies on alone and lands on the page.
+        let flying = from.is_some();
+        let gone = if flying { 0.4 } else { 0.7 };
+        let land = ((s - 0.8) / 0.2).clamp(0.0, 1.0);
+        if flying && land == 0.0 {
+            // Until it lands, the page under it is desk: the sheet becomes the page, not a second one.
+            // Landed, it lies just over the page, so it fades white on white (fading both went grey).
+            let cover = self.last_page_rect.expand2(vec2(80.0, 30.0));
+            ui.painter().rect_filled(cover, 0.0, DESK);
+        }
         let layer = LayerId::new(Order::Foreground, Id::new("welcome_leaving"));
         let mut over = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
-        over.set_opacity(1.0 - ease((s / 0.7).min(1.0)));
+        over.set_opacity(1.0 - ease((s / gone).min(1.0)));
         self.welcome_page(&mut over, false);
         if let Some((rect, sheet)) = from {
-            let e = ease(s);
+            let e = ease((s / 0.8).min(1.0));
             let to = self.last_page_rect;
             let at = Rect::from_min_max(rect.min.lerp(to.min, e), rect.max.lerp(to.max, e));
             // Paper over paper at the end: it fades into the page itself, which lies just there.
             let mut painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("welcome_sheet"))).with_clip_rect(screen);
-            painter.multiply_opacity(1.0 - ((s - 0.75) / 0.25).clamp(0.0, 1.0));
-            sheet.draw(&painter, at, 1.0 - e, 1.0 - e);
+            painter.multiply_opacity(1.0 - land);
+            // It rises off the welcome, then settles onto the desk.
+            let lift = (e * std::f32::consts::PI).sin();
+            sheet.draw(&painter, at, lift, 1.0 - e);
         }
     }
 }
