@@ -973,12 +973,15 @@ through the same job as model sheets, `SheetJob::peek`).
   else in its chapter, else anyone with a peek; looking at where their name first stands on the
   page, else the caret, from the side nearer it. "Peek now" in the Cast window asks for someone at
   once. While a peek is due it asks for a frame then (`request_repaint_after`), and every frame while
-  one is under way. "Cast peeks out" in the Scene menu turns it off (`Doc::peeks`, saved).
+  one is under way. "Cast peeks out" in the Scene menu turns it off (`Doc::peeks`, saved); it
+  shows only once someone has a peek drawn, so the first peek is a surprise and the way to stop it
+  is there from then on.
 - Tests: in `peek.rs` `a_puppet_is_cut_into_its_parts_each_where_it_lies`,
   `a_peek_rises_looks_blinks_glances_and_ducks`; and
   `someone_named_on_the_page_peeks_out_looks_at_their_name_blinks_and_ducks_away`,
   `a_peek_leans_out_away_from_the_page_on_either_side`,
   `a_peek_blinks_and_ducks_at_once_when_the_writer_types`,
+  `the_switch_to_stop_peeking_shows_only_once_someone_can_peek`,
   `the_cast_peeks_every_minute_or_two_while_the_writer_rests_and_not_when_turned_off`,
   `only_someone_named_on_the_page_peeks_out_when_the_page_names_anyone`. The prompt with the real
   Claude: `live_peek` (ignored).

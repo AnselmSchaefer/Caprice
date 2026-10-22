@@ -851,6 +851,8 @@ impl App {
         let count = self.doc.scenes.iter().filter(|s| !s.versions.is_empty()).count();
         let has_picture = self.scene_here().is_some();
         let mut peeks = self.doc.peeks;
+        // The switch shows once someone can peek out: until then it would only give the surprise away.
+        let can_peek = self.doc.cast.iter().any(|c| c.looks.iter().any(|l| l.peek.is_some()));
         let b = &mut self.backdrop;
         let title = if b.job.is_some() { "Scene \u{b7} painting\u{2026}" } else { "Scene" };
         let (mut mode, mut describe, mut stop, mut save, mut cast) = (b.mode, false, false, false, false);
@@ -876,8 +878,10 @@ impl App {
                 cast = true;
                 ui.close();
             }
-            let peek_tip = "Those of the cast with a peek drawn look out from behind the page every minute or two, while you are not writing";
-            ui.checkbox(&mut peeks, "Cast peeks out").on_hover_text(peek_tip);
+            if can_peek {
+                let peek_tip = "Those of the cast with a peek drawn look out from behind the page every minute or two, while you are not writing";
+                ui.checkbox(&mut peeks, "Cast peeks out").on_hover_text(peek_tip);
+            }
             ui.separator();
             ui.add_enabled(count > 0, egui::Checkbox::new(&mut b.visible, "Show pictures"));
             if ui.add_enabled(has_picture, egui::Button::new("Save picture as\u{2026}").frame(false)).clicked() {

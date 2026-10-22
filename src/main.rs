@@ -3263,6 +3263,25 @@ mod tests {
     }
 
     #[test]
+    fn the_switch_to_stop_peeking_shows_only_once_someone_can_peek() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Mara walked down to the mill.");
+        h.add_to_cast("Mara", "a girl of ten");
+        h.click_widget("Scene");
+        assert!(h.widget_rect("Cast peeks out").is_none(), "no one can peek yet: nothing gives the surprise away");
+        h.key(Key::Escape, Modifiers::NONE);
+
+        let id = h.app.doc.cast[0].id;
+        h.app.fake_peek(id, peek::tests::PUPPET);
+        h.frames(2, vec![], Modifiers::NONE);
+        h.click_widget("Scene");
+        assert!(h.widget_rect("Cast peeks out").is_some(), "now she can, it can be turned off");
+        h.click_widget("Cast peeks out");
+        assert!(!h.app.doc.peeks, "turned off");
+    }
+
+    #[test]
     fn a_peek_blinks_and_ducks_at_once_when_the_writer_types() {
         let mut h = Harness::new();
         let (mara, _) = h.cast_who_can_peek();
