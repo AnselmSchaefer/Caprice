@@ -605,7 +605,12 @@ impl App {
             Key::Backspace => self.backspace(ctx, word),
             Key::Delete => self.delete_forward(ctx, word),
             Key::Enter if !m.command => self.press_enter(ctx),
-            Key::Tab if !m.command => self.insert_text(ctx, "\t"),
+            Key::Tab if !m.command => {
+                self.insert_text(ctx, "\t");
+                // The tab is the story's: egui would also move the keyboard to the next widget,
+                // which then took the next keys (the caret stood still until one got through).
+                ctx.memory_mut(|mem| mem.move_focus(egui::FocusDirection::None));
+            }
             Key::A if m.command => self.select_all(ctx),
             _ => {}
         }

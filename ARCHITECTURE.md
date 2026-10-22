@@ -133,7 +133,8 @@ including the part on earlier pages.
 
 `paginate_after` keeps the pages before the edit and stops once a new page starts where an old one
 did, shifting the rest. Anything that can change a page's content from far away breaks that
-shortcut unless handled: today the contents (rebuilt on every edit, R6) and drop caps (R2).
+shortcut unless handled: today the contents (rebuilt on every edit, R6) and drop caps (R2; the
+paragraphs beside a cap are on its page, so the reflow from there covers them, R4).
 
 - **If you add something whose size depends on text elsewhere,** make `paginate_after` account for
   it, and add an "incremental equals full" test for it.
@@ -156,6 +157,15 @@ rounds line heights to whole pixels and can **wrap a word differently**. So:
   tail with a line left empty beside it (it did). Pagination and drawing both take the block from
   `DropCap`. Tests: `the_cap_sinks_as_many_lines_deep_as_set`,
   `a_cap_hanging_below_its_line_has_the_next_line_beside_it_and_no_gap_under_it`.
+- **A paragraph that ends beside its cap leaves the room there to the next ones** (`Float`): they
+  go on beside the letter, narrower, until it ends (`DropCap::bottom`); one that runs past it goes
+  on at full width below. Enter beside a cap used to send the new line below the whole letter.
+  How much of a paragraph goes beside is worked out at page size (`Doc::beside_cap`) by
+  `next_span` and `layout_page` alike, which carry the room from one paragraph to the next on the
+  page; anything that changes how those two walk a page keeps them in step. A picture or another
+  cap ends the room. Clicking right of the cap finds the piece beside it at that height (`hit`).
+  Tests: `enter_beside_a_drop_cap_goes_on_to_the_next_line_beside_it` (with full pagination
+  compared).
 - **If you add anything drawn on a page,** measure it at page size and multiply by the scale; never
   let its height come from the zoomed layout.
 - Known gap: when zoomed text wraps into one line more than at page size, its paragraph is a line
@@ -323,6 +333,7 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
 | Modifiers unreliable on Hyprland | Track Ctrl from key events | `view.rs` |
 | The UI font has no symbols like ✕ (drawn as an empty box) | Draw icons with lines, labelled for tests | `ui.rs::paint_icon`, `search.rs::bar_button` |
 | `ctx.fonts_mut` inside `ctx.fonts_mut` hangs (the context's lock is taken twice) | Build a job (`paragraph_job`, `run_format`, which ask the fonts for a row's height) before taking the fonts to lay it out. Drop caps with line spacing hung: `a_new_novel_begins_on_book_pages_at_chapter_one_and_a_journal_at_today` | `dropcap.rs::drop_cap` |
+| Tab moves egui's keyboard focus to the next widget, even when the page took the key | The editor cancels the move when it types a tab (`move_focus(FocusDirection::None)`); the caret is hidden while a widget has the keyboard. `a_tab_typed_beside_a_drop_cap_moves_the_caret_at_once` | `editor.rs` (keys) |
 | `set_fonts` takes effect the next frame; a family named before then panics | `FontBook::ensure` in mid-frame with `immediate: false`, and draw with `family_for` (the usual font until it is there). `fonts::LOADED` is one for the process, so tests running alongside share it: a test that loads a font for the first time is the only one to | `fonts.rs`, `start.rs::welcome_page` |
 
 Re-check every one after upgrading egui.

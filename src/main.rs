@@ -1000,6 +1000,69 @@ mod tests {
         assert!(beside.galley.rows.len() == 3);
     }
 
+    /// A chapter with a drop cap three lines deep, beginning "It was nearly midnight."; the caret after it.
+    fn short_paragraph_beside_a_cap(h: &mut Harness) {
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Chapter One");
+        let ctx = h.ctx.clone();
+        h.app.set_para(&ctx, |p| p.set_chapter_title(true));
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("It was nearly midnight.");
+        let setup = model::PageSetup { drop_cap_lines: 3, ..h.app.doc.setup.clone() };
+        h.app.set_setup(&ctx, setup);
+    }
+
+    #[test]
+    fn enter_beside_a_drop_cap_goes_on_to_the_next_line_beside_it() {
+        let mut h = Harness::new();
+        short_paragraph_beside_a_cap(&mut h);
+        let ctx = h.ctx.clone();
+        let line_top = |h: &Harness| h.app.doc.layout_page(&ctx, 0, 1.0, &[]).caret_rect(h.app.caret, h.app.prefer_next).top();
+        let first = line_top(&h);
+        h.key(Key::Enter, Modifiers::NONE);
+        let second = line_top(&h);
+        h.type_text("The telephone rang.");
+        h.key(Key::Enter, Modifiers::NONE);
+        let third = line_top(&h);
+        h.type_text("He let it ring.");
+
+        let layout = h.app.doc.layout_page(&ctx, 0, 1.0, &[]);
+        let cap = layout.paras.iter().find(|p| p.cap).unwrap();
+        let pitch = second - first;
+        assert!(pitch > 5.0 && pitch < 30.0, "the next line, not below the cap: {first} then {second}");
+        assert!((third - second - pitch).abs() < 1.0, "and the one after: {third}");
+        for words in ["The telephone rang.", "He let it ring."] {
+            let at = h.app.doc.visible_text().find(words).unwrap();
+            let p = layout.paras.iter().find(|p| p.start <= at && at < p.end).unwrap();
+            assert!(p.beside && p.x > 10.0 && p.y < cap.y + cap.height, "{words:?} beside the cap");
+        }
+
+        // Clicking there finds them, and pagination from scratch agrees.
+        let hit = layout.hit(egui::vec2(layout.paras.iter().find(|p| p.beside).unwrap().x + 20.0, third + 2.0));
+        let he = h.app.doc.visible_text().find("He let").unwrap();
+        assert!((he..=he + 15).contains(&hit), "a click on the third line beside the cap is in its paragraph: {hit}");
+        let spans = h.app.doc.spans.clone();
+        h.app.doc.full_paginate(&ctx, &h.app.typing.clone());
+        assert_eq!(h.app.doc.spans, spans);
+    }
+
+    #[test]
+    fn a_tab_typed_beside_a_drop_cap_moves_the_caret_at_once() {
+        let mut h = Harness::new();
+        short_paragraph_beside_a_cap(&mut h);
+        let ctx = h.ctx.clone();
+        let caret_x = |h: &Harness| h.app.doc.layout_page(&ctx, 0, 1.0, &[]).caret_rect(h.app.caret, h.app.prefer_next).left();
+        let before = caret_x(&h);
+        h.key(Key::Tab, Modifiers::NONE);
+        let after = caret_x(&h);
+        assert!(h.app.doc.visible_text().ends_with('\t'), "a tab was typed");
+        assert!(after > before + 5.0, "the caret is after the tab: {before} then {after}");
+        h.type_text("x");
+        let x_at = caret_x(&h);
+        assert!(x_at > after, "and the x after that: {after} then {x_at}");
+        assert!(h.app.doc.visible_text().ends_with("\tx"), "the keyboard stayed on the page");
+    }
+
     #[test]
     fn the_contents_pages_go_before_the_story_and_hold_none_of_its_text() {
         let mut h = Harness::new();

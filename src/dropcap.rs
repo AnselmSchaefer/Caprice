@@ -29,6 +29,26 @@ pub struct DropCap {
     pub beside: usize,
     /// Height of the cap and the lines beside it together.
     pub height: f32,
+    /// Where the letter's ink ends below the paragraph's top: until there, the paragraphs after
+    /// a short one go on beside it (`Float`).
+    pub bottom: f32,
+    /// Where the lines of its own paragraph beside it end.
+    pub beside_height: f32,
+}
+
+/// The room left beside a drop cap once its paragraph has ended, in page points from the top
+/// and left of the writing area: the paragraphs after it go on there, narrower, until `bottom`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Float {
+    pub bottom: f32,
+    pub indent: f32,
+}
+
+impl Float {
+    /// The room beside the cap of a paragraph at `top`, if its own text leaves some.
+    pub fn after(cap: &DropCap, top: f32) -> Option<Float> {
+        (cap.beside_height < cap.bottom - 0.5).then_some(Float { bottom: top + cap.bottom, indent: cap.indent })
+    }
 }
 
 /// Is the byte a paragraph terminator? (`\n` and the page break are both one byte.)
@@ -148,7 +168,35 @@ impl Doc {
         let n = reached.max(lines).min(narrow.rows.len());
         let beside: usize = narrow.rows[..n].iter().map(|r| usize::from(r.row.char_count_excluding_newline())).sum();
         let beside_bottom = if beside == 0 { 0.0 } else { narrow.rows[n - 1].pos.y + narrow.rows[n - 1].size.y };
-        Some(DropCap { size, dy, indent, beside, height: cap_bottom.max(beside_bottom) })
+        let height = cap_bottom.max(beside_bottom);
+        Some(DropCap { size, dy, indent, beside, height, bottom: cap_bottom, beside_height: beside_bottom })
+    }
+
+    /// How much of the paragraph from (char `c`, byte `b`), on a page until `end` (char, byte),
+    /// goes beside a cap whose room reaches `room` below where it starts: its chars on the rows
+    /// that start there, and their height. Worked out at page size, for pagination and drawing alike.
+    pub fn beside_cap(&self, ctx: &egui::Context, (c, b): (usize, usize), end: (usize, usize), room: f32, indent: f32) -> (usize, f32) {
+        let (tc, _) = self.term_from(c, b);
+        let term = &self.flow.styles[tc];
+        let ec = end.0.min(c + WINDOW);
+        let eb = b + self.flow.text[b..].char_indices().nth(ec - c).map_or(end.1 - b, |(o, _)| o);
+        let spec = PieceSpec {
+            text: &self.flow.text[b..eb],
+            styles: &self.flow.styles[c..ec],
+            term,
+            attrs: term.para,
+            scale: 1.0,
+            content_width: self.setup.content_size().x - indent,
+            marks: &[],
+            invisible: false,
+            marker: None,
+            image: None,
+            contents: None,
+        };
+        let rows = layout_piece(ctx, &spec, 0, ec - c, 0.0).row_table();
+        let n = rows.iter().take_while(|r| r.y < room - 0.5).count().max(1).min(rows.len());
+        let chars = rows[..n].iter().map(|r| r.chars).sum();
+        (chars, rows.get(n - 1).map_or(0.0, |r| r.y + r.height))
     }
 }
 
@@ -172,38 +220,79 @@ fn keep_chars(p: &mut ParaLayout, n: usize) {
     p.height = bottom;
 }
 
+/// The chars `from..to` of a piece, `width` wide, without its list marker.
+fn sub<'a>(spec: &PieceSpec<'a>, from: usize, to: usize, marks: &'a [Mark], width: f32) -> PieceSpec<'a> {
+    let byte_at = |k: usize| spec.text.char_indices().nth(k).map_or(spec.text.len(), |(o, _)| o);
+    PieceSpec {
+        text: &spec.text[byte_at(from)..byte_at(to)],
+        styles: &spec.styles[from..to],
+        content_width: width,
+        marks,
+        invisible: false,
+        marker: None,
+        image: None,
+        contents: None,
+        ..*spec
+    }
+}
+
+/// The marks of a piece that fall on its chars `from..to`, counted from `from`.
+fn marks_in(spec: &PieceSpec, from: usize, to: usize) -> Vec<Mark> {
+    spec.marks
+        .iter()
+        .filter(|m| m.range.end > from && m.range.start < to)
+        .map(|m| Mark { range: m.range.start.max(from) - from..m.range.end.min(to) - from, color: m.color })
+        .collect()
+}
+
+/// The first `chars` of a piece laid out narrow, right of `indent` (page points), and the rest
+/// below them at full width, from `y`. The narrow lines are justified like the paragraph's
+/// others, though egui never justifies a layout's last line: a little of the rest is laid out with
+/// them, then dropped again.
+fn narrow_then_rest(ctx: &egui::Context, spec: &PieceSpec, (from, chars): (usize, usize), indent: f32, local_start: usize, y: f32) -> Vec<ParaLayout> {
+    let sc = spec.scale;
+    let total = spec.styles.len();
+    let split = (from + chars).min(total);
+    let mut pieces = Vec::new();
+    let mut below = y;
+    // An empty paragraph beside a cap still has its line there, for the caret.
+    if split > from || (from == 0 && total == 0) {
+        let more = if spec.attrs.align == Align::Justify && split < total { (split + 200).min(total) } else { split };
+        let marks = marks_in(spec, from, more);
+        let narrow = PieceSpec { marker: if from == 0 { spec.marker.clone() } else { None }, ..sub(spec, from, more, &marks, spec.content_width - indent * sc) };
+        let mut p = layout_piece(ctx, &narrow, local_start + from, local_start + split, y);
+        keep_chars(&mut p, split - from);
+        p.x += indent * sc;
+        p.beside = true;
+        below = y + p.height;
+        pieces.push(p);
+    }
+    if split < total {
+        let marks = marks_in(spec, split, total);
+        pieces.push(layout_piece(ctx, &sub(spec, split, total, &marks, spec.content_width), local_start + split, local_start + total, below));
+    }
+    pieces
+}
+
+/// Lay out a paragraph that starts beside a drop cap above it (`Float`): its first `chars` beside
+/// the cap, the rest below at full width. `local_start` is where it begins on the page, `y` its top.
+pub fn layout_beside(ctx: &egui::Context, spec: &PieceSpec, chars: usize, indent: f32, local_start: usize, y: f32) -> Vec<ParaLayout> {
+    let mut pieces = narrow_then_rest(ctx, spec, (0, chars), indent, local_start, y);
+    if let Some(p) = pieces.first_mut() {
+        p.starts_paragraph = true;
+    }
+    pieces
+}
+
 /// Lay out a paragraph with a drop cap: the cap, the lines beside it and the rest (of what is on
 /// this page). `spec` holds the paragraph's text on this page, which starts with the cap.
 /// `local_start` is the page-local char where it begins, `y` its top.
 pub fn layout_with_cap(ctx: &egui::Context, spec: &PieceSpec, cap: DropCap, local_start: usize, y: f32) -> Vec<ParaLayout> {
     let sc = spec.scale;
-    let chars = spec.styles.len();
-    let marks_in = |from: usize, to: usize| -> Vec<Mark> {
-        spec.marks
-            .iter()
-            .filter(|m| m.range.end > from && m.range.start < to)
-            .map(|m| Mark { range: m.range.start.max(from) - from..m.range.end.min(to) - from, color: m.color })
-            .collect()
-    };
-    fn sub<'a>(spec: &PieceSpec<'a>, from: usize, to: usize, marks: &'a [Mark], width: f32) -> PieceSpec<'a> {
-        let byte_at = |k: usize| spec.text.char_indices().nth(k).map_or(spec.text.len(), |(o, _)| o);
-        PieceSpec {
-            text: &spec.text[byte_at(from)..byte_at(to)],
-            styles: &spec.styles[from..to],
-            content_width: width,
-            marks,
-            invisible: false,
-            marker: None,
-            image: None,
-            contents: None,
-            ..*spec
-        }
-    }
-
     // The cap: one big letter, moved down onto the baseline of the last line beside it.
     let first = spec.text.chars().next().unwrap_or(' ');
     let st = cap_style(&spec.styles[0], cap.size);
-    let color = marks_in(0, 1).last().map_or(Color32::TRANSPARENT, |m| m.color);
+    let color = marks_in(spec, 0, 1).last().map_or(Color32::TRANSPARENT, |m| m.color);
     let mut job = egui::text::LayoutJob::default();
     job.append(&first.to_string(), 0.0, run_format(ctx, &st, sc, color, ParaAttrs::default()));
     let mut galley = ctx.fonts_mut(|f| f.layout_job(job));
@@ -232,27 +321,14 @@ pub fn layout_with_cap(ctx: &egui::Context, spec: &PieceSpec, cap: DropCap, loca
         contents: None,
     }];
 
-    // The lines beside it, then the rest at full width.
-    let split = (1 + cap.beside).min(chars);
-    if split > 1 {
-        // egui never justifies a layout's last line. So that the last line beside the cap is
-        // justified like the others, lay out a little of the rest with it, then drop that again.
-        let more = if spec.attrs.align == Align::Justify { (split + 200).min(chars) } else { split };
-        let marks = marks_in(1, more);
-        let mut p = layout_piece(ctx, &sub(spec, 1, more, &marks, spec.content_width - cap.indent * sc), local_start + 1, local_start + split, y);
-        keep_chars(&mut p, split - 1);
-        p.x += cap.indent * sc;
-        p.beside = true;
-        pieces.push(p);
+    // The lines beside it, then the rest at full width below the cap.
+    let mut rest = narrow_then_rest(ctx, spec, (1, cap.beside), cap.indent, local_start, y);
+    if let Some(r) = rest.last_mut().filter(|r| !r.beside) {
+        r.y = y + height;
     }
-    if split < chars {
-        let marks = marks_in(split, chars);
-        let rest = layout_piece(ctx, &sub(spec, split, chars, &marks, spec.content_width), local_start + split, local_start + chars, y + height);
-        pieces.push(rest);
-    }
+    pieces.extend(rest);
     pieces
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -8,7 +8,7 @@ use eframe::egui::{self, Color32, FontId, Rect, Stroke, TextFormat, Vec2, pos2, 
 use egui::text::CCursor;
 
 use crate::contents::{ContentsBlock, Entry, layout_contents};
-use crate::dropcap::layout_with_cap;
+use crate::dropcap::{Float, layout_beside, layout_with_cap};
 use crate::fonts::family_for;
 use crate::model::{Align, CHAPTER_TITLE_SCALE, Doc, IMAGE_CHAR, ListKind, PAGE_BREAK, ParaAttrs, Style, is_terminator};
 use crate::theme::INK;
@@ -447,6 +447,9 @@ impl Doc {
         let mut y = 0.0;
         let (mut c, mut b) = (sp.start, sp.bstart);
         let mut number: Option<usize> = None; // the number of the last numbered paragraph seen
+        // The room beside a drop cap whose paragraph ended before the letter did (page points, as
+        // pagination works it out: `y / scale` is where we are at page size).
+        let mut float: Option<Float> = None;
 
         while c < sp.end || (c == sp.end && hard_end) {
             let (tc, tb) = self.term_from(c, b);
@@ -494,13 +497,41 @@ impl Doc {
                 image: self.picture_in(c, pe_c),
                 contents: None,
             };
-            match self.drop_cap(ctx, c, b).filter(|_| at_para_start) {
-                Some(cap) => {
-                    let pieces = layout_with_cap(ctx, &spec, cap, local(c), y);
-                    y = pieces.iter().map(|p| p.y + p.height).fold(y, f32::max);
+            let cap = self.drop_cap(ctx, c, b).filter(|_| at_para_start);
+            let beside = float.take().and_then(|f| {
+                let here = y / scale;
+                if here < f.bottom - 0.5 && cap.is_none() && !is_picture {
+                    Some((f, self.beside_cap(ctx, (c, b), (pe_c, pe_b), f.bottom - here, f.indent)))
+                } else {
+                    y = y.max(f.bottom * scale);
+                    None
+                }
+            });
+            match (cap, beside) {
+                (_, Some((f, (chars, h)))) => {
+                    let mut pieces = layout_beside(ctx, &spec, chars, f.indent, local(c), y);
+                    // The lines beside take the height worked out at page size (R4).
+                    y += h * scale;
+                    for p in pieces.iter_mut().filter(|p| !p.beside) {
+                        p.y = y;
+                        y += p.height;
+                    }
+                    if c + chars >= pe_c {
+                        float = Some(f);
+                    }
                     paras.extend(pieces);
                 }
-                None => {
+                (Some(cap), None) => {
+                    let top = y;
+                    let pieces = layout_with_cap(ctx, &spec, cap, local(c), y);
+                    y = pieces.iter().map(|p| p.y + p.height).fold(y, f32::max);
+                    if c + 1 + cap.beside >= pe_c && let Some(f) = Float::after(&cap, top / scale) {
+                        y = top + cap.beside_height * scale;
+                        float = Some(f);
+                    }
+                    paras.extend(pieces);
+                }
+                (None, None) => {
                     let mut p = layout_piece(ctx, &spec, local(c), local(pe_c), y);
                     p.starts_paragraph = at_para_start;
                     y += p.height;
@@ -588,9 +619,13 @@ impl PageLayout {
         let Some(mut k) = self.paras.iter().position(|p| pos.y < p.y + p.height).or(self.paras.len().checked_sub(1)) else {
             return 0;
         };
-        // Right of a drop cap are the lines beside it.
-        if self.paras.get(k + 1).is_some_and(|n| n.beside && pos.x >= n.x) {
-            k += 1;
+        // Right of a drop cap are the lines beside it: of its own paragraph, or of the ones after
+        // it there, whichever are at that height.
+        if self.paras[k].cap {
+            let beside = self.paras.iter().enumerate().skip(k + 1).take_while(|(_, n)| n.beside);
+            if let Some((j, _)) = beside.filter(|(_, n)| pos.x >= n.x && n.y <= pos.y).last() {
+                k = j;
+            }
         }
         let p = &self.paras[k];
         if let Some(block) = p.block() {

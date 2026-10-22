@@ -3,6 +3,7 @@
 
 use eframe::egui;
 
+use crate::dropcap::Float;
 use crate::layout::{PieceSpec, layout_piece};
 use crate::model::{Doc, PAGE_BREAK, Span, Style};
 
@@ -101,19 +102,47 @@ impl Doc {
             }
             Ok((tc + 1, tb + 1))
         };
+        // The room beside a drop cap whose paragraph ended before the letter did.
+        let mut float: Option<Float> = None;
         loop {
             let (tc, tb) = self.term_from(c, b);
             let is_break = self.flow.text[tb..].starts_with(PAGE_BREAK);
             let term = &self.flow.styles[tc];
+            let at_para_start = c == 0 || matches!(self.flow.text.as_bytes()[b - 1], b'\n' | 0x0c);
+            let cap = self.drop_cap(ctx, c, b).filter(|_| at_para_start);
+
+            // Beside a cap above: the paragraph's first lines go there, the rest on below it.
+            if let Some(f) = float.take() {
+                if y < f.bottom - 0.5 && cap.is_none() && self.picture_in(c, tc).is_none() {
+                    let (chars, h) = self.beside_cap(ctx, (c, b), (tc, tb), f.bottom - y, f.indent);
+                    y += h;
+                    if c + chars >= tc {
+                        float = Some(f);
+                        match after(tc, tb) {
+                            Ok(next) => (c, b) = next,
+                            Err(page) => return page,
+                        }
+                    } else {
+                        b += self.flow.text[b..].char_indices().nth(chars).map_or(tb - b, |(o, _)| o);
+                        c += chars;
+                    }
+                    continue;
+                }
+                y = y.max(f.bottom);
+            }
 
             // A drop cap and the lines beside it stay together; the rest goes on like other text.
-            let at_para_start = c == 0 || matches!(self.flow.text.as_bytes()[b - 1], b'\n' | 0x0c);
-            if let Some(cap) = self.drop_cap(ctx, c, b).filter(|_| at_para_start) {
+            if let Some(cap) = cap {
                 if y + cap.height > limit && (c, b) != (c0, b0) {
                     return (Span { start: c0, end: c, bstart: b0, bend: b, hard: false, contents: None }, Some((c, b)));
                 }
+                let top = y;
                 y += cap.height;
                 let rest = c + 1 + cap.beside;
+                if rest >= tc && let Some(f) = Float::after(&cap, top) {
+                    y = top + cap.beside_height;
+                    float = Some(f);
+                }
                 if rest < tc {
                     b += self.flow.text[b..].char_indices().nth(rest - c).map_or(tb - b, |(o, _)| o);
                     c = rest;
