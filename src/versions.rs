@@ -240,40 +240,6 @@ impl App {
         self.status = "- back to as saved".into();
     }
 
-    /// Leaving a story with a file that changed since it was saved by hand: autosave has written
-    /// the changes already, so the question is whether to keep them.
-    pub fn keep_or_drop_prompt(&mut self, ctx: &egui::Context, leaving: crate::fileio::Leaving) {
-        let (mut keep, mut drop, mut cancel) = (false, false, false);
-        let modal = egui::Modal::new(Id::new("keep_or_drop")).show(ctx, |ui| {
-            ui.set_width(360.0);
-            ui.heading(format!("Keep the changes to \u{201c}{}\u{201d}?", self.story_name()));
-            ui.add_space(4.0);
-            let said = "They are saved already. Dropping them puts the story back as you last saved or opened it; \
-                        they stay under File \u{2192} Versions.";
-            ui.label(egui::RichText::new(said).color(crate::theme::TEXT_DIM));
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                keep = ui.button("Keep changes").clicked();
-                let drop_btn = ui.button("Drop them");
-                let cancel_btn = ui.button("Cancel");
-                (drop, cancel) = (drop_btn.clicked(), cancel_btn.clicked());
-                // Enter keeps, unless the keyboard is on one of the other buttons: then it is theirs.
-                let other = drop_btn.has_focus() || cancel_btn.has_focus();
-                keep |= !other && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-            });
-        });
-        cancel |= modal.should_close();
-        if keep || drop {
-            self.leaving = None;
-            if drop {
-                self.drop_changes(ctx);
-            }
-            self.leave(ctx, leaving);
-        } else if cancel {
-            self.leaving = None;
-        }
-    }
-
     /// Before opening another story or closing, a story with a file is saved, rather than asked about.
     pub fn save_before_leaving(&mut self) {
         if self.keep.autosave && self.path.is_some() && self.unsaved() {

@@ -13,6 +13,7 @@ mod fonts;
 mod ideas;
 mod images;
 mod layout;
+mod leave;
 mod model;
 mod notes;
 mod numbers;
@@ -201,6 +202,10 @@ pub struct App {
     pub keep: versions::Keeper,
     /// The story as opened or last saved by hand (a hash and the file's text), to drop changes back to.
     pub as_saved: Option<(u64, String)>,
+    /// When that was, in seconds since 1970.
+    pub saved_at: Option<u64>,
+    /// What the leaving question tells about the story, for the document version it was worked out for.
+    pub leave_about: Option<(u64, leave::About)>,
     /// Word counts and today's words towards the daily goal; the Document info window.
     pub words: words::Words,
     /// When the story was begun, in seconds since 1970 (0: not known).
@@ -293,6 +298,8 @@ impl App {
             story_id: versions::new_id(),
             keep: versions::Keeper::new(),
             as_saved: None,
+            saved_at: None,
+            leave_about: None,
             words: words::Words::new(),
             created: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
             saved_hash: 0,
@@ -4488,6 +4495,53 @@ mod tests {
     }
 
     #[test]
+    fn leaving_a_story_never_saved_tells_what_is_at_stake_and_keeps_a_version() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let dir = test_dir("leave-never-saved");
+        (h.app.keep.dir, h.app.keep.clock) = (Some(dir.join("versions")), Some(5_000_000));
+        h.type_text("The Mill");
+        let ctx = h.ctx.clone();
+        h.app.set_para(&ctx, |p| p.set_chapter_title(true));
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("It was a dark night.");
+        assert_eq!(h.app.suggested_name(), "The Mill", "named after its first chapter");
+
+        h.close_window();
+        h.frames(2, vec![], Modifiers::NONE);
+        let painted = h.painted_texts();
+        for said in ["Save \u{201c}The Mill\u{201d}?", "7 words  \u{b7}  1 chapter", "Begun just now", "Not saving still keeps this version under File \u{2192} Versions."] {
+            assert!(painted.contains(said), "{said:?} in:\n{painted}");
+        }
+        assert!(h.widget_rect("Save\u{2026}").is_some(), "saving asks where");
+        h.click_widget("Don\u{2019}t save");
+        assert!(h.app.may_close, "it closes");
+        let kept = std::fs::read_dir(dir.join("versions").join(&h.app.story_id)).unwrap().count();
+        assert!(kept >= 2, "a version of it, and what the story is: {kept}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn leaving_after_saving_tells_how_much_changed_since() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let dir = test_dir("leave-changed");
+        h.app.keep.clock = Some(5_000_000);
+        h.type_text("Draft");
+        h.app.save_to(dir.join("draft.caprice"));
+        h.type_text(" with three more");
+        h.app.keep.clock = Some(5_000_000 + 12 * 60);
+        h.close_window();
+        h.frames(2, vec![], Modifiers::NONE);
+        let painted = h.painted_texts();
+        assert!(painted.contains("Save changes to \u{201c}draft\u{201d}?"), "{painted}");
+        assert!(painted.contains("+3 words since you saved it 12 minutes ago"), "{painted}");
+        h.key(Key::Escape, Modifiers::NONE);
+        assert!(h.app.leaving.is_none() && !h.app.may_close, "Escape goes back to writing");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn closing_can_drop_the_changes_since_saving_and_they_stay_in_the_versions() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
@@ -4501,7 +4555,7 @@ mod tests {
         h.wait(40.0);
         assert!(std::fs::read_to_string(&path).unwrap().contains("a bad idea"), "saved by itself");
         h.close_window();
-        h.click_widget("Drop them");
+        h.click_widget("Drop changes");
         assert!(h.app.may_close);
         let saved = std::fs::read_to_string(&path).unwrap();
         assert!(saved.contains("Draft") && !saved.contains("a bad idea"), "the file is as saved by hand");

@@ -162,7 +162,7 @@ impl Kind {
 
 /// What a small sheet shows of a page: its shape and how its text lies, not the words.
 #[derive(Clone, Debug)]
-struct Sheet {
+pub(crate) struct Sheet {
     size: Vec2,
     /// Left, top, right, bottom, in points like the page.
     margins: [f32; 4],
@@ -195,12 +195,12 @@ impl Sheet {
     }
 
     /// The sheet `h` points high, its width as the page's shape says.
-    fn width_for(&self, h: f32) -> f32 {
+    pub(crate) fn width_for(&self, h: f32) -> f32 {
         h * self.size.x / self.size.y
     }
 
     /// Draw it into `rect`, lifted `lift` (0 to 1) off the desk, its lines at `lines` strength.
-    fn draw(&self, painter: &egui::Painter, rect: Rect, lift: f32, lines: f32) {
+    pub(crate) fn draw(&self, painter: &egui::Painter, rect: Rect, lift: f32, lines: f32) {
         let shadow = egui::epaint::Shadow {
             offset: [0, (3.0 + 5.0 * lift) as i8],
             blur: (10.0 + 12.0 * lift) as u8,
@@ -291,13 +291,9 @@ fn paper_name(setup: &PageSetup) -> String {
 }
 
 /// Read what the welcome page tells about a story from its file.
-fn read_story(l: &Lately) -> Option<Story> {
-    let json = std::fs::read_to_string(&l.path).ok()?;
-    let doc: Doc = serde_json::from_str::<DocFile>(&json).ok()?.into_doc();
-    let changed = std::fs::metadata(&l.path).and_then(|m| m.modified()).ok();
-    let changed = changed.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
-    // Paragraphs, each with its terminator's style; pictures left out.
-    let mut paras: Vec<(String, &Style)> = Vec::new();
+/// A story's paragraphs, each with its terminator's style; pictures left out.
+fn paragraphs(doc: &Doc) -> Vec<(String, &Style)> {
+    let mut paras = Vec::new();
     let mut words = String::new();
     for (c, st) in doc.flow.text.chars().zip(&doc.flow.styles) {
         if crate::model::is_terminator(c) {
@@ -306,27 +302,50 @@ fn read_story(l: &Lately) -> Option<Story> {
             words.push(c);
         }
     }
-    let title = paras.first().is_some_and(|(_, st)| st.para.kind == ParaKind::ChapterTitle);
-    let body = paras.iter().find(|(t, st)| st.para.kind == ParaKind::Body && !t.trim().is_empty());
-    let excerpt = body.map_or(String::new(), |(t, _)| t.split_whitespace().take(60).collect::<Vec<_>>().join(" "));
-    let para = body.map_or(ParaAttrs::default(), |(_, st)| st.para);
-    let words = doc.words_in(0, doc.total_chars());
-    // About how many words a page of it holds: its lines, each of some six letters a word.
-    let size = body.map_or(crate::model::FONT_SIZE, |(_, st)| st.size);
-    let room = doc.setup.content_size();
-    let per_page = (room.y / (size * 1.2 * para.spacing)) * (room.x / (size * 0.5 * 6.0));
+    paras
+}
+
+/// Its first paragraph of story with words in it.
+fn first_body<'a>(paras: &'a [(String, &'a Style)]) -> Option<&'a (String, &'a Style)> {
+    paras.iter().find(|(t, st)| st.para.kind == ParaKind::Body && !t.trim().is_empty())
+}
+
+impl Sheet {
+    /// The first page of `doc`, as much of it filled as its words would fill.
+    pub(crate) fn of_doc(doc: &Doc, seed: u64) -> Self {
+        let paras = paragraphs(doc);
+        let title = paras.first().is_some_and(|(_, st)| st.para.kind == ParaKind::ChapterTitle);
+        let body = first_body(&paras);
+        let para = body.map_or(ParaAttrs::default(), |(_, st)| st.para);
+        let words = doc.words_in(0, doc.total_chars());
+        // About how many words a page of it holds: its lines, each of some six letters a word.
+        let size = body.map_or(crate::model::FONT_SIZE, |(_, st)| st.size);
+        let room = doc.setup.content_size();
+        let per_page = (room.y / (size * 1.2 * para.spacing)) * (room.x / (size * 0.5 * 6.0));
+        Sheet { fill: (words as f32 / per_page.max(1.0)).min(1.0), ..Sheet::of(&doc.setup, title, &para, seed) }
+    }
+}
+
+/// Read what the welcome page tells about a story from its file.
+fn read_story(l: &Lately) -> Option<Story> {
+    let json = std::fs::read_to_string(&l.path).ok()?;
+    let doc: Doc = serde_json::from_str::<DocFile>(&json).ok()?.into_doc();
+    let changed = std::fs::metadata(&l.path).and_then(|m| m.modified()).ok();
+    let changed = changed.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+    let paras = paragraphs(&doc);
+    let excerpt = first_body(&paras).map_or(String::new(), |(t, _)| t.split_whitespace().take(60).collect::<Vec<_>>().join(" "));
     let seed = l.path.to_string_lossy().bytes().fold(7u64, |h, b| h.wrapping_mul(31).wrapping_add(b.into()));
     Some(Story {
         path: l.path.clone(),
         name: l.path.file_stem().map_or(String::new(), |n| n.to_string_lossy().into_owned()),
         opened: l.opened,
         changed,
-        words,
+        words: doc.words_in(0, doc.total_chars()),
         chapters: doc.chapters(false).len(),
         notes: doc.notes.len(),
         excerpt,
         paper: paper_name(&doc.setup),
-        sheet: Sheet { fill: (words as f32 / per_page.max(1.0)).min(1.0), ..Sheet::of(&doc.setup, title, &para, seed) },
+        sheet: Sheet::of_doc(&doc, seed),
     })
 }
 

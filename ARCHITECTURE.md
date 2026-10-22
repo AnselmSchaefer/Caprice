@@ -80,6 +80,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `textbox.rs` | Text boxes: drawn as `Ink`, inserted, written in, moved, resized, pinned to a char, in front of the text or behind it; their selection |
 | `fileio.rs` | `.caprice` format (`DocFile`), open/save/export commands, unsaved-changes detection |
 | `export.rs` | Hand-written Office Open XML for `.docx` |
+| `leave.rs` | The question before leaving a story with changes (save or not; keep or drop): its first page, what is at stake, that a version is kept; the name suggested for a story never saved |
 | `versions.rs` | Autosaving a story with a file; versions of every story kept in the data folder; the Versions window |
 | `print.rs` | The Print window; pages drawn into a PDF (krilla) from `PageLayout::ink`; printers and jobs through CUPS (`Spooler`) |
 | `claude.rs` | Pen loop or cursor selection → passage → `claude -p` → streamed answer panel, a conversation; story notes |
@@ -738,6 +739,15 @@ must keep working: writers do it. A version (the whole `.caprice` file) is kept 
   (dropping changes, then opening the list, did).
   Of older versions, `kept` keeps the newest `KEEP_NEWEST`, then the last of each day for
   `KEEP_DAYS` days. A story with many pictures takes room: each version holds them all.
+- **The question says what is at stake, and keeps its word** (`leave.rs`): the story's words and
+  chapters, how many words changed since it was saved by hand and when (`App::saved_at`, set with
+  `as_saved`), or when it was begun; and that a version is kept whichever is chosen. So "Don't
+  save" keeps a version (`keep_now`) before going on, when opening another story too, not only on
+  exit; dropping changes keeps one already. What it tells is worked out once per document version
+  (`App::leave_about`), not each frame. A story never saved is offered a file name from its first
+  chapter's title or first words (`suggested_name`), in this question and in Save as.
+  Tests: `leaving_a_story_never_saved_tells_what_is_at_stake_and_keeps_a_version`,
+  `leaving_after_saving_tells_how_much_changed_since`.
 - **Going back and dropping changes are not undoable** (like opening, R1): the story as it was
   is kept as a version first, so going back is undone by going back to that one. Going back to this story's version
   keeps its file, so autosave then writes the older text over it.

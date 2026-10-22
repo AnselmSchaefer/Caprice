@@ -413,12 +413,16 @@ impl App {
     pub fn save(&mut self, ctx: &egui::Context, save_as: bool) {
         match (&self.path, save_as) {
             (Some(p), false) => self.save_to(p.clone()),
-            _ => self.ask_path(ctx, DialogFor::Save, || {
-                rfd::FileDialog::new()
-                    .add_filter("Caprice document", &["caprice"])
-                    .set_file_name("Untitled.caprice")
-                    .save_file()
-            }),
+            _ => {
+                // Named after its first chapter or words, until it has a name of its own.
+                let name = match &self.path {
+                    Some(p) => p.file_name().map_or("Untitled.caprice".into(), |n| n.to_string_lossy().into_owned()),
+                    None => format!("{}.caprice", self.suggested_name()),
+                };
+                self.ask_path(ctx, DialogFor::Save, move || {
+                    rfd::FileDialog::new().add_filter("Caprice document", &["caprice"]).set_file_name(name).save_file()
+                });
+            }
         }
     }
 
@@ -431,6 +435,7 @@ impl App {
                 self.path = Some(path);
                 self.saved_hash = self.content_hash();
                 self.as_saved = serde_json::to_string(&self.doc_file()).ok().map(|j| (self.saved_hash, j));
+                self.saved_at = Some(self.keep.now());
                 "- saved".into()
             }
             Err(e) => format!("- save failed: {e}"),
@@ -549,57 +554,6 @@ impl App {
         }
     }
 
-    /// The "Save changes?" question, while something waits on it.
-    pub fn unsaved_prompt(&mut self, ctx: &egui::Context) {
-        let Some(leaving) = self.leaving else { return };
-        if self.path.is_some() && !self.unsaved() {
-            return self.keep_or_drop_prompt(ctx, leaving);
-        }
-        let name = self.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".to_owned(), |n| n.to_string_lossy().into_owned());
-        let (mut save, mut discard, mut cancel) = (false, false, false);
-        let modal = egui::Modal::new(egui::Id::new("unsaved_prompt")).show(ctx, |ui| {
-            ui.set_width(340.0);
-            ui.heading(format!("Save changes to \u{201c}{name}\u{201d}?"));
-            ui.add_space(4.0);
-            let then = match leaving {
-                Leaving::Open => "before opening another document",
-                Leaving::Close => "before closing",
-            };
-            ui.label(egui::RichText::new(format!("Your changes will be lost if you don\u{2019}t save them {then}.")).color(crate::theme::TEXT_DIM));
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                save = ui.button("Save").clicked();
-                let discard_btn = ui.button("Don\u{2019}t save");
-                let cancel_btn = ui.button("Cancel");
-                (discard, cancel) = (discard_btn.clicked(), cancel_btn.clicked());
-                // Enter saves, unless the keyboard is on one of the other buttons: then it is theirs.
-                let other = discard_btn.has_focus() || cancel_btn.has_focus();
-                save |= !other && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-            });
-        });
-        cancel |= modal.should_close();
-        if save {
-            self.leaving = None;
-            match self.path.clone() {
-                Some(path) => {
-                    self.save_to(path);
-                    if !self.unsaved() {
-                        self.leave(ctx, leaving);
-                    }
-                }
-                None => {
-                    self.after_save = Some(leaving);
-                    self.save(ctx, true);
-                }
-            }
-        } else if discard {
-            self.leaving = None;
-            self.leave(ctx, leaving);
-        } else if cancel {
-            self.leaving = None;
-        }
-    }
-
     pub fn open_path(&mut self, ctx: &egui::Context, path: std::path::PathBuf) {
         let loaded = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
@@ -619,6 +573,7 @@ impl App {
                 self.status = "- opened".into();
                 self.saved_hash = self.content_hash();
                 self.as_saved = serde_json::to_string(&self.doc_file()).ok().map(|j| (self.saved_hash, j));
+                self.saved_at = Some(self.keep.now());
                 self.keep.opened(&self.story_id);
             }
             Err(e) => self.status = format!("- open failed: {e}"),
