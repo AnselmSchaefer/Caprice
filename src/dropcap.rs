@@ -109,7 +109,11 @@ impl Doc {
         let eb = cb + self.flow.text[cb..].char_indices().nth(end - c - 1).map_or(self.flow.text.len() - cb, |(o, _)| o);
         let (text, styles) = (&self.flow.text[cb..eb], &self.flow.styles[c + 1..end]);
         let width = self.setup.content_size().x;
-        let layout = |w: f32| ctx.fonts_mut(|f| f.layout_job(paragraph_job(ctx, text, styles, term, attrs, 1.0, w, &[])));
+        // The job is built before taking the fonts: with line spacing it asks them for a row's height.
+        let layout = |w: f32| {
+            let job = paragraph_job(ctx, text, styles, term, attrs, 1.0, w, &[]);
+            ctx.fonts_mut(|f| f.layout_job(job))
+        };
         let letter = |size: f32| {
             let mut job = egui::text::LayoutJob::default();
             job.append(&first.to_string(), 0.0, run_format(ctx, &cap_style(first_st, size), 1.0, Color32::TRANSPARENT, ParaAttrs::default()));

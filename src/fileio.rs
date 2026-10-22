@@ -614,7 +614,7 @@ impl App {
                 self.created = if file.created > 0 { file.created } else { made };
                 self.adopt(ctx, file);
                 self.start.remember(&path, self.keep.now());
-                self.start.open = false;
+                self.start.leave(ctx.input(|i| i.time));
                 self.path = Some(path);
                 self.status = "- opened".into();
                 self.saved_hash = self.content_hash();

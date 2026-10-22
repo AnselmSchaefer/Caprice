@@ -45,7 +45,7 @@ impl Doc {
 }
 
 /// The clock's offset from UTC in seconds, where the writer is, asked of the system once.
-fn offset() -> i64 {
+pub(crate) fn offset() -> i64 {
     static OFFSET: OnceLock<i64> = OnceLock::new();
     *OFFSET.get_or_init(|| {
         let out = std::process::Command::new("date").arg("+%z").output().ok();

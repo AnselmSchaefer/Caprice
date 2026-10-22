@@ -4,7 +4,7 @@ How Caprice is put together, and the rules that hold it together. The rules (§4
 read before changing anything: each says what depends on what, what to check when touching it, and
 which tests guard it. Keep this file true: a change that alters a rule updates it in the same commit.
 
-*Last brought up to date: 2026-10-22 (the start screen: New, Open…, last opened).*
+*Last brought up to date: 2026-10-22 (the welcome page: kinds of new story, stories last opened, the flight to the desk).*
 
 ---
 
@@ -85,7 +85,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `claude.rs` | Pen loop or cursor selection → passage → `claude -p` → streamed answer panel, a conversation; story notes |
 | `backdrop.rs` | Scenes Claude paints (SVG), pinned to the story, faintly behind the pages; the Scene menu and list |
 | `cast.rs` | The cast: people found by name in what is painted, their looks and model sheets in the scene's prompt; the Cast window and its example |
-| `start.rs` | The start screen (New, Open…, the stories last opened) when Caprice opens without a file; the list of stories last opened, kept in the data folder |
+| `start.rs` | The welcome page when Caprice opens without a file: kinds of new story (`Kind`), the stories last opened with what they hold, the sheet flying to the desk; the list of stories last opened, kept in the data folder |
 | `scratchpad.rs` | The scratchpad: plain text saved with the document, in a window on the right |
 | `review.rs` | The Review window (upper left): a chapter or the selection read for mistakes, style, detail, wordiness; findings found again by their quote |
 | `ideas.rs` | The What next window (lower left): ways the story could go on from the caret, kept in the scratchpad |
@@ -316,6 +316,8 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
 | No bending of text | Tessellate galleys, move vertices | `render.rs`, `book.rs`, `notes.rs` |
 | Modifiers unreliable on Hyprland | Track Ctrl from key events | `view.rs` |
 | The UI font has no symbols like ✕ (drawn as an empty box) | Draw icons with lines, labelled for tests | `ui.rs::paint_icon`, `search.rs::bar_button` |
+| `ctx.fonts_mut` inside `ctx.fonts_mut` hangs (the context's lock is taken twice) | Build a job (`paragraph_job`, `run_format`, which ask the fonts for a row's height) before taking the fonts to lay it out. Drop caps with line spacing hung: `a_new_novel_begins_on_book_pages_at_chapter_one_and_a_journal_at_today` | `dropcap.rs::drop_cap` |
+| `set_fonts` takes effect the next frame; a family named before then panics | `FontBook::ensure` in mid-frame with `immediate: false`, and draw with `family_for` (the usual font until it is there). `fonts::LOADED` is one for the process, so tests running alongside share it: a test that loads a font for the first time is the only one to | `fonts.rs`, `start.rs::welcome_page` |
 
 Re-check every one after upgrading egui.
 
@@ -857,29 +859,47 @@ Word. Set in Page > Page numbers for the page shown, which also lists every chan
   `roman_numerals_are_written_small`. Check Word with `sample_docx` (its contents are roman, its
   story from 1, its last chapter without).
 
-### R27 — Opened without a file, Caprice asks what to write in; opening and saving remember the story
+### R27 — Opened without a file, Caprice welcomes the writer; opening and saving remember the story
 
-`main()` puts the start screen up (`Start::open`) only when no file was named on the command line;
-`App::new` and so `Harness` leave it down. It is a modal over the empty story: New (or Escape, or a
-click beside it) takes it away and leaves that empty story; Open… and Ctrl+O show the file dialog
-and leave the screen up until a story opens, so giving up on the dialog comes back to it; a story
-last opened is opened by `open_path`.
+`main()` puts the welcome page up (`Start::open`) only when no file was named on the command line;
+`App::new` and so `Harness` leave it down. While it is up, `frame` draws it **in place of the desk**
+and returns: no toolbar, no page, no keys reach the story (only Ctrl+O, as its "Open another…").
+It begins a new story of a `Kind` (`App::begin`), shows the file dialog, or opens a story last
+opened through `open_path`. Escape begins a blank page, as Caprice used to start. Giving up on the
+file dialog, or a story that cannot be read, leaves the page up.
 
-- **Nothing behind it takes keys while it shows**: `frame` skips `process_input`, saving, printing
-  and find with it up, as it does while `leaving`. Anything new that reads keys in `frame` checks
-  `start.open` too, or typing on the start screen lands in the empty story.
-- **`open_path` and `save_to` call `Start::remember`**, and `open_path` takes the screen away. A new
+- **Leaving it is a flight, not a cut** (`Start::flight`, `welcome_leaving`, drawn last in `frame`
+  on a foreground layer): the desk is drawn as usual underneath, the welcome fades from over it,
+  and the sheet chosen moves from its place on the page to `App::last_page_rect`, fading out over
+  the page itself at the end. The story takes typing from the first frame of it. Anything that
+  takes the welcome away calls `Start::leave` (or sets a flight), so it never just vanishes.
+- **A `Kind` is the starting state of a story, not a setting**: its paper, margins, headers and
+  footers, drop caps (`Kind::setup`), the look of its text (`Kind::body`: font from the first of
+  its fonts offered, size, alignment, spacing) and its first chapter title (`Kind::title`). `begin`
+  builds the flow from them and goes through `adopt`, like opening a file, then starts a new story
+  id (R22), sets `saved_hash` so nothing counts as unsaved until written, and puts the caret in the
+  paragraph after the title. A new kind: add it to `Kind::ALL` and each match; its sheet comes from
+  its setup. Nothing about a kind is stored: the story just has those settings (R9).
+- **The sheets are drawn from the page setup** (`Sheet::of`: shape, margins, title, drop cap,
+  justified, spacing, header and footer looks), for the kinds and for stories last opened alike,
+  so a new page setting that changes how a page looks can be shown there too.
+- **`open_path` and `save_to` call `Start::remember`**, and `open_path` calls `Start::leave`. A new
   way to open or save a story goes through them, or it is missing from the list. Paths are kept
   canonical, so a story named on the command line is the same entry as from the dialog. Autosave
   saves through `save_to` every half minute: `remember` writes the list only when the story is not
   already on top, so it does not write every time.
 - The list (`recent.json` in the data folder, beside `progress.json`) holds paths and when each
-  was last opened (`Keeper::now`, so tests set the clock), newest first, at most `REMEMBER`. A file
-  moved or deleted since is left out of what is shown, not out of the list.
+  was last opened (`Keeper::now`, so tests set the clock), newest first, at most `REMEMBER`. What
+  the page tells about each (words, chapters, post-its, paper, first words, when changed) is read
+  from the files once, when it first shows (`Start::stories`), never each frame. A file moved or
+  deleted since is left out of what is shown, not out of the list.
 - **Tests never write it behind your back**: `Harness::new` sets no file and an empty list; the
-  tests about it use `Start::kept_in` with a folder of their own.
-- Tests: `opened_without_a_file_caprice_asks_for_a_new_story_or_one_last_opened`,
-  `escape_on_the_start_screen_begins_a_new_story`.
+  tests about it use `Start::kept_in` with a folder of their own. What the page paints is read
+  with `Harness::painted_texts` / `painted_at`; the kinds and stories are buttons for `click_widget`.
+- Tests: `opened_without_a_file_caprice_welcomes_with_new_stories_and_the_ones_last_opened`,
+  `the_sheet_chosen_flies_to_the_desk_while_the_welcome_fades`,
+  `a_new_novel_begins_on_book_pages_at_chapter_one_and_a_journal_at_today`,
+  `escape_on_the_welcome_page_begins_a_blank_story`.
 
 ---
 
@@ -925,6 +945,9 @@ scrolling must not move the pages (R16); its stored text in `Doc` and `DocFile` 
 
 **Something new sent with a scene** (like the cast): build it in `scene_prompt` from the subject
 only (R13, R17), check it in `Backdrop::asked` in a test.
+
+**A new kind of story on the welcome page:** a `Kind` variant in `ALL` and each match (`setup`,
+`body`, `fonts`, `title`, `about`); a test that begins one and checks its pages and first text (R27).
 
 **Something new pinned to the text** (like notes and scenes): move it in `apply_raw` and in
 `into_doc` (R7), save it (R9), decide its Word mapping (R10).
@@ -1017,9 +1040,11 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
   page 120") would hide the wrong pages as soon as text before them grew or shrank, so a change
   is pinned to a char like a text box, and holds until the next one, as Word's sections do. Word
   gets sections; "no numbers" keeps counting, as Word does (R26).
-- **2026-10-22 — Opened without a file, Caprice asks first.** It used to show an empty story at
-  once, and going back to yesterday's story meant the file dialog every time. Now a start screen
-  offers a new story, the file dialog, and the stories last opened. The empty story is still
-  underneath, so New costs nothing and Escape leaves the screen as Caprice used to be (R27).
+- **2026-10-22 — Opened without a file, Caprice welcomes the writer.** It used to show an empty
+  story at once, and going back to yesterday's story meant the file dialog every time. A small
+  modal over the empty desk came first; asked for instead was a page of its own, telling more
+  about each story, with ways to begin that set things up differently. So the welcome stands in
+  for the desk, a new story is begun as a kind (its settings, nothing stored about the kind), and
+  the sheet chosen flies to the desk so the welcome visibly turns into the page (R27).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.
