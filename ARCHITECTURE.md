@@ -80,6 +80,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `textbox.rs` | Text boxes: drawn as `Ink`, inserted, written in, moved, resized, pinned to a char, in front of the text or behind it; their selection |
 | `fileio.rs` | `.caprice` format (`DocFile`), open/save/export commands, unsaved-changes detection |
 | `export.rs` | Hand-written Office Open XML for `.docx` |
+| `emblem.rs` | The emblem beside the name on the welcome page: the app icon's tile and page, a pencil drawing its loop over and over |
 | `leave.rs` | The question before leaving a story with changes (save or not; keep or drop): its first page, what is at stake, that a version is kept; the name suggested for a story never saved |
 | `versions.rs` | Autosaving a story with a file; versions of every story kept in the data folder; the Versions window |
 | `print.rs` | The Print window; pages drawn into a PDF (krilla) from `PageLayout::ink`; printers and jobs through CUPS (`Spooler`) |
@@ -333,7 +334,7 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
 | Zoomed line heights rounded to pixels | Rescale rows to page-size height × zoom, per line | `layout.rs::true_to_scale` |
 | Text background fills the whole line height | Trim background quads to the font height | `layout.rs::tight_highlights` |
 | No text flowing around a box | Drop cap paragraph as three pieces; text boxes lie in front of the text | `dropcap.rs`, `textbox.rs` |
-| Only convex shapes are filled | Fleurons and circles built of convex pieces (`leaf`, `circle`) | `bands.rs` |
+| Only convex shapes are filled | Fleurons and circles built of convex pieces (`leaf`, `circle`); the emblem's tile a fan of triangles, its pencil quads | `bands.rs`, `emblem.rs` |
 | A field's galley is shown from its left, whatever its alignment | Box text laid out left, rows moved within the width (`box_galley`) | `textbox.rs` |
 | `TextEdit` caret height from its own font | Pass the post-it font | `notes.rs` |
 | No bending of text | Tessellate galleys, move vertices | `render.rs`, `book.rs`, `notes.rs` |
@@ -914,6 +915,12 @@ file dialog, or a story that cannot be read, leaves the page up.
   id (R22), sets `saved_hash` so nothing counts as unsaved until written, and puts the caret in the
   paragraph after the title. A new kind: add it to `Kind::ALL` and each match; its sheet comes from
   its setup. Nothing about a kind is stored: the story just has those settings (R9).
+- **The emblem beside the name** (`emblem.rs`) draws from when the page first showed
+  (`Start::shown_at`): a pencil draws the icon's loop, it rests, fades and is drawn again
+  (`ROUND`). While the page shows it asks for every frame; it stops with the page. It reaches
+  `HEADROOM` above its tile, which the header leaves room for. Tests: in `emblem.rs`
+  `the_pencil_draws_the_loop_then_it_rests_fades_and_starts_again`, and
+  `the_welcome_shows_the_emblem_beside_the_name_its_pencil_drawing`.
 - **The sheets are drawn from the page setup** (`Sheet::of`: shape, margins, title, drop cap,
   justified, spacing, header and footer looks), for the kinds and for stories last opened alike,
   so a new page setting that changes how a page looks can be shown there too.

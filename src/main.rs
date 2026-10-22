@@ -7,6 +7,7 @@ mod contents;
 mod dropcap;
 mod edit;
 mod editor;
+mod emblem;
 mod export;
 mod fileio;
 mod fonts;
@@ -4391,6 +4392,28 @@ mod tests {
         assert_eq!(again.text(), "The mill stood by the river");
         assert_eq!(again.app.path.as_deref().and_then(|p| p.file_name()), Some(std::ffi::OsStr::new("first.caprice")));
         assert_eq!(again.app.start.recent[0].path.file_name(), Some(std::ffi::OsStr::new("first.caprice")), "now on top");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_welcome_shows_the_emblem_beside_the_name_its_pencil_drawing() {
+        let dir = test_dir("start-emblem");
+        let mut h = started_without_a_file(&dir);
+        // Where the round ends of the loop and its dot are: they move as the pencil draws.
+        let dots = |h: &Harness| -> Vec<(i32, i32)> {
+            h.painted.iter().filter_map(|cs| match &cs.shape {
+                egui::Shape::Circle(c) if c.radius < 10.0 => Some((c.center.x as i32, c.center.y as i32)),
+                _ => None,
+            }).collect()
+        };
+        let name = h.painted_at("Caprice").expect("the name");
+        let header = |d: Vec<(i32, i32)>| d.into_iter().filter(|&(_, y)| (y as f32) < name.y + 100.0).collect::<Vec<_>>();
+        let before = header(dots(&h));
+        h.wait(1.0);
+        let after = header(dots(&h));
+        assert!(!after.is_empty(), "the loop is drawn in the header");
+        assert_ne!(before, after, "the pencil has drawn on");
+        assert!(after.iter().all(|&(x, _)| (x as f32) < name.x), "the emblem is left of the name: {after:?} {name:?}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

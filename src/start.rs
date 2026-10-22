@@ -369,6 +369,8 @@ pub struct Start {
     pub stories: Option<Vec<Story>>,
     /// The welcome giving way to the desk.
     pub flight: Option<Flight>,
+    /// When it first showed, in frame time (the emblem's clock).
+    shown_at: Option<f64>,
 }
 
 impl Start {
@@ -379,7 +381,7 @@ impl Start {
     /// The list kept in `file`.
     pub fn kept_in(file: Option<PathBuf>) -> Self {
         let recent = file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|j| serde_json::from_str(&j).ok());
-        Self { open: false, file, recent: recent.unwrap_or_default(), stories: None, flight: None }
+        Self { open: false, file, recent: recent.unwrap_or_default(), stories: None, flight: None, shown_at: None }
     }
 
     /// A story was opened or saved, at `now`: it goes to the top of the list.
@@ -536,12 +538,16 @@ impl App {
         let stories = self.start.stories.clone().unwrap_or_default();
         let sense = if live { Sense::click() } else { Sense::hover() };
         let mut chosen = None;
+        // The emblem's pencil draws from when the page first showed, and keeps the frames coming.
+        let clock = ui.ctx().input(|i| i.time);
+        let since = (clock - *self.start.shown_at.get_or_insert(clock)) as f32;
+        ui.ctx().request_repaint();
         let mut child = ui.new_child(UiBuilder::new().max_rect(area));
         egui::ScrollArea::vertical().id_salt("welcome").auto_shrink(false).show(&mut child, |ui| {
             let full = ui.available_width();
             let col = (full - 64.0).min(COLUMN);
             let left = ui.max_rect().left() + (full - col) / 2.0;
-            ui.add_space((area.height() * 0.07).clamp(24.0, 64.0));
+            ui.add_space((area.height() * 0.07).clamp(24.0, 64.0) - 16.0);
 
             // Who we are, and good day.
             let name = galley(ui, "Caprice", FontId::new(46.0, serif.clone()), TEXT, col, 1, false);
@@ -550,10 +556,17 @@ impl App {
                 hello = format!("{hello}  {} words written today.", crate::words::grouped(words_today as usize));
             }
             let hello = galley(ui, hello, FontId::proportional(16.0), TEXT_DIM, col, 1, false);
-            let (r, _) = ui.allocate_exact_size(vec2(full, name.size().y + hello.size().y + 6.0), Sense::hover());
-            let below = r.top() + name.size().y + 6.0;
-            ui.painter().galley(pos2(left, r.top()), name, TEXT);
-            ui.painter().galley(pos2(left + 2.0, below), hello, TEXT_DIM);
+            // The emblem, then the name and the greeting beside it, centred on it.
+            let side: f32 = 84.0;
+            let text_h = name.size().y + hello.size().y + 6.0;
+            let room = side * crate::emblem::HEADROOM;
+            let (r, _) = ui.allocate_exact_size(vec2(full, room + side.max(text_h)), Sense::hover());
+            let tile = Rect::from_min_size(pos2(left, r.top() + room), vec2(side, side));
+            crate::emblem::draw(ui.painter(), tile, since);
+            let (x, top) = (left + side + 26.0, tile.center().y - text_h / 2.0);
+            let below = top + name.size().y + 6.0;
+            ui.painter().galley(pos2(x, top), name, TEXT);
+            ui.painter().galley(pos2(x + 2.0, below), hello, TEXT_DIM);
             ui.add_space(34.0);
 
             // Something new.
