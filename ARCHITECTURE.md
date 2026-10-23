@@ -4,7 +4,7 @@ How Caprice is put together, and the rules that hold it together. The rules (§4
 read before changing anything: each says what depends on what, what to check when touching it, and
 which tests guard it. Keep this file true: a change that alters a rule updates it in the same commit.
 
-*Last brought up to date: 2026-10-22 (the cast peeking out from behind the page).*
+*Last brought up to date: 2026-10-23 (themes for the desk and docks).*
 
 ---
 
@@ -92,7 +92,8 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `scratchpad.rs` | The scratchpad: plain text saved with the document, in a window on the right |
 | `review.rs` | The Review window (upper left): a chapter or the selection read for mistakes, style, detail, wordiness; findings found again by their quote |
 | `ideas.rs` | The What next window (lower left): ways the story could go on from the caret, kept in the scratchpad |
-| `fonts.rs`, `theme.rs` | Installed fonts loaded on demand, a missing one drawn with a twin of the same widths; colours and egui visuals |
+| `fonts.rs` | Installed fonts loaded on demand, a missing one drawn with a twin of the same widths |
+| `theme.rs` | The themes (`Theme`, `Palette`): colours and egui visuals around the page, the palette in use (`pal`), fading from one to the next, the choice kept in the data folder; the page's own `PAPER` and `INK` |
 
 ---
 
@@ -986,6 +987,28 @@ through the same job as model sheets, `SheetJob::peek`).
   `only_someone_named_on_the_page_peeks_out_when_the_page_names_anyone`. The prompt with the real
   Claude: `live_peek` (ignored).
 
+### R29 — Themes colour everything around the page, never the page
+
+A theme (`theme::Theme`, picked under Page → Theme) is a `Palette`: the desk, docks, buttons, text,
+accent, caret and the scrollbar's thumb. The page is the story: `PAPER` and `INK` are constants, the
+same in every theme, so what is printed (R20) and exported (R10) never depends on the theme.
+
+- **Chrome asks `theme::pal()` each time it draws**, never a colour literal, or that part stays in
+  the first theme's colours when the writer picks another. Text on the accent uses `on_accent`
+  (a light theme's accent can need white text); the desk is drawn with `theme::paint_desk`.
+- **The palette in use is per thread** (a `thread_local`): egui draws on one thread, and each test on
+  its own, so a test that picks a theme changes no other. Code drawing off the UI thread must take
+  its colours with it, not call `pal()`.
+- **`Themes::show` runs at the start of each frame** and is the only place the palette changes
+  (`apply_palette`): a new theme fades in over `FADE`, egui's own visuals with it (light or dark
+  widgets switch halfway).
+- **Light themes must stay readable**: `text` on `dock` at 4.5:1, `text_dim` at 3:1. A new theme
+  goes into `Theme::ALL`, so the gallery and the test cover it.
+- The choice is kept in the data folder (`theme.json`), not in the story; `Harness` keeps it
+  nowhere (`Themes::kept_in(None)`).
+- Tests: `a_theme_picked_in_the_page_menu_washes_over_the_desk_and_is_kept_for_next_time`,
+  `the_docks_stay_readable_in_every_theme`.
+
 ---
 
 ## 5. Checklists for common changes
@@ -1037,6 +1060,10 @@ only (R13, R17), check it in `Backdrop::asked` in a test.
 **Something new drawn on the desk around the page** (like a peek): draw it in the settled
 branch of `frame`, behind the paper or in front of it as it should hide or not; end it when the
 page turns; leave it out of print (R20 is for what is on the page) (R28).
+
+**A new theme:** a `Theme` variant in `ALL`, its `name`, `about` and `palette`; run
+`the_docks_stay_readable_in_every_theme` (R29). **Something new drawn around the page:** its colours
+from `theme::pal()` (R29).
 
 **Something new pinned to the text** (like notes and scenes): move it in `apply_raw` and in
 `into_doc` (R7), save it (R9), decide its Word mapping (R10).
@@ -1141,5 +1168,9 @@ page turns; leave it out of print (R20 is for what is on the page) (R28).
   peeking, in named parts, and Caprice moves the parts: the eyes look about and blink, the head
   tilts, a hand holds the edge. It costs one more drawing per look, asked for in the Cast window,
   never by itself (R12, R28).
+- **2026-10-23 — Themes change the desk and docks, not the page.** Asked for: playful, colourful
+  themes. Tinting the paper would make the screen disagree with print and Word (R20), and a story's
+  colours are the writer's choice per text, so a theme is the app's mood around the page, kept per
+  person in the data folder rather than in the story (R29).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

@@ -17,7 +17,7 @@ use crate::contents::Entry;
 use crate::fonts::family_for;
 use crate::layout::Ink;
 use crate::model::{Band, BandLook, CHAPTER_FIELD, Doc, PAGE_FIELD, PageSetup};
-use crate::theme::{PAPER, TEXT_DIM};
+use crate::theme::{PAPER, pal};
 
 /// The size of a band's text, in page points.
 pub const BAND_SIZE: f32 = 10.0;
@@ -159,7 +159,7 @@ pub fn band_tile(ui: &mut egui::Ui, band: &Band, top: bool, chosen: bool, font: 
     let setup = PageSetup { paper_w: 300.0, paper_h: 300.0, margin_left: 26.0, margin_right: 26.0, margin_top: 44.0, margin_bottom: 44.0, ..PageSetup::default() };
     let sc = W / setup.size().x;
     let strip = setup.margin_top + 22.0;
-    ui.label(egui::RichText::new(band.look.name()).size(12.0).color(TEXT_DIM));
+    ui.label(egui::RichText::new(band.look.name()).size(12.0).color(pal().text_dim));
     let (rect, resp) = ui.allocate_exact_size(vec2(W, strip * sc), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, band.look.name()));
     let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
@@ -177,7 +177,7 @@ pub fn band_tile(ui: &mut egui::Ui, band: &Band, top: bool, chosen: bool, font: 
     for ink in band_ink(ui.ctx(), band, top, &sample, 2, &setup, font, sc) {
         p.extend(ink.translate(vec2(rect.left(), page_top)).shape());
     }
-    let edge = if chosen { Stroke::new(2.0, crate::theme::ACCENT) } else if resp.hovered() { Stroke::new(1.0, TEXT_DIM) } else { Stroke::NONE };
+    let edge = if chosen { Stroke::new(2.0, crate::theme::pal().accent) } else if resp.hovered() { Stroke::new(1.0, pal().text_dim) } else { Stroke::NONE };
     ui.painter().rect_stroke(rect, 2.0, edge, egui::StrokeKind::Outside);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -204,7 +204,7 @@ pub fn accent_row(ui: &mut egui::Ui, current: [u8; 3]) -> Option<[u8; 3]> {
             swatch.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
             ui.painter().rect_filled(r, 4.0, rgb(c));
             if c == current || swatch.hovered() {
-                ui.painter().rect_stroke(r.expand(1.5), 5.0, Stroke::new(1.5, crate::theme::TEXT), egui::StrokeKind::Outside);
+                ui.painter().rect_stroke(r.expand(1.5), 5.0, Stroke::new(1.5, crate::theme::pal().text), egui::StrokeKind::Outside);
             }
             if swatch.on_hover_text(name).clicked() {
                 pick = Some(c);

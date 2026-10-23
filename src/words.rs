@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::App;
 use crate::model::Doc;
-use crate::theme::{ACCENT, TEXT_DIM};
+use crate::theme::pal;
 
 /// How often (seconds) today's words are counted and kept.
 const TRACK_EVERY: f64 = 5.0;
@@ -211,7 +211,7 @@ impl App {
             .collapsible(false)
             .show(ctx, |ui| {
                 let row = |ui: &mut egui::Ui, what: &str, value: String| {
-                    ui.label(egui::RichText::new(what).color(TEXT_DIM));
+                    ui.label(egui::RichText::new(what).color(pal().text_dim));
                     ui.label(value);
                     ui.end_row();
                 };
@@ -229,7 +229,7 @@ impl App {
                         (Some(&oldest), n) => format!("{n}, the oldest {}", date(oldest)),
                         _ => String::new(),
                     };
-                    ui.label(egui::RichText::new("Versions").color(TEXT_DIM));
+                    ui.label(egui::RichText::new("Versions").color(pal().text_dim));
                     ui.horizontal(|ui| {
                         ui.label(versions_kept);
                         versions = ui.small_button("Show…").clicked();
@@ -271,14 +271,14 @@ impl App {
                     let sign = if today < 0 { "\u{2212}" } else { "" };
                     let of = if goal > 0 { format!(" of {}", grouped(goal)) } else { String::new() };
                     row(ui, "Today", format!("{sign}{}{of} words", grouped(today.unsigned_abs())));
-                    ui.label(egui::RichText::new("Daily goal").color(TEXT_DIM));
+                    ui.label(egui::RichText::new("Daily goal").color(pal().text_dim));
                     ui.add(egui::DragValue::new(&mut goal).range(0..=100_000).speed(10.0).suffix(" words"))
                         .on_hover_text("0 for none. Today counts the words written in every story.");
                     ui.end_row();
                 });
                 if goal > 0 {
                     let done = (self.words_today().max(0) as f32 / goal as f32).min(1.0);
-                    let reached = if done >= 1.0 { Color32::from_rgb(110, 190, 120) } else { ACCENT };
+                    let reached = if done >= 1.0 { Color32::from_rgb(110, 190, 120) } else { pal().accent };
                     ui.add(egui::ProgressBar::new(done).fill(reached).desired_height(6.0));
                 }
             });

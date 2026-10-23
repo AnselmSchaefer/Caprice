@@ -776,7 +776,7 @@ impl App {
         if story && a != b && b > start && a < start + page_len + 1 {
             let (la, lb) = (a.saturating_sub(start), (b - start).min(page_len + 1));
             for r in layout.selection_rects(la, lb) {
-                let color = crate::theme::ACCENT.gamma_multiply(0.45);
+                let color = crate::theme::pal().accent.gamma_multiply(0.45);
                 ui.painter().rect_filled(r.translate(content.min.to_vec2()), 1.0, color);
             }
         }
@@ -788,7 +788,7 @@ impl App {
             for p in layout.paras.iter().filter(|p| p.image.is_some() && la < p.end && lb > p.start) {
                 if let Some(img) = p.image {
                     let r = img.rect.translate(vec2(0.0, p.y) + content.min.to_vec2());
-                    ui.painter().rect_filled(r, 1.0, crate::theme::ACCENT.gamma_multiply(0.35));
+                    ui.painter().rect_filled(r, 1.0, crate::theme::pal().accent.gamma_multiply(0.35));
                 }
             }
         }
@@ -819,7 +819,7 @@ impl App {
         // Where a dragged picture would land.
         if let Some((_, y)) = self.pic_drag.as_ref().and_then(|d| d.drop) {
             let y = content.min.y + y;
-            ui.painter().line_segment([pos2(content.left(), y), pos2(content.right(), y)], Stroke::new(2.5, crate::theme::ACCENT));
+            ui.painter().line_segment([pos2(content.left(), y), pos2(content.right(), y)], Stroke::new(2.5, crate::theme::pal().accent));
         }
 
         // Resize handles around a selected picture.
@@ -829,7 +829,7 @@ impl App {
                 let c = h.pos(rect);
                 let sq = Rect::from_center_size(c, vec2(9.0, 9.0));
                 ui.painter().rect_filled(sq, 2.0, egui::Color32::WHITE);
-                ui.painter().rect_stroke(sq, 2.0, Stroke::new(1.5, crate::theme::ACCENT), egui::StrokeKind::Outside);
+                ui.painter().rect_stroke(sq, 2.0, Stroke::new(1.5, crate::theme::pal().accent), egui::StrokeKind::Outside);
             }
         }
 

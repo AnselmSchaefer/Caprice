@@ -8,7 +8,7 @@ use crate::App;
 use crate::edit::{Edit, Piece};
 use crate::model::{PAGE_BREAK, ParaAttrs, is_terminator};
 use crate::notes::SEARCH_FIELD;
-use crate::theme::{BTN, BTN_HOVER, DOCK, DOCK_EDGE, TEXT, TEXT_DIM};
+use crate::theme::pal;
 use crate::ui::{DOCK_GAP, DOCK_H};
 
 /// The side of the bar's square buttons, and the field's height.
@@ -36,8 +36,8 @@ fn bar_button(ui: &mut egui::Ui, glyph: Glyph, tip: &str) -> egui::Response {
     let enabled = ui.is_enabled();
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tip));
     let p = ui.painter();
-    p.rect_filled(rect, 8.0, if resp.hovered() && enabled { BTN_HOVER } else { BTN });
-    let ink = if !enabled { TEXT_DIM.gamma_multiply(0.6) } else if resp.hovered() { Color32::WHITE } else { TEXT };
+    p.rect_filled(rect, 8.0, if resp.hovered() && enabled { pal().btn_hover } else { pal().btn });
+    let ink = if !enabled { pal().text_dim.gamma_multiply(0.6) } else if resp.hovered() { pal().text_hot } else { pal().text };
     let s = Stroke::new(1.6, ink);
     let c = rect.center();
     match glyph {
@@ -226,8 +226,8 @@ impl App {
         for k in 1..=4 {
             p.rect_filled(rect.expand(k as f32 * 2.0).translate(vec2(0.0, 3.0)), 14.0 + k as f32 * 2.0, Color32::from_black_alpha(20));
         }
-        p.rect_filled(rect, 14.0, DOCK);
-        p.rect_stroke(rect, 14.0, Stroke::new(1.0, DOCK_EDGE), egui::StrokeKind::Inside);
+        p.rect_filled(rect, 14.0, pal().dock);
+        p.rect_stroke(rect, 14.0, Stroke::new(1.0, pal().dock_edge), egui::StrokeKind::Inside);
 
         let (mut forward, mut backward, mut close, mut more) = (false, false, false, false);
         let (mut replace, mut replace_all) = (false, false);
@@ -270,7 +270,7 @@ impl App {
                 // A slot of its own, so the buttons stay put whatever it says.
                 ui.allocate_ui_with_layout(vec2(COUNT_W, BAR_BTN), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.set_min_size(vec2(COUNT_W, BAR_BTN));
-                    ui.label(egui::RichText::new(label).size(12.5).color(TEXT_DIM));
+                    ui.label(egui::RichText::new(label).size(12.5).color(pal().text_dim));
                 });
                 ui.add_enabled_ui(n > 0, |ui| {
                     backward |= bar_button(ui, Glyph::Previous, "Previous (Shift+Enter)").clicked();

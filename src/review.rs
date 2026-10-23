@@ -10,7 +10,7 @@ use eframe::egui::{self, Color32, Id, Rect, RichText, pos2, vec2};
 
 use crate::App;
 use crate::claude::{Pending, json_list};
-use crate::theme::TEXT_DIM;
+use crate::theme::pal;
 
 /// At most this many chars are read at once; a longer chapter is read around the caret.
 const MOST: usize = 24_000;
@@ -220,7 +220,7 @@ impl App {
                     ui.colored_label(Color32::from_rgb(235, 110, 110), e);
                 }
                 if self.review.read && self.review.issues.is_empty() && self.review.error.is_none() && !busy {
-                    ui.label(RichText::new("Nothing to change.").color(TEXT_DIM));
+                    ui.label(RichText::new("Nothing to change.").color(pal().text_dim));
                 }
                 if !self.review.issues.is_empty() {
                     let counts: Vec<String> = Kind::ALL
@@ -230,7 +230,7 @@ impl App {
                             n => Some(format!("{n} {}", k.name().to_lowercase())),
                         })
                         .collect();
-                    ui.label(RichText::new(counts.join(" · ")).size(12.0).color(TEXT_DIM));
+                    ui.label(RichText::new(counts.join(" · ")).size(12.0).color(pal().text_dim));
                 }
                 ui.separator();
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -251,7 +251,7 @@ impl App {
                                 ui.label(format!("→ {}", issue.fix));
                             }
                             if !issue.why.is_empty() {
-                                ui.label(RichText::new(&issue.why).size(12.5).color(TEXT_DIM));
+                                ui.label(RichText::new(&issue.why).size(12.5).color(pal().text_dim));
                             }
                             ui.horizontal(|ui| {
                                 if !issue.fix.is_empty() {

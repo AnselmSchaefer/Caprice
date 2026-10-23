@@ -11,7 +11,7 @@ use crate::App;
 use crate::fileio::{DocFile, Leaving};
 use crate::fonts::family_for;
 use crate::start::{Kind, Sheet};
-use crate::theme::{ACCENT, DESK, DOCK, DOCK_EDGE, TEXT, TEXT_DIM};
+use crate::theme::pal;
 
 /// The colour of the button that throws changes away.
 const WARN: Color32 = Color32::from_rgb(236, 128, 116);
@@ -162,7 +162,7 @@ impl App {
         let [title, said, change, kept] = lines;
         let serif = family_for(&Kind::Novel.font(&self.fonts), false, false).0;
         let versions = self.keep.dir.is_some();
-        let frame = egui::Frame::new().fill(DOCK).stroke(Stroke::new(1.0, DOCK_EDGE)).corner_radius(CornerRadius::same(16)).inner_margin(24);
+        let frame = egui::Frame::new().fill(pal().dock).stroke(Stroke::new(1.0, pal().dock_edge)).corner_radius(CornerRadius::same(16)).inner_margin(24);
         let mut answer = None;
         let modal = egui::Modal::new(Id::new(id)).frame(frame).backdrop_color(Color32::from_black_alpha(150)).show(ctx, |ui| {
             ui.set_width(440.0);
@@ -174,15 +174,15 @@ impl App {
                 about.sheet.draw(ui.painter(), at, 0.4, 1.0);
                 ui.add_space(8.0);
                 ui.vertical(|ui| {
-                    ui.add(egui::Label::new(RichText::new(title).font(FontId::new(21.0, serif)).color(TEXT)).wrap());
+                    ui.add(egui::Label::new(RichText::new(title).font(FontId::new(21.0, serif)).color(pal().text)).wrap());
                     ui.add_space(2.0);
-                    ui.add(egui::Label::new(RichText::new(said).color(TEXT_DIM)).wrap());
+                    ui.add(egui::Label::new(RichText::new(said).color(pal().text_dim)).wrap());
                 });
             });
             ui.add_space(14.0);
 
             // What is at stake.
-            egui::Frame::new().fill(DESK.gamma_multiply(0.6)).corner_radius(CornerRadius::same(10)).inner_margin(12).show(ui, |ui| {
+            egui::Frame::new().fill(pal().desk.gamma_multiply(0.6)).corner_radius(CornerRadius::same(10)).inner_margin(12).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let mut holds = format!("{} words", crate::words::grouped(about.words));
                 if about.chapters > 0 {
@@ -195,10 +195,10 @@ impl App {
                         ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
                     });
                 };
-                fact(ui, TEXT_DIM, &holds, TEXT);
-                fact(ui, ACCENT, change, TEXT);
+                fact(ui, pal().text_dim, &holds, pal().text);
+                fact(ui, pal().accent, change, pal().text);
                 if versions {
-                    fact(ui, Color32::from_rgb(120, 190, 140), kept, TEXT_DIM);
+                    fact(ui, Color32::from_rgb(120, 190, 140), kept, pal().text_dim);
                 }
             });
             ui.add_space(16.0);
@@ -206,7 +206,7 @@ impl App {
             // Back to writing, the way that throws away, and the way on, the last on the right.
             // Built right to left, so the keyboard comes to the way on first.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let go = ui.add(egui::Button::new(RichText::new(buttons[0]).color(DESK).strong()).fill(ACCENT).min_size(vec2(96.0, 32.0)));
+                let go = ui.add(egui::Button::new(RichText::new(buttons[0]).color(pal().desk).strong()).fill(pal().accent).min_size(vec2(96.0, 32.0)));
                 let lose = ui.add(egui::Button::new(RichText::new(buttons[1]).color(WARN)).min_size(vec2(0.0, 32.0)));
                 let back = ui.add(egui::Button::new("Cancel").frame(false).min_size(vec2(0.0, 32.0)));
                 let other = lose.has_focus() || back.has_focus();
@@ -222,7 +222,7 @@ impl App {
                 };
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let hint = format!("Enter: {}  \u{b7}  Esc: back to writing", buttons[0].trim_end_matches('\u{2026}').to_lowercase());
-                    ui.label(RichText::new(hint).size(11.5).color(TEXT_DIM.gamma_multiply(0.8)));
+                    ui.label(RichText::new(hint).size(11.5).color(pal().text_dim.gamma_multiply(0.8)));
                 });
             });
         });

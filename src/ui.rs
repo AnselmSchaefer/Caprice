@@ -7,7 +7,7 @@ use eframe::egui::{self, Color32, FontId, Id, Rect, Sense, Stroke, UiBuilder, po
 use crate::{App, Appearance};
 use crate::model::{Align, Band, BandLook, BoxLook, CM, ListKind, Orientation, PAGE_FIELD, Style, TextBox};
 use crate::numbers::{Counting, Figures, Numbering};
-use crate::theme::{ACCENT, BTN, BTN_HOVER, DOCK, DOCK_EDGE, TEXT, TEXT_DIM};
+use crate::theme::{Theme, pal};
 
 pub const DOCK_H: f32 = 48.0;
 pub const DOCK_GAP: f32 = 14.0;
@@ -97,8 +97,8 @@ fn paint_icon(p: &egui::Painter, rect: Rect, icon: Icon, ink: Color32) {
 /// A square toolbar button with a drawn icon.
 fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, tip: &str) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
-    let fill = if selected { ACCENT } else if resp.hovered() { BTN_HOVER } else { BTN };
-    let ink = if selected { Color32::from_rgb(20, 22, 30) } else { TEXT };
+    let fill = if selected { pal().accent } else if resp.hovered() { pal().btn_hover } else { pal().btn };
+    let ink = if selected { pal().on_accent } else { pal().text };
     ui.painter().rect_filled(rect, 8.0, fill);
     paint_icon(ui.painter(), rect, icon, ink);
     resp.on_hover_text(tip)
@@ -108,8 +108,8 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, tip: &str) -> egui
 fn icon_dropdown(ui: &mut egui::Ui, icon: Icon, active: bool, tip: &str, popup: impl FnOnce(&mut egui::Ui)) {
     let (rect, resp) = ui.allocate_exact_size(vec2(46.0, 30.0), Sense::click());
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
-    let fill = if active { ACCENT } else if resp.hovered() || open { BTN_HOVER } else { BTN };
-    let ink = if active { Color32::from_rgb(20, 22, 30) } else { TEXT };
+    let fill = if active { pal().accent } else if resp.hovered() || open { pal().btn_hover } else { pal().btn };
+    let ink = if active { pal().on_accent } else { pal().text };
     ui.painter().rect_filled(rect, 8.0, fill);
     paint_icon(ui.painter(), Rect::from_min_size(rect.min, vec2(30.0, 30.0)), icon, ink);
     let c = pos2(rect.right() - 9.0, rect.center().y);
@@ -150,11 +150,11 @@ fn color_dropdown(ui: &mut egui::Ui, color: Option<[u8; 3]>) -> Option<Option<[u
     let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 30.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Text colour"));
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
-    ui.painter().rect_filled(rect, 8.0, if resp.hovered() || open { BTN_HOVER } else { BTN });
+    ui.painter().rect_filled(rect, 8.0, if resp.hovered() || open { pal().btn_hover } else { pal().btn });
     let font = egui::FontId::proportional(15.0);
-    ui.painter().text(rect.center() - vec2(0.0, 3.0), egui::Align2::CENTER_CENTER, "A", font, TEXT);
+    ui.painter().text(rect.center() - vec2(0.0, 3.0), egui::Align2::CENTER_CENTER, "A", font, pal().text);
     let bar = Rect::from_center_size(pos2(rect.center().x, rect.bottom() - 7.0), vec2(16.0, 3.5));
-    ui.painter().rect_filled(bar, 1.0, color.map_or(TEXT, |_| ink_of(color)));
+    ui.painter().rect_filled(bar, 1.0, color.map_or(pal().text, |_| ink_of(color)));
     let mut pick = None;
     egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.horizontal_wrapped(|ui| {
@@ -165,7 +165,7 @@ fn color_dropdown(ui: &mut egui::Ui, color: Option<[u8; 3]>) -> Option<Option<[u
                 swatch.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
                 ui.painter().rect_filled(r, 4.0, ink_of(c));
                 if color == c || swatch.hovered() {
-                    ui.painter().rect_stroke(r.expand(1.5), 5.0, Stroke::new(1.5, TEXT), egui::StrokeKind::Outside);
+                    ui.painter().rect_stroke(r.expand(1.5), 5.0, Stroke::new(1.5, pal().text), egui::StrokeKind::Outside);
                 }
                 if swatch.on_hover_text(name).clicked() {
                     pick = Some(c);
@@ -186,6 +186,54 @@ fn color_dropdown(ui: &mut egui::Ui, color: Option<[u8; 3]>) -> Option<Option<[u
     pick
 }
 
+/// The themes, each drawn as a little desk with its dock, a page and the accent; the one clicked
+/// becomes `theme`.
+fn theme_gallery(ui: &mut egui::Ui, theme: &mut Theme) {
+    egui::Grid::new("theme_gallery").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
+        for (k, t) in Theme::ALL.into_iter().enumerate() {
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(t.name()).size(12.0).color(pal().text_dim));
+                let (rect, resp) = ui.allocate_exact_size(vec2(150.0, 84.0), Sense::click());
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, t.name()));
+                let c = t.palette();
+                let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+                p.rect_filled(rect, 6.0, c.desk);
+                let glow = Rect::from_min_max(rect.min, pos2(rect.right(), rect.center().y));
+                p.rect_filled(glow, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, c.desk_top.gamma_multiply(0.7));
+                let dock = Rect::from_min_size(rect.min + vec2(14.0, 7.0), vec2(rect.width() - 28.0, 14.0));
+                p.rect_filled(dock, 5.0, c.dock);
+                p.rect_stroke(dock, 5.0, Stroke::new(1.0, c.dock_edge), egui::StrokeKind::Inside);
+                for (j, fill) in [c.btn, c.btn, c.accent, c.btn].into_iter().enumerate() {
+                    let b = Rect::from_min_size(dock.min + vec2(4.0 + j as f32 * 13.0, 3.0), vec2(10.0, 8.0));
+                    p.rect_filled(b, 2.0, fill);
+                }
+                let line = Rect::from_min_size(pos2(dock.right() - 34.0, dock.center().y - 1.0), vec2(28.0, 2.0));
+                p.rect_filled(line, 1.0, c.text_dim);
+                let page = Rect::from_min_size(pos2(rect.center().x - 22.0, dock.bottom() + 7.0), vec2(44.0, 52.0));
+                p.rect_filled(page, 1.0, crate::theme::PAPER);
+                for j in 0..6 {
+                    let w = if j == 5 { 18.0 } else { 34.0 };
+                    let y = page.top() + 7.0 + j as f32 * 6.0;
+                    p.rect_filled(Rect::from_min_size(pos2(page.left() + 5.0, y), vec2(w, 1.5)), 0.0, Color32::from_gray(190));
+                }
+                p.circle_filled(pos2(page.right() + 12.0, page.bottom() - 6.0), 4.0, c.accent);
+                p.circle_filled(pos2(page.left() - 12.0, page.top() + 10.0), 2.5, c.caret);
+                if *theme == t {
+                    ui.painter().rect_stroke(rect.expand(1.5), 7.0, Stroke::new(2.0, pal().accent), egui::StrokeKind::Outside);
+                } else if resp.hovered() {
+                    ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, pal().text_dim), egui::StrokeKind::Outside);
+                }
+                if resp.on_hover_text(t.about()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    *theme = t;
+                }
+            });
+            if k % 2 == 1 {
+                ui.end_row();
+            }
+        }
+    });
+}
+
 /// Something picked in the Insert menu.
 enum InsertAction {
     Picture,
@@ -202,7 +250,7 @@ fn box_gallery(ui: &mut egui::Ui, typing: &Style) -> Option<BoxLook> {
     egui::Grid::new("box_gallery").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
         for (k, look) in BoxLook::ALL.into_iter().enumerate() {
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(look.name()).size(12.0).color(TEXT_DIM));
+                ui.label(egui::RichText::new(look.name()).size(12.0).color(pal().text_dim));
                 let (rect, resp) = ui.allocate_exact_size(vec2(170.0, 66.0), Sense::click());
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, look.name()));
                 let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
@@ -216,7 +264,7 @@ fn box_gallery(ui: &mut egui::Ui, typing: &Style) -> Option<BoxLook> {
                     p.extend(ink.translate(rect.min.to_vec2()).shape());
                 }
                 if resp.hovered() {
-                    ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, TEXT_DIM), egui::StrokeKind::Outside);
+                    ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, pal().text_dim), egui::StrokeKind::Outside);
                 }
                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     pick = Some(look);
@@ -273,8 +321,8 @@ fn has_line(g: usize) -> bool {
 fn more_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(MORE_W, 30.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "More tools"));
-    let fill = if open { ACCENT } else if resp.hovered() { BTN_HOVER } else { BTN };
-    let ink = if open { Color32::from_rgb(20, 22, 30) } else { TEXT };
+    let fill = if open { pal().accent } else if resp.hovered() { pal().btn_hover } else { pal().btn };
+    let ink = if open { pal().on_accent } else { pal().text };
     ui.painter().rect_filled(rect, 8.0, fill);
     for k in [-1.0, 0.0, 1.0] {
         ui.painter().circle_filled(rect.center() + vec2(k * 5.5, 0.0), 1.7, ink);
@@ -299,8 +347,8 @@ impl App {
             let g = rect.expand(k as f32 * 2.0).translate(vec2(0.0, 4.0));
             p.rect_filled(g, 16.0 + k as f32 * 2.0, Color32::from_black_alpha(20));
         }
-        p.rect_filled(rect, 16.0, DOCK);
-        p.rect_stroke(rect, 16.0, Stroke::new(1.0, DOCK_EDGE), egui::StrokeKind::Inside);
+        p.rect_filled(rect, 16.0, pal().dock);
+        p.rect_stroke(rect, 16.0, Stroke::new(1.0, pal().dock_edge), egui::StrokeKind::Inside);
     }
 
     /// The formatting dock: one row of tools in groups, the document's name at its right end. Groups
@@ -311,7 +359,7 @@ impl App {
         Self::paint_dock(ui, rect);
         let inner = rect.shrink2(vec2(14.0, 0.0));
         let name = self.doc_name();
-        let galley = ui.painter().layout_no_wrap(name.clone(), FontId::proportional(13.0), TEXT_DIM);
+        let galley = ui.painter().layout_no_wrap(name.clone(), FontId::proportional(13.0), pal().text_dim);
         // The name is never hidden: when the tools need the room, it keeps about four characters.
         let name_w = galley.size().x;
         let four = (name_w / name.chars().count().max(1) as f32 * 4.0).min(name_w);
@@ -414,15 +462,15 @@ impl App {
         if slot.width() <= 0.0 {
             // No room for any of it.
         } else if name_w <= slot.width() + 0.5 {
-            p.galley(pos2(inner.right() - name_w, y), galley, TEXT_DIM);
+            p.galley(pos2(inner.right() - name_w, y), galley, pal().text_dim);
         } else {
             // The gap between one pass and the next is narrower than the room, so the room is never empty.
             let lap = name_w + (NAME_GAP * 2.0).min(slot.width() * 0.6);
             // Each pass begins with the start of the name standing still for a while.
             let t = ui.input(|i| i.time) as f32 % (NAME_PAUSE + lap / NAME_SPEED);
             let x = slot.left() - (t - NAME_PAUSE).max(0.0) * NAME_SPEED;
-            p.galley(pos2(x, y), galley.clone(), TEXT_DIM);
-            p.galley(pos2(x + lap, y), galley, TEXT_DIM);
+            p.galley(pos2(x, y), galley.clone(), pal().text_dim);
+            p.galley(pos2(x + lap, y), galley, pal().text_dim);
             let wait = if t < NAME_PAUSE { NAME_PAUSE - t } else { 0.033 };
             ctx.request_repaint_after(std::time::Duration::from_secs_f32(wait));
         }
@@ -562,7 +610,7 @@ impl App {
                 }
             });
             ui.add_space(2.0);
-            ui.label(egui::RichText::new("Line spacing").size(12.0).color(TEXT_DIM));
+            ui.label(egui::RichText::new("Line spacing").size(12.0).color(pal().text_dim));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for s in [1.0_f32, 1.15, 1.5, 2.0, 3.0] {
@@ -797,6 +845,7 @@ impl App {
     fn page_menu(&mut self, ui: &mut egui::Ui, out: &mut Tools) -> Option<crate::model::PageSetup> {
         let mut setup = self.doc.setup.clone();
         let mut look = self.appearance;
+        let mut theme = self.themes.theme;
         egui::containers::menu::MenuButton::new("Page")
             .config(
                 egui::containers::menu::MenuConfig::new()
@@ -808,6 +857,10 @@ impl App {
                     ui.label("View");
                     ui.selectable_value(&mut look, Appearance::Book, "Book").on_hover_text("Pages turn over like a book's");
                     ui.selectable_value(&mut look, Appearance::Paperstack, "Paperstack").on_hover_text("Pages slide onto a stack");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Theme");
+                    ui.menu_button(theme.name(), |ui| theme_gallery(ui, &mut theme));
                 });
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -855,6 +908,7 @@ impl App {
                 ui.separator();
                 ui.menu_button("Page numbers", |ui| self.numbers_menu(ui, out));
             });
+        self.themes.choose(ui.ctx(), theme);
         if look != self.appearance {
             self.appearance = look;
             // Whatever was moving finishes the new way.
@@ -870,7 +924,7 @@ impl App {
         let page = self.target.min(self.last());
         let contents = self.doc.spans[page].contents.is_some();
         let now = self.doc.numbering_on(page);
-        let dim = |t: String| egui::RichText::new(t).size(12.0).color(TEXT_DIM);
+        let dim = |t: String| egui::RichText::new(t).size(12.0).color(pal().text_dim);
         ui.label(dim(if contents { "The contents pages".into() } else { format!("From page {} on", page + 1) }));
         let mut new = now;
         let start = match now.counting {
@@ -959,7 +1013,7 @@ impl App {
                 egui::Align2::LEFT_CENTER,
                 format!("Page {} of {}", self.scrub_page().filter(|_| self.appearance == Appearance::Paperstack).unwrap_or(self.pos.round() as usize) + 1, n),
                 FontId::proportional(13.0),
-                TEXT_DIM,
+                pal().text_dim,
             );
         }
         let scratch_btn = Rect::from_min_max(pos2(r.right() - 100.0, cy - 15.0), pos2(r.right(), cy + 15.0));
@@ -991,7 +1045,7 @@ impl App {
                 egui::Align2::RIGHT_CENTER,
                 format!("{:.0}%", self.zoom * 100.0),
                 FontId::proportional(13.0),
-                TEXT_DIM,
+                pal().text_dim,
             );
         }
 
@@ -1000,7 +1054,7 @@ impl App {
         if !show_track {
             return;
         }
-        ui.painter().rect_filled(track, 4.0, Color32::from_rgb(30, 32, 38));
+        ui.painter().rect_filled(track, 4.0, pal().field);
         // Pages sliding in count only as they arrive, and a page sliding out until it is gone, so
         // the thumb glides instead of jumping when pages come and go.
         let arriving = if self.slide_in.is_some() { (self.target as f32 - self.pos).max(0.0) } else { 0.0 };
@@ -1011,7 +1065,7 @@ impl App {
         if last > 0.0 && n <= 80 {
             for k in 0..=last.floor() as usize {
                 let x = track.left() + thumb_w / 2.0 + travel * k as f32 / last;
-                ui.painter().circle_filled(pos2(x, cy), 1.3, Color32::from_white_alpha(45));
+                ui.painter().circle_filled(pos2(x, cy), 1.3, pal().text.gamma_multiply(0.18));
             }
         }
 
@@ -1042,6 +1096,6 @@ impl App {
 
         let thumb = Rect::from_min_size(pos2(track.left() + travel * f, cy - 8.0), vec2(thumb_w, 16.0));
         let hot = resp.hovered() || self.scrub_to.is_some();
-        ui.painter().rect_filled(thumb, 8.0, if hot { ACCENT } else { Color32::from_rgb(112, 124, 196) });
+        ui.painter().rect_filled(thumb, 8.0, if hot { pal().accent } else { pal().thumb });
     }
 }

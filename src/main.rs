@@ -41,7 +41,7 @@ use eframe::egui::{self, Key, Modifiers, Pos2, Rect};
 use fonts::FontBook;
 use model::{Doc, Style};
 use search::Search;
-use theme::{DESK, apply_theme};
+use theme::apply_theme;
 
 /// The app icon, for window managers that take it from the window (the launcher uses the installed files).
 fn window_icon() -> egui::IconData {
@@ -227,6 +227,8 @@ pub struct App {
     pub start: start::Start,
     /// The cast peeking out from behind the page now and then.
     pub peeks: peek::Peeks,
+    /// The colours around the pages, and where the choice is kept.
+    pub themes: theme::Themes,
 }
 
 impl App {
@@ -313,6 +315,7 @@ impl App {
             boxes: textbox::Boxes::default(),
             start: start::Start::new(),
             peeks: peek::Peeks::default(),
+            themes: theme::Themes::new(),
         };
         app.saved_hash = app.content_hash();
         app
@@ -344,13 +347,13 @@ impl App {
         if !self.shown_status.is_empty() && age < SHOW_FOR {
             let text = self.shown_status.trim_start_matches(['-', ' ']).to_owned();
             let fade = (((SHOW_FOR - age) / 0.6) as f32).clamp(0.0, 1.0);
-            let galley = ui.painter().layout_no_wrap(text, egui::FontId::proportional(13.0), theme::TEXT.gamma_multiply(fade));
+            let galley = ui.painter().layout_no_wrap(text, egui::FontId::proportional(13.0), theme::pal().text.gamma_multiply(fade));
             let size = galley.size() + egui::vec2(28.0, 14.0);
             let center = egui::pos2(area.center().x, area.bottom() - ui::DOCK_GAP - ui::DOCK_H - 26.0);
             let pill = Rect::from_center_size(center, size);
-            ui.painter().rect_filled(pill, 12.0, theme::DOCK.gamma_multiply(fade));
-            ui.painter().rect_stroke(pill, 12.0, egui::Stroke::new(1.0, theme::DOCK_EDGE.gamma_multiply(fade)), egui::StrokeKind::Inside);
-            ui.painter().galley(pill.center() - galley.size() / 2.0, galley, theme::TEXT);
+            ui.painter().rect_filled(pill, 12.0, theme::pal().dock.gamma_multiply(fade));
+            ui.painter().rect_stroke(pill, 12.0, egui::Stroke::new(1.0, theme::pal().dock_edge.gamma_multiply(fade)), egui::StrokeKind::Inside);
+            ui.painter().galley(pill.center() - galley.size() / 2.0, galley, theme::pal().text);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
@@ -513,7 +516,8 @@ impl App {
     fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let area = ui.max_rect();
-        ui.painter().rect_filled(area, 0.0, DESK);
+        self.themes.show(&ctx);
+        theme::paint_desk(ui.painter(), area);
 
         self.fonts.activate_pending();
         if let Some(path) = self.startup_file.take() {
@@ -702,6 +706,7 @@ mod tests {
             (app.keep.autosave, app.keep.dir, app.words.file, app.start.file) = (false, None, None, None);
             app.start.recent.clear();
             app.words.progress = Default::default();
+            app.themes = theme::Themes::kept_in(None);
             Self { ctx, app, time: 0.0, mods: Modifiers::NONE, access: None, painted: Vec::new(), width: 1240.0 }
         }
 
@@ -5287,6 +5292,53 @@ mod tests {
 
     /// How strongly the words `words` stand out from what was painted under them, as WCAG counts
     /// it (1: not at all, 21: black on white).
+    /// The colour at the bottom left of the desk as last painted.
+    fn desk_painted(h: &Harness) -> egui::Color32 {
+        let desk = h.painted.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Mesh(m) if m.vertices.len() == 4 && m.vertices[3].pos.x >= h.width - 1.0 => Some(m.vertices[2].color),
+            _ => None,
+        });
+        desk.expect("the desk")
+    }
+
+    #[test]
+    fn a_theme_picked_in_the_page_menu_washes_over_the_desk_and_is_kept_for_next_time() {
+        let dir = std::env::temp_dir().join(format!("caprice-theme-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut h = Harness::new();
+        h.app.themes = theme::Themes::kept_in(Some(dir.join("theme.json")));
+        h.frames(3, vec![], Modifiers::NONE);
+        let (from, to) = (theme::Theme::Midnight.palette().desk, theme::Theme::Lagoon.palette().desk);
+        assert_eq!(desk_painted(&h), from);
+        h.click_widget("Page");
+        h.click_widget("Midnight Ink ⏵");
+        h.click_widget("Lagoon");
+        h.wait(0.25);
+        let midway = desk_painted(&h);
+        assert!(midway != from && midway != to, "the new desk fades in: {midway:?}");
+        h.wait(1.0);
+        assert_eq!(desk_painted(&h), to);
+        assert_eq!(theme::pal(), theme::Theme::Lagoon.palette(), "the docks and windows too");
+
+        let mut again = Harness::new();
+        again.app.themes = theme::Themes::kept_in(Some(dir.join("theme.json")));
+        again.frames(2, vec![], Modifiers::NONE);
+        assert_eq!(desk_painted(&again), to, "the next time Caprice opens");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_docks_stay_readable_in_every_theme() {
+        let mut h = Harness::new();
+        for t in theme::Theme::ALL {
+            let ctx = h.ctx.clone();
+            h.app.themes.choose(&ctx, t);
+            h.wait(1.0);
+            assert!(painted_contrast(&h, "Page") >= 4.5, "{t:?}: a tool's name");
+            assert!(painted_contrast(&h, "Page 1 of 1") >= 3.0, "{t:?}: the page bar");
+        }
+    }
+
     fn painted_contrast(h: &Harness, words: &str) -> f32 {
         let at = h.painted.iter().position(|cs| matches!(&cs.shape, egui::Shape::Text(t) if t.galley.job.text == words)).expect(words);
         let egui::Shape::Text(t) = &h.painted[at].shape else { unreachable!() };

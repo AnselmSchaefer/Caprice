@@ -12,7 +12,7 @@ use eframe::egui::{self, Color32, Id, RichText};
 use crate::App;
 use crate::claude::{Pending, json_list};
 use crate::review::left_dock;
-use crate::theme::{ACCENT, TEXT_DIM};
+use crate::theme::pal;
 
 /// At most this many chars of the story before the caret are read.
 const BACK: usize = 16_000;
@@ -170,10 +170,10 @@ impl App {
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                     for (k, idea) in self.ideas.ideas.iter().enumerate() {
                         ui.push_id(k, |ui| {
-                            ui.label(RichText::new(&idea.title).strong().size(15.0).color(ACCENT));
+                            ui.label(RichText::new(&idea.title).strong().size(15.0).color(pal().accent));
                             ui.label(&idea.what);
                             if !idea.hook.is_empty() {
-                                ui.label(RichText::new(&idea.hook).italics().size(12.5).color(TEXT_DIM));
+                                ui.label(RichText::new(&idea.hook).italics().size(12.5).color(pal().text_dim));
                             }
                             ui.horizontal(|ui| {
                                 if ui.button("To scratchpad").on_hover_text("Keep this idea at the end of the scratchpad").clicked() {

@@ -10,7 +10,7 @@ Caprice is a word processor for writing stories, not reports. It gives you real 
 
 - **Easy to use.** One small toolbar, real pages and no clutter. Start typing, and the story fills page after page.
 - **A welcome to come back to.** Opened without a file, Caprice greets you with a page of its own: begin something new, or pick up one of the stories you opened last, each shown with its first page, its first words, how many words it holds and when you last had it open. Choose one and its sheet flies onto the desk and becomes the page.
-- **Joy in writing.** Pages turn over like a book’s, or slide onto a stack (pick the look under Page → View: *Book* or *Paperstack*). The pages you have already written pile up beside the one you are on, so you can watch the story grow.
+- **Joy in writing.** Pages turn over like a book’s, or slide onto a stack (pick the look under Page → View: *Book* or *Paperstack*). Under Page → Theme, the desk and docks come in seven moods: *Midnight Ink*, *Lagoon*, *Marmalade*, *Disco Grape*, *Bubblegum*, *Pistachio Sorbet* and *Typewriter*; the new one washes in over the old. The pages you have already written pile up beside the one you are on, so you can watch the story grow.
 - **Room for ideas.** Stick post-its to any line for plot twists, names and "what if…" thoughts. They peek out of the page piles, and clicking one takes you back to its page.
 
 ## Features
@@ -56,4 +56,4 @@ The scene painting and the pen use [Claude Code](https://claude.com/claude-code)
 
 Stories are saved as `.caprice` files: plain JSON holding the text, notes, pictures, the scenes behind the pages and the cast.
 
-Caprice keeps its own things in its data folder (`~/.local/share/caprice` on Linux, `~/Library/Application Support/Caprice` on macOS): the versions of every story, the list of stories last opened for the welcome page, and your daily word goal.
+Caprice keeps its own things in its data folder (`~/.local/share/caprice` on Linux, `~/Library/Application Support/Caprice` on macOS): the versions of every story, the list of stories last opened for the welcome page, your daily word goal and the theme you picked.

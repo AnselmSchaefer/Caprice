@@ -19,7 +19,7 @@ use crate::App;
 use crate::fileio::DocFile;
 use crate::fonts::{FontBook, family_for};
 use crate::model::{Align, Band, BandLook, CHAPTER_FIELD, Doc, Flow, PAGE_FIELD, PageSetup, ParaAttrs, ParaKind, Style};
-use crate::theme::{self, DESK, INK, PAPER, TEXT, TEXT_DIM};
+use crate::theme::{self, INK, PAPER, pal};
 
 /// How many stories the list remembers.
 const REMEMBER: usize = 8;
@@ -527,7 +527,7 @@ impl App {
     /// Draw the welcome page over `ui`; what was chosen, when `live`.
     fn welcome_page(&mut self, ui: &mut Ui, live: bool) -> Option<Chosen> {
         let area = ui.max_rect();
-        backdrop(ui.painter(), area);
+        theme::paint_desk(ui.painter(), area);
         let now = self.keep.now();
         // The name in the novel's type, once it is there (it comes the next frame, `FontBook::ensure`).
         let serif = Kind::Novel.font(&self.fonts);
@@ -550,12 +550,12 @@ impl App {
             ui.add_space((area.height() * 0.07).clamp(24.0, 64.0) - 16.0);
 
             // Who we are, and good day.
-            let name = galley(ui, "Caprice", FontId::new(46.0, serif.clone()), TEXT, col, 1, false);
+            let name = galley(ui, "Caprice", FontId::new(46.0, serif.clone()), pal().text, col, 1, false);
             let mut hello = greeting(now).to_owned();
             if words_today > 0 {
                 hello = format!("{hello}  {} words written today.", crate::words::grouped(words_today as usize));
             }
-            let hello = galley(ui, hello, FontId::proportional(16.0), TEXT_DIM, col, 1, false);
+            let hello = galley(ui, hello, FontId::proportional(16.0), pal().text_dim, col, 1, false);
             // The emblem, then the name and the greeting beside it, centred on it.
             let side: f32 = 84.0;
             let text_h = name.size().y + hello.size().y + 6.0;
@@ -565,8 +565,8 @@ impl App {
             crate::emblem::draw(ui.painter(), tile, since);
             let (x, top) = (left + side + 26.0, tile.center().y - text_h / 2.0);
             let below = top + name.size().y + 6.0;
-            ui.painter().galley(pos2(x, top), name, TEXT);
-            ui.painter().galley(pos2(x + 2.0, below), hello, TEXT_DIM);
+            ui.painter().galley(pos2(x, top), name, pal().text);
+            ui.painter().galley(pos2(x + 2.0, below), hello, pal().text_dim);
             ui.add_space(34.0);
 
             // Something new.
@@ -576,7 +576,7 @@ impl App {
             let sheet_h = (card_w * 0.9).clamp(96.0, 168.0);
             for row in Kind::ALL.chunks(per_row) {
                 let font = FontId::proportional(12.5);
-                let abouts: Vec<_> = row.iter().map(|k| galley(ui, k.about(), font.clone(), TEXT_DIM, card_w - 24.0, 3, false)).collect();
+                let abouts: Vec<_> = row.iter().map(|k| galley(ui, k.about(), font.clone(), pal().text_dim, card_w - 24.0, 3, false)).collect();
                 let about_h = abouts.iter().map(|g| g.size().y).fold(0.0, f32::max);
                 let card_h = 18.0 + sheet_h + 16.0 + 24.0 + about_h + 16.0;
                 let (r, _) = ui.allocate_exact_size(vec2(full, card_h), Sense::hover());
@@ -586,14 +586,14 @@ impl App {
                     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, kind.name()));
                     let lift = ui.ctx().animate_bool_with_time(resp.id, live && resp.hovered(), 0.15);
                     let p = ui.painter();
-                    p.rect_filled(card, CornerRadius::same(12), theme::DOCK.gamma_multiply(0.35 + 0.65 * lift));
+                    p.rect_filled(card, CornerRadius::same(12), theme::pal().dock.gamma_multiply(0.35 + 0.65 * lift));
                     let sheet = kind.sheet();
                     let w = sheet.width_for(sheet_h);
                     let at = Rect::from_min_size(pos2(card.center().x - w / 2.0, card.top() + 18.0 - 5.0 * lift), vec2(w, sheet_h));
                     sheet.draw(p, at, lift, 1.0);
                     let y = card.top() + 18.0 + sheet_h + 16.0;
-                    p.galley(pos2(card.left() + 12.0, y), galley(ui, kind.name(), FontId::proportional(15.5), TEXT, card_w - 24.0, 1, false), TEXT);
-                    p.galley(pos2(card.left() + 12.0, y + 24.0), about, TEXT_DIM);
+                    p.galley(pos2(card.left() + 12.0, y), galley(ui, kind.name(), FontId::proportional(15.5), pal().text, card_w - 24.0, 1, false), pal().text);
+                    p.galley(pos2(card.left() + 12.0, y + 24.0), about, pal().text_dim);
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         chosen = Some(Chosen::Begin(*kind, at));
                     }
@@ -611,9 +611,9 @@ impl App {
             }
             if stories.is_empty() {
                 let say = "Stories you open or save will be here, to pick up where you left off.";
-                let g = galley(ui, say, FontId::proportional(14.0), TEXT_DIM, col, 2, false);
+                let g = galley(ui, say, FontId::proportional(14.0), pal().text_dim, col, 2, false);
                 let (r, _) = ui.allocate_exact_size(vec2(full, g.size().y + 8.0), Sense::hover());
-                ui.painter().galley(pos2(left, r.top() + 4.0), g, TEXT_DIM);
+                ui.painter().galley(pos2(left, r.top() + 4.0), g, pal().text_dim);
             }
             for st in &stories {
                 if let Some(at) = story_row(ui, st, left, col, full, &serif, now, sense, live) {
@@ -646,7 +646,7 @@ impl App {
             // Until it lands, the page under it is desk: the sheet becomes the page, not a second one.
             // Landed, it lies just over the page, so it fades white on white (fading both went grey).
             let cover = self.last_page_rect.expand2(vec2(80.0, 30.0));
-            ui.painter().rect_filled(cover, 0.0, DESK);
+            ui.painter().rect_filled(cover, 0.0, pal().desk);
         }
         let layer = LayerId::new(Order::Foreground, Id::new("welcome_leaving"));
         let mut over = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
@@ -676,7 +676,7 @@ fn story_row(ui: &mut Ui, st: &Story, left: f32, col: f32, full: f32, serif: &eg
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &st.name));
     let lift = ui.ctx().animate_bool_with_time(resp.id, live && resp.hovered(), 0.15);
     let p = ui.painter();
-    p.rect_filled(row, CornerRadius::same(12), theme::DOCK.gamma_multiply(0.25 + 0.75 * lift));
+    p.rect_filled(row, CornerRadius::same(12), theme::pal().dock.gamma_multiply(0.25 + 0.75 * lift));
     let sheet_h = row_h - 30.0;
     let w = st.sheet.width_for(sheet_h);
     let at = Rect::from_min_size(pos2(row.left() + 16.0 + (64.0 - w) / 2.0, row.top() + 15.0 - 3.0 * lift), vec2(w, sheet_h));
@@ -693,44 +693,31 @@ fn story_row(ui: &mut Ui, st: &Story, left: f32, col: f32, full: f32, serif: &eg
     whens.push(folder_name(&st.path));
     let mut y = row.top() + 18.0;
     for (k, when) in whens.into_iter().enumerate() {
-        let color = if k == 0 { TEXT } else { TEXT_DIM };
+        let color = if k == 0 { pal().text } else { pal().text_dim };
         let g = galley(ui, when, FontId::proportional(12.5), color, right_w, 1, false);
         p.galley(pos2(row.right() - 16.0 - g.size().x, y), g, color);
         y += 20.0;
     }
-    let name = galley(ui, &st.name, FontId::new(20.0, serif.clone()), TEXT, text_w, 1, false);
+    let name = galley(ui, &st.name, FontId::new(20.0, serif.clone()), pal().text, text_w, 1, false);
     let excerpt = if st.excerpt.is_empty() { "Nothing written yet.".to_owned() } else { format!("\u{201c}{}\u{201d}", st.excerpt) };
-    let excerpt = galley(ui, excerpt, FontId::proportional(13.0), TEXT.gamma_multiply(0.72), text_w, 2, true);
-    let meta = galley(ui, holds(st), FontId::proportional(12.0), TEXT_DIM, text_w, 1, false);
+    let excerpt = galley(ui, excerpt, FontId::proportional(13.0), pal().text.gamma_multiply(0.72), text_w, 2, true);
+    let meta = galley(ui, holds(st), FontId::proportional(12.0), pal().text_dim, text_w, 1, false);
     let mut y = row.top() + 14.0;
     let (name_h, excerpt_h) = (name.size().y, excerpt.size().y);
-    p.galley(pos2(x, y), name, TEXT);
+    p.galley(pos2(x, y), name, pal().text);
     y += name_h + 4.0;
-    p.galley(pos2(x, y), excerpt, TEXT);
+    p.galley(pos2(x, y), excerpt, pal().text);
     y += excerpt_h + 6.0;
-    p.galley(pos2(x, y), meta, TEXT_DIM);
+    p.galley(pos2(x, y), meta, pal().text_dim);
     let clicked = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(st.path.display().to_string()).clicked();
     clicked.then_some(at)
 }
 
-/// The page's ground: the desk, a little lighter at the top.
-fn backdrop(painter: &egui::Painter, area: Rect) {
-    let top = Color32::from_rgb(40, 43, 53);
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(area.left_top(), top);
-    mesh.colored_vertex(area.right_top(), top);
-    mesh.colored_vertex(area.left_bottom(), DESK);
-    mesh.colored_vertex(area.right_bottom(), DESK);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(1, 3, 2);
-    painter.add(mesh);
-}
-
 /// A section's small heading, across the column; its row.
 fn heading(ui: &mut Ui, left: f32, full: f32, text: &str) -> Rect {
-    let g = galley(ui, text.to_uppercase(), FontId::proportional(12.0), TEXT_DIM, full, 1, false);
+    let g = galley(ui, text.to_uppercase(), FontId::proportional(12.0), pal().text_dim, full, 1, false);
     let (r, _) = ui.allocate_exact_size(vec2(full, 30.0), Sense::hover());
-    ui.painter().galley(pos2(left, r.center().y - g.size().y / 2.0), g, TEXT_DIM);
+    ui.painter().galley(pos2(left, r.center().y - g.size().y / 2.0), g, pal().text_dim);
     ui.add_space(6.0);
     r
 }

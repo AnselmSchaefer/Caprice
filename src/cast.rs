@@ -25,7 +25,7 @@ use crate::App;
 use crate::backdrop::{MODEL, SYSTEM, extract_svg, rasterize};
 use crate::claude::{Outcome, run_claude};
 use crate::model::{Character, Doc, Look, PAGE_BREAK, ParaKind};
-use crate::theme::TEXT_DIM;
+use crate::theme::pal;
 
 /// How many model sheets go with one scene at most. Each is some 15 to 30 KB of SVG, and with more
 /// people in one picture Claude starts to mix them up.
@@ -437,7 +437,7 @@ impl App {
                 let about = "The people of the story. When a scene is painted, those its passage names are painted \
                              as described here, and copied from their model sheet if they have one, so they look \
                              the same in every picture.";
-                ui.label(egui::RichText::new(about).size(12.0).color(TEXT_DIM));
+                ui.label(egui::RichText::new(about).size(12.0).color(pal().text_dim));
                 ui.horizontal(|ui| {
                     if ui.button("Add someone").clicked() {
                         action = Some(Do::Add);
@@ -463,7 +463,7 @@ impl App {
                             // Which look is in use, by the name, so it is switched without scrolling.
                             if several {
                                 ui.horizontal_wrapped(|ui| {
-                                    ui.label(egui::RichText::new("In use:").color(TEXT_DIM));
+                                    ui.label(egui::RichText::new("In use:").color(pal().text_dim));
                                     for (k, l) in c.looks.iter().enumerate() {
                                         let tip = "Scenes painted from now on show them so";
                                         if ui.radio(k == c.active, look_title(l, k)).on_hover_text(tip).clicked() && k != c.active {
@@ -500,7 +500,7 @@ impl App {
                                     if let Some((_, peek)) = drawing.filter(|(look, _)| *look == l.id) {
                                         ui.spinner();
                                         let doing = if peek { "Drawing them peeking out\u{2026}" } else { "Drawing the model sheet\u{2026}" };
-                                        ui.label(egui::RichText::new(doing).color(TEXT_DIM));
+                                        ui.label(egui::RichText::new(doing).color(pal().text_dim));
                                         if ui.small_button("Stop").clicked() {
                                             action = Some(Do::Stop);
                                         }
@@ -640,7 +640,7 @@ impl App {
                              drawing change. With her model sheet she is the same figure throughout, posed for each \
                              scene. Poses the sheet does not show are the weak point: at the inn she sits in the \
                              story but stands in the picture.";
-                ui.label(egui::RichText::new(about).size(12.0).color(TEXT_DIM));
+                ui.label(egui::RichText::new(about).size(12.0).color(pal().text_dim));
                 ui.add_space(4.0);
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let w = ui.available_width();

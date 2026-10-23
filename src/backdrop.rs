@@ -21,7 +21,7 @@ use eframe::egui::{self, Color32, ColorImage, Id, Key, Modifiers, Pos2, Rect, Sh
 use crate::App;
 use crate::claude::{Outcome, run_claude};
 use crate::model::{Character, Doc, IMAGE_CHAR, PAGE_BREAK, Scene, is_terminator};
-use crate::theme::TEXT_DIM;
+use crate::theme::pal;
 
 /// How strongly a scene shows through the paper.
 pub const OPACITY: f32 = 0.2;
@@ -959,7 +959,7 @@ impl App {
             .resizable(true)
             .collapsible(false)
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new("What should Claude paint behind this part of the story?").color(TEXT_DIM));
+                ui.label(egui::RichText::new("What should Claude paint behind this part of the story?").color(pal().text_dim));
                 let field = egui::TextEdit::multiline(&mut b.description)
                     .hint_text("A rural village in a valley between the mountains and the sea, at dusk\u{2026}")
                     .desired_rows(5)
@@ -1031,12 +1031,12 @@ impl App {
                             ui.vertical(|ui| {
                                 let page = self.doc.page_of(s.at) + 1;
                                 let mark = if here == Some(s.id) { "  \u{b7} shown now" } else { "" };
-                                ui.label(egui::RichText::new(format!("Page {page}{mark}")).size(12.0).color(TEXT_DIM));
+                                ui.label(egui::RichText::new(format!("Page {page}{mark}")).size(12.0).color(pal().text_dim));
                                 ui.label(self.scene_snippet(s.at)).on_hover_text(&s.subject);
                                 if !self.doc.cast.is_empty() {
                                     ui.horizontal(|ui| {
                                         let with = if s.people.is_empty() { "With no one from the cast".to_owned() } else { format!("With {}", s.people.join(", ")) };
-                                        ui.label(egui::RichText::new(with).size(12.0).color(TEXT_DIM));
+                                        ui.label(egui::RichText::new(with).size(12.0).color(pal().text_dim));
                                         let tip = "Choose who of the cast is in this scene, then paint it again";
                                         egui::containers::menu::MenuButton::new("People").ui(ui, |ui| {
                                             for c in self.doc.cast.iter().filter(|c| !c.name.trim().is_empty()) {

@@ -359,7 +359,7 @@ impl App {
             self.follow_box_drag(&ctx, &resp, i, sc);
             if selected {
                 self.box_handles(ui, &ctx, &b, rect, i, sc);
-                let edge = Stroke::new(1.0, crate::theme::ACCENT.gamma_multiply(0.8));
+                let edge = Stroke::new(1.0, crate::theme::pal().accent.gamma_multiply(0.8));
                 ui.painter().rect_stroke(rect, 0.0, edge, egui::StrokeKind::Outside);
             }
         }
@@ -476,7 +476,7 @@ impl App {
             let c = h.pos(rect);
             let sq = Rect::from_center_size(c, vec2(9.0, 9.0));
             ui.painter().rect_filled(sq, 2.0, Color32::WHITE);
-            ui.painter().rect_stroke(sq, 2.0, Stroke::new(1.5, crate::theme::ACCENT), egui::StrokeKind::Outside);
+            ui.painter().rect_stroke(sq, 2.0, Stroke::new(1.5, crate::theme::pal().accent), egui::StrokeKind::Outside);
             let r = ui.interact(Rect::from_center_size(c, vec2(13.0, 13.0)), Id::new(("box_handle", b.id, h.kx, h.ky)), Sense::drag());
             if r.hovered() || r.dragged() {
                 ui.output_mut(|o| o.cursor_icon = h.cursor());

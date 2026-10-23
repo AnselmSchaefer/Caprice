@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use crate::App;
 use crate::model::{IMAGE_CHAR, PAGE_BREAK};
-use crate::theme::{ACCENT, TEXT_DIM};
+use crate::theme::pal;
 
 /// The model that answers about a passage.
 const MODEL: &str = "claude-opus-5-5";
@@ -557,7 +557,7 @@ impl App {
         let mut open = self.story_notes_open;
         egui::Window::new("Story notes").id(Id::new("story_notes")).open(&mut open).default_width(420.0).show(ctx, |ui| {
             let about = "Claude reads these whenever it reviews, answers about or connects parts of the story.";
-            ui.label(egui::RichText::new(about).size(12.0).color(TEXT_DIM));
+            ui.label(egui::RichText::new(about).size(12.0).color(pal().text_dim));
             let hint = "Who is who, what has happened so far, what the reader must not learn yet…";
             let field = egui::TextEdit::multiline(&mut self.doc.story_notes).hint_text(hint).desired_width(f32::INFINITY);
             ui.add(field.desired_rows(14));
@@ -636,7 +636,7 @@ impl App {
         let Some(l) = self.lasso.as_ref().filter(|l| l.points.len() > 1) else { return }; // none by cursor
         let sc = self.scale_of(page_rect);
         let pts: Vec<Pos2> = l.points.iter().map(|&p| page_rect.min + p.to_vec2() * sc).collect();
-        let stroke = Stroke::new(2.2, ACCENT.gamma_multiply(0.85));
+        let stroke = Stroke::new(2.2, pal().accent.gamma_multiply(0.85));
         if l.caught.is_some() {
             painter.add(Shape::closed_line(pts, stroke));
         } else {
@@ -654,7 +654,7 @@ impl App {
                 ui.set_width(230.0);
                 if l.bridging {
                     let title = "Connect the story before this with the story after it";
-                    ui.label(egui::RichText::new(title).size(12.0).color(TEXT_DIM));
+                    ui.label(egui::RichText::new(title).size(12.0).color(pal().text_dim));
                     let hint = "What should Claude know? Who the people are, what has happened in between… (optional)";
                     let note = egui::TextEdit::multiline(&mut l.note).hint_text(hint).desired_width(220.0).desired_rows(5);
                     let field = ui.add(note);
@@ -668,7 +668,7 @@ impl App {
                     }
                     return;
                 }
-                ui.label(egui::RichText::new("Ask Claude about this passage").size(12.0).color(TEXT_DIM));
+                ui.label(egui::RichText::new("Ask Claude about this passage").size(12.0).color(pal().text_dim));
                 for c in [Command::Review, Command::Fix, Command::Grammar, Command::Summarize] {
                     let label = match c {
                         Command::Summarize => "Sum it up",
@@ -805,7 +805,7 @@ impl App {
                 egui::ScrollArea::vertical().max_height(420.0).stick_to_bottom(true).show(ui, |ui| {
                     // The conversation so far, then the answer being written.
                     for t in &ans.turns {
-                        let job = LayoutJob::simple(t.answer.trim().to_owned(), font.clone(), TEXT_DIM, f32::INFINITY);
+                        let job = LayoutJob::simple(t.answer.trim().to_owned(), font.clone(), pal().text_dim, f32::INFINITY);
                         ui.add(egui::Label::new(job).wrap().selectable(true));
                         ui.add_space(6.0);
                         let said = match (t.reply.as_str(), t.draft) {
@@ -813,7 +813,7 @@ impl App {
                             (r, true) => format!("Draft it: {r}"),
                             (r, false) => r.to_owned(),
                         };
-                        ui.label(egui::RichText::new(format!("You: {said}")).color(ACCENT));
+                        ui.label(egui::RichText::new(format!("You: {said}")).color(pal().accent));
                         ui.add_space(6.0);
                     }
                     match &ans.state {
@@ -841,7 +841,7 @@ impl App {
                     if ans.state == State::Streaming {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(egui::RichText::new("writing…").color(TEXT_DIM));
+                            ui.label(egui::RichText::new("writing…").color(pal().text_dim));
                         });
                     }
                 });
