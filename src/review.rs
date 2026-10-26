@@ -248,7 +248,7 @@ impl App {
                                 }
                             });
                             if !issue.fix.is_empty() {
-                                ui.label(format!("→ {}", issue.fix));
+                                ui.label(format!("\u{203a} {}", issue.fix));
                             }
                             if !issue.why.is_empty() {
                                 ui.label(RichText::new(&issue.why).size(12.5).color(pal().text_dim));

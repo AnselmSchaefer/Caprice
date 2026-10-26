@@ -96,7 +96,7 @@ impl App {
             ),
         };
         let primary = if self.path.is_some() { "Save" } else { "Save\u{2026}" };
-        let kept = "Not saving still keeps this version under File \u{2192} Versions.";
+        let kept = "Not saving still keeps this version under File \u{203a} Versions.";
         let answer = self.leave_dialog(ctx, "unsaved_prompt", &about, [&title, &said, &change, kept], [primary, "Don\u{2019}t save"]);
         match answer {
             Some(Answer::Go) => {
@@ -133,7 +133,7 @@ impl App {
         let title = format!("Keep the changes to \u{201c}{}\u{201d}?", self.story_name());
         let said = "They are saved in the file already. Dropping them puts the story back as you last saved it yourself.";
         let change = self.change_since_saved(&about, now);
-        let kept = "Dropped changes stay under File \u{2192} Versions.";
+        let kept = "Dropped changes stay under File \u{203a} Versions.";
         match self.leave_dialog(ctx, "keep_or_drop", &about, [&title, said, &change, kept], ["Keep changes", "Drop changes"]) {
             Some(answer @ (Answer::Go | Answer::Lose)) => {
                 self.leaving = None;

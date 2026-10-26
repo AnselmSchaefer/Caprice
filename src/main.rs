@@ -2752,6 +2752,8 @@ mod tests {
             {"kind": "detail", "quote": "She walked into", "fix": "", "why": "How does she walk in?"}]"#;
         h.app.fake_review(reply);
         h.frames(2, vec![], Modifiers::NONE);
+        assert!(h.painted_texts().contains("\u{203a} the"), "the correction shows");
+        assert_eq!(h.missing_glyphs(), Vec::<String>::new(), "every letter is in the font");
         h.click_widget("Apply");
         assert_eq!(h.app.doc.visible_text(), "The zebra chapter\nNothing here.\nThe quokka chapter\nShe walked into the room.");
         assert_eq!(h.app.review.issues.len(), 1, "the one applied is gone");
@@ -4526,6 +4528,16 @@ mod tests {
                 _ => None,
             })
         }
+
+        /// The texts painted last frame with a letter their font does not have (an empty box on screen).
+        fn missing_glyphs(&self) -> Vec<String> {
+            let jobs = self.painted.iter().filter_map(|cs| match &cs.shape {
+                egui::Shape::Text(t) => Some(&t.galley.job),
+                _ => None,
+            });
+            let sections = jobs.flat_map(|job| job.sections.iter().map(|s| (&s.format.font_id, &job.text[s.byte_range.start.0..s.byte_range.end.0])));
+            sections.filter(|(font, text)| !self.ctx.fonts_mut(|f| f.has_glyphs(font, text))).map(|(_, text)| text.to_owned()).collect()
+        }
     }
 
     #[test]
@@ -4712,9 +4724,10 @@ mod tests {
         h.close_window();
         h.frames(2, vec![], Modifiers::NONE);
         let painted = h.painted_texts();
-        for said in ["Save \u{201c}The Mill\u{201d}?", "7 words  \u{b7}  1 chapter", "Begun just now", "Not saving still keeps this version under File \u{2192} Versions."] {
+        for said in ["Save \u{201c}The Mill\u{201d}?", "7 words  \u{b7}  1 chapter", "Begun just now", "Not saving still keeps this version under File \u{203a} Versions."] {
             assert!(painted.contains(said), "{said:?} in:\n{painted}");
         }
+        assert_eq!(h.missing_glyphs(), Vec::<String>::new(), "every letter is in the font");
         assert!(h.widget_rect("Save\u{2026}").is_some(), "saving asks where");
         h.click_widget("Don\u{2019}t save");
         assert!(h.app.may_close, "it closes");
@@ -5084,12 +5097,7 @@ mod tests {
         h.click_widget("Page");
         h.click_widget("Page numbers ⏵");
         assert!(h.widget_rect("Undo Page 2").is_some(), "the change can be undone");
-        let missing: Vec<String> = h.painted.iter().filter_map(|cs| match &cs.shape {
-            egui::Shape::Text(t) => Some(t.galley.job.clone()),
-            _ => None,
-        }).flat_map(|job| job.sections.iter().map(|s| (s.format.font_id.clone(), job.text[s.byte_range.start.0..s.byte_range.end.0].to_owned())).collect::<Vec<_>>())
-            .filter(|(font, text)| !ctx.fonts_mut(|f| f.has_glyphs(font, text)))
-            .map(|(_, text)| text).collect();
+        let missing = h.missing_glyphs();
         assert!(missing.is_empty(), "drawn without a glyph: {missing:?}");
     }
 
