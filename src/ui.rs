@@ -990,7 +990,13 @@ impl App {
                     out.turn_to = Some(at);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let undo = ui.small_button("✕").on_hover_text(format!("{place}: count on as before"));
+                    // The font has no ✕, so the cross is drawn.
+                    let undo = ui.add(egui::Button::new("").min_size(vec2(18.0, 18.0)));
+                    let ink = if undo.hovered() { pal().text_hot } else { pal().text_dim };
+                    let (c, d) = (undo.rect.center(), 3.5);
+                    ui.painter().line_segment([c - vec2(d, d), c + vec2(d, d)], Stroke::new(1.4, ink));
+                    ui.painter().line_segment([c + vec2(-d, d), c + vec2(d, -d)], Stroke::new(1.4, ink));
+                    let undo = undo.on_hover_text(format!("{place}: count on as before"));
                     undo.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Undo {place}")));
                     if undo.clicked() {
                         out.numbering = Some((at, None));

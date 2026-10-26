@@ -5079,6 +5079,18 @@ mod tests {
         number_from_page_shown(&mut h, 1, Some("v"));
         assert_eq!(squeeze(h.app.printed_text(&ctx, 1)), "Thestory.v");
         assert_eq!(squeeze(h.app.printed_text(&ctx, 0)), "Frontmatter.1", "the page before as it was");
+
+        // The menu lists the change, in letters the font has (no empty squares).
+        h.click_widget("Page");
+        h.click_widget("Page numbers ⏵");
+        assert!(h.widget_rect("Undo Page 2").is_some(), "the change can be undone");
+        let missing: Vec<String> = h.painted.iter().filter_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) => Some(t.galley.job.clone()),
+            _ => None,
+        }).flat_map(|job| job.sections.iter().map(|s| (s.format.font_id.clone(), job.text[s.byte_range.start.0..s.byte_range.end.0].to_owned())).collect::<Vec<_>>())
+            .filter(|(font, text)| !ctx.fonts_mut(|f| f.has_glyphs(font, text)))
+            .map(|(_, text)| text).collect();
+        assert!(missing.is_empty(), "drawn without a glyph: {missing:?}");
     }
 
     #[test]
