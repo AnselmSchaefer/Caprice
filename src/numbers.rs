@@ -96,6 +96,22 @@ pub fn roman(mut n: u32) -> String {
     s
 }
 
+/// A number written in figures or roman numerals, either case; `None` if it is neither.
+pub fn parse(text: &str) -> Option<u32> {
+    let t = text.trim().to_lowercase();
+    if let Ok(k) = t.parse() {
+        return Some(k);
+    }
+    let value = |c| match c {
+        'i' => Some(1), 'v' => Some(5), 'x' => Some(10), 'l' => Some(50), 'c' => Some(100), 'd' => Some(500), 'm' => Some(1000),
+        _ => None,
+    };
+    let digits: Vec<u32> = t.chars().map(value).collect::<Option<_>>()?;
+    // A digit before a bigger one is taken away from it (iv, xc).
+    let n = digits.iter().enumerate().map(|(k, &d)| if digits.get(k + 1).is_some_and(|&e| e > d) { -(d as i64) } else { d as i64 }).sum::<i64>();
+    (n > 0 && roman(n as u32) == t).then_some(n as u32)
+}
+
 impl Doc {
     /// The number of every page, in order.
     pub fn page_numbers(&self) -> Vec<PageNumber> {
@@ -236,6 +252,15 @@ mod tests {
             d.full_paginate(ctx, &Style::new("x"));
             assert_eq!(shown(&d), [None, None, None, s("1"), s("2"), None]);
         });
+    }
+
+    #[test]
+    fn a_number_is_read_in_figures_or_roman_numerals() {
+        assert_eq!(parse("12"), Some(12));
+        assert_eq!(parse(" xiv "), Some(14));
+        assert_eq!(parse("MCMXC"), Some(1990));
+        assert_eq!(parse("iiv"), None, "not how it is written");
+        assert_eq!(parse("seven"), None);
     }
 
     #[test]

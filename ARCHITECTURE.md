@@ -876,7 +876,11 @@ and alignment, `textbox.rs`). Then the brush is put down; Escape or the button a
 Every page counts, from 1 on the first (contents included). A change (`numbers::Numbering`:
 count on, start again at a number, or no numbers; figures or small roman) holds from the page it
 is set on until the next change. "No numbers" hides them but the count goes on underneath, as in
-Word. Set in Page > Page numbers for the page shown, which also lists every change.
+Word. Set in Page > Page numbers for the page shown, in the writer's terms rather than the
+model's: "Show page numbers" (on is `On`, off is `Off`), the page's number (a new one is
+`From`, and shows them; typed in figures or roman, `numbers::parse`) and the figures. Below, every
+change, each turning to its page or undone with ✕. With no header or footer showing `{page}`, the
+menu says so first and adds the usual footer (`Band::page_numbers`) in one click.
 
 - **A change is pinned to the first char of the page it was set on** (`NumberMark`, in
   `Doc::number_marks`, kept in the story's order) and holds from the page that char is on
@@ -895,7 +899,8 @@ Word. Set in Page > Page numbers for the page shown, which also lists every chan
 - Numbers never change where pages break (R6): the contents keep room for four figures, and a
   wider roman number runs into the dots.
 - Tests: `page_numbers_start_again_after_the_contents_and_leave_out_the_appendix_wherever_its_text_goes`,
-  and in `numbers.rs` `numbering_holds_from_the_page_it_is_set_on_until_the_next_change`,
+  `page_numbers_are_added_at_the_bottom_from_their_menu_and_written_in_roman_as_typed`, and in
+  `numbers.rs` `a_number_is_read_in_figures_or_roman_numerals`, `numbering_holds_from_the_page_it_is_set_on_until_the_next_change`,
   `roman_numerals_are_written_small`. Check Word with `sample_docx` (its contents are roman, its
   story from 1, its last chapter without).
 

@@ -5033,16 +5033,52 @@ mod tests {
         assert_eq!(mills(&h), 1, "only the title");
     }
 
-    /// Set how pages are numbered from the page shown on, through Page > Page numbers.
-    fn number_from_page_shown(h: &mut Harness, page: usize, choice: &str) {
+    /// On the page shown, through Page > Page numbers: hide the numbers (`None`), or give the page
+    /// a number of its own, typed as the writer would.
+    fn number_from_page_shown(h: &mut Harness, page: usize, number: Option<&str>) {
         let ctx = h.ctx.clone();
         h.app.turn_to(&ctx, page, false);
         h.frames(60, vec![], Modifiers::NONE);
         h.click_widget("Page");
         h.click_widget("Page numbers ⏵");
-        h.click_widget(choice);
+        match number {
+            None => h.click_widget("Show page numbers"),
+            Some(k) => {
+                h.click_widget("Page number");
+                h.key(Key::A, Modifiers::COMMAND);
+                h.type_text(k);
+                h.key(Key::Enter, Modifiers::NONE);
+            }
+        }
         h.key(Key::Escape, Modifiers::NONE);
         h.frames(2, vec![], Modifiers::NONE);
+    }
+
+    #[test]
+    fn page_numbers_are_added_at_the_bottom_from_their_menu_and_written_in_roman_as_typed() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Front matter.");
+        h.key(Key::Enter, Modifiers::COMMAND);
+        h.type_text("The story.");
+        h.frames(60, vec![], Modifiers::NONE);
+        assert!(!h.app.doc.setup.footer.text.contains(model::PAGE_FIELD), "no numbers to begin with");
+        h.click_widget("Page");
+        h.click_widget("Page numbers ⏵");
+        h.click_widget("Add page numbers at the bottom");
+        h.key(Key::Escape, Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        let squeeze = |s: String| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        assert_eq!(squeeze(h.app.printed_text(&ctx, 1)), "Thestory.2");
+
+        // The second page as roman "v", typed so.
+        h.click_widget("Page");
+        h.click_widget("Page numbers ⏵");
+        h.click_widget("i, ii, iii");
+        h.key(Key::Escape, Modifiers::NONE);
+        number_from_page_shown(&mut h, 1, Some("v"));
+        assert_eq!(squeeze(h.app.printed_text(&ctx, 1)), "Thestory.v");
+        assert_eq!(squeeze(h.app.printed_text(&ctx, 0)), "Frontmatter.1", "the page before as it was");
     }
 
     #[test]
@@ -5076,9 +5112,9 @@ mod tests {
         assert_eq!(shown(&h), [s("1"), s("2"), s("3"), s("4")], "every page counts, as before");
 
         // No number on the contents, the story from 1, none on the maps.
-        number_from_page_shown(&mut h, 0, "No numbers");
-        number_from_page_shown(&mut h, 1, "Start at");
-        number_from_page_shown(&mut h, 3, "No numbers");
+        number_from_page_shown(&mut h, 0, None);
+        number_from_page_shown(&mut h, 1, Some("1"));
+        number_from_page_shown(&mut h, 3, None);
         assert_eq!(shown(&h), [None, s("1"), s("2"), None]);
         let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
         assert_eq!(squeeze(&h.app.printed_text(&ctx, 1)), "TheMillWordsaboutthemill.1");

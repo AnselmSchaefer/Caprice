@@ -917,73 +917,86 @@ impl App {
         (setup != self.doc.setup).then_some(setup)
     }
 
-    /// How pages are numbered from the page shown on (the contents' numbering, on a contents
-    /// page), and every page where the numbering changes.
+    /// Page numbers, as the page shown has them: shown or not, its number (a new one starts the
+    /// count again from it), figures or roman; then every page where that changes. All of it holds
+    /// from the page shown until the next change (the contents' numbering, on a contents page).
     fn numbers_menu(&self, ui: &mut egui::Ui, out: &mut Tools) {
         ui.set_min_width(270.0);
         let page = self.target.min(self.last());
         let contents = self.doc.spans[page].contents.is_some();
         let now = self.doc.numbering_on(page);
-        let dim = |t: String| egui::RichText::new(t).size(12.0).color(pal().text_dim);
-        ui.label(dim(if contents { "The contents pages".into() } else { format!("From page {} on", page + 1) }));
+        let number = self.doc.page_number(page);
+        let dim = |t: &str| egui::RichText::new(t).size(12.0).color(pal().text_dim);
+
+        // Without a header or footer showing it, no number is seen at all: say so first.
+        let shown = [&self.doc.setup.header, &self.doc.setup.footer].iter().any(|b| b.is_on() && b.text.contains(PAGE_FIELD));
+        if !shown {
+            ui.label(dim("No header or footer shows the page number yet."));
+            if ui.button("Add page numbers at the bottom").clicked() {
+                out.insert = Some(InsertAction::Band(false, Band::page_numbers()));
+            }
+            ui.separator();
+        }
+
+        ui.label(dim(&if contents { "The contents pages".to_owned() } else { format!("Page {}", page + 1) }));
         let mut new = now;
-        let start = match now.counting {
-            Counting::From(k) => k,
-            _ => 1,
-        };
+        let mut on = now.counting != Counting::Off;
+        if ui.checkbox(&mut on, "Show page numbers").clicked() {
+            new.counting = if on { Counting::On } else { Counting::Off };
+        }
+        // A number of its own starts the count again here, and shows it.
         ui.horizontal(|ui| {
-            if ui.radio(now.counting == Counting::On, "Count on").on_hover_text("Go on from the page before").clicked() {
-                new.counting = Counting::On;
-            }
-            if ui.radio(matches!(now.counting, Counting::From(_)), "Start at").clicked() {
-                new.counting = Counting::From(start);
-            }
-            let mut k = start;
-            if ui.add(egui::DragValue::new(&mut k).range(0..=9999).speed(0.1)).changed() {
+            ui.label("Number");
+            let mut k = number.count;
+            let roman = now.figures == Figures::Roman;
+            let field = egui::DragValue::new(&mut k)
+                .range(1..=9999)
+                .speed(0.1)
+                .custom_formatter(move |v, _| if roman { crate::numbers::roman(v as u32) } else { (v as u32).to_string() })
+                .custom_parser(|t| crate::numbers::parse(t).map(f64::from));
+            let resp = ui.add(field).on_hover_text("Change it to start counting again from here");
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, "Page number"));
+            if resp.changed() && (k != number.count || now.counting == Counting::Off) {
                 new.counting = Counting::From(k);
             }
-        });
-        if ui.radio(now.counting == Counting::Off, "No numbers").on_hover_text("These pages show none; counting goes on").clicked() {
-            new.counting = Counting::Off;
-        }
-        ui.horizontal(|ui| {
+            ui.add_space(8.0);
             ui.selectable_value(&mut new.figures, Figures::Arabic, "1, 2, 3");
             ui.selectable_value(&mut new.figures, Figures::Roman, "i, ii, iii");
         });
+        ui.label(dim("From this page until the next change."));
         if new != now {
             out.numbering = Some((page, Some(new)));
         }
 
         let changes = self.doc.numbering_changes();
-        if !changes.is_empty() {
-            ui.separator();
-            ui.label(dim("Where numbering changes".into()));
+        if changes.is_empty() {
+            return;
         }
+        ui.separator();
+        ui.label(dim("Changes"));
         let numbers = self.doc.page_numbers();
         for (at, n) in changes {
             let first = numbers.get(at).map_or(String::new(), |p| p.text());
             let what = match n.counting {
-                Counting::On => format!("counts on ({first})"),
-                Counting::From(_) => format!("starts at {first}"),
-                Counting::Off => "no numbers".into(),
+                Counting::Off => "hidden".to_owned(),
+                Counting::From(_) => format!("starts again at {first}"),
+                Counting::On if numbers.get(at).is_some_and(|p| p.figures == Figures::Roman) => format!("{first}, in roman"),
+                Counting::On => format!("{first}, shown again"),
             };
             let place = if self.doc.spans[at].contents.is_some() { "Contents".to_owned() } else { format!("Page {}", at + 1) };
             ui.horizontal(|ui| {
-                ui.label(format!("{place}: {what}"));
+                let go = ui.add(egui::Button::new(format!("{place}: {what}")).frame(false));
+                if go.on_hover_text(format!("Turn to {}", place.to_lowercase())).clicked() {
+                    out.turn_to = Some(at);
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Remove").on_hover_text(format!("{place}: go on as before")).clicked() {
+                    let undo = ui.small_button("✕").on_hover_text(format!("{place}: count on as before"));
+                    undo.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Undo {place}")));
+                    if undo.clicked() {
                         out.numbering = Some((at, None));
-                    }
-                    if ui.small_button("Show").on_hover_text(format!("Turn to {}", place.to_lowercase())).clicked() {
-                        out.turn_to = Some(at);
                     }
                 });
             });
-        }
-        let shown = [&self.doc.setup.header, &self.doc.setup.footer].iter().any(|b| b.is_on() && b.text.contains(PAGE_FIELD));
-        if !shown {
-            ui.separator();
-            ui.label(dim("A header or footer showing the page number shows them (Insert)".into()));
         }
     }
 
