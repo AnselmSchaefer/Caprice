@@ -203,6 +203,11 @@ impl App {
             });
             ui.add_space(16.0);
 
+            let hint = format!("Enter: {}  \u{b7}  Esc: back to writing", buttons[0].trim_end_matches('\u{2026}').to_lowercase());
+            let hint = egui::WidgetText::from(RichText::new(hint).size(11.5).color(pal().text_dim.gamma_multiply(0.8)))
+                .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
+            let mut hint_below = false;
+
             // Back to writing, the way that throws away, and the way on, the last on the right.
             // Built right to left, so the keyboard comes to the way on first.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -220,11 +225,17 @@ impl App {
                 } else {
                     None
                 };
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let hint = format!("Enter: {}  \u{b7}  Esc: back to writing", buttons[0].trim_end_matches('\u{2026}').to_lowercase());
-                    ui.label(RichText::new(hint).size(11.5).color(pal().text_dim.gamma_multiply(0.8)));
-                });
+                // Beside the buttons when it fits; wide buttons like "Keep changes" leave no room for it.
+                if hint.size().x <= ui.available_width() {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| ui.label(hint.clone()));
+                } else {
+                    hint_below = true;
+                }
             });
+            if hint_below {
+                ui.add_space(6.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| ui.label(hint));
+            }
         });
         if answer.is_none() && modal.should_close() {
             answer = Some(Answer::Back);

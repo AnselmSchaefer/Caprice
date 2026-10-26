@@ -4744,6 +4744,31 @@ mod tests {
     }
 
     #[test]
+    fn the_hint_beside_keep_or_drop_never_runs_under_its_buttons() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        let dir = test_dir("keep-or-drop-hint");
+        (h.app.keep.autosave, h.app.keep.clock) = (true, Some(3_000_000));
+        h.type_text("Draft");
+        h.app.save_to(dir.join("story.caprice"));
+        h.type_text(", a bad idea");
+        h.wait(6.0);
+        h.wait(40.0);
+        h.close_window();
+        h.frames(2, vec![], Modifiers::NONE);
+        let hint = h.painted.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.job.text.starts_with("Enter: ") => Some(t.galley.rect.translate(t.pos.to_vec2())),
+            _ => None,
+        });
+        let hint = hint.expect("the hint is shown");
+        for button in ["Cancel", "Drop changes", "Keep changes"] {
+            let r = h.widget_rect(button).expect(button);
+            assert!(!hint.intersects(r), "{button} at {r:?}, the hint at {hint:?}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn closing_can_drop_the_changes_since_saving_and_they_stay_in_the_versions() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
