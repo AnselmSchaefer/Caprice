@@ -4757,7 +4757,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hint_beside_keep_or_drop_never_runs_under_its_buttons() {
+    fn keep_or_drop_keeps_its_size_with_the_hint_under_its_buttons() {
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         let dir = test_dir("keep-or-drop-hint");
@@ -4778,6 +4778,14 @@ mod tests {
             let r = h.widget_rect(button).expect(button);
             assert!(!hint.intersects(r), "{button} at {r:?}, the hint at {hint:?}");
         }
+        // It keeps its size, and stays on the screen, the hint just under the buttons.
+        let title = "Keep the changes to \u{201c}story\u{201d}?";
+        let at = h.painted_at(title).expect("the title shows");
+        h.frames(30, vec![], Modifiers::NONE);
+        assert_eq!(h.painted_at(title), Some(at), "the dialog does not grow");
+        let keep = h.widget_rect("Keep changes").unwrap();
+        assert!(at.y > 0.0 && keep.bottom() < 900.0, "the title at {at:?}, the buttons at {keep:?}");
+        assert!(hint.top() >= keep.bottom() && hint.top() < keep.bottom() + 24.0, "{hint:?} under {keep:?}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

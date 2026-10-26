@@ -210,7 +210,10 @@ impl App {
 
             // Back to writing, the way that throws away, and the way on, the last on the right.
             // Built right to left, so the keyboard comes to the way on first.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Rows as high as their buttons: a layout across the dialog would centre them in all the height
+            // it has, and the dialog would grow to that every frame.
+            let row = egui::Layout::right_to_left(egui::Align::Center);
+            ui.allocate_ui_with_layout(vec2(ui.available_width(), 32.0), row, |ui| {
                 let go = ui.add(egui::Button::new(RichText::new(buttons[0]).color(pal().desk).strong()).fill(pal().accent).min_size(vec2(96.0, 32.0)));
                 let lose = ui.add(egui::Button::new(RichText::new(buttons[1]).color(WARN)).min_size(vec2(0.0, 32.0)));
                 let back = ui.add(egui::Button::new("Cancel").frame(false).min_size(vec2(0.0, 32.0)));
@@ -234,7 +237,7 @@ impl App {
             });
             if hint_below {
                 ui.add_space(6.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| ui.label(hint));
+                ui.allocate_ui_with_layout(vec2(ui.available_width(), hint.size().y), row, |ui| ui.label(hint));
             }
         });
         if answer.is_none() && modal.should_close() {
