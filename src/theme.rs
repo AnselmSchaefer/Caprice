@@ -67,11 +67,20 @@ pub enum Theme {
     Bubblegum,
     Pistachio,
     Typewriter,
+    Garden,
 }
 
 impl Theme {
-    pub const ALL: [Theme; 7] =
-        [Theme::Midnight, Theme::Lagoon, Theme::Marmalade, Theme::DiscoGrape, Theme::Bubblegum, Theme::Pistachio, Theme::Typewriter];
+    pub const ALL: [Theme; 8] = [
+        Theme::Midnight,
+        Theme::Lagoon,
+        Theme::Marmalade,
+        Theme::DiscoGrape,
+        Theme::Bubblegum,
+        Theme::Pistachio,
+        Theme::Typewriter,
+        Theme::Garden,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -82,6 +91,7 @@ impl Theme {
             Theme::Bubblegum => "Bubblegum",
             Theme::Pistachio => "Pistachio Sorbet",
             Theme::Typewriter => "Typewriter",
+            Theme::Garden => "Hidden Garden",
         }
     }
 
@@ -94,6 +104,8 @@ impl Theme {
             Theme::Bubblegum => "Pink, sweet, and a little bit sticky",
             Theme::Pistachio => "A scoop of green on a summer afternoon",
             Theme::Typewriter => "Clack, clack, ding. The ribbon is red",
+            // What grows in it (`eggs.rs`) is for the writer to find.
+            Theme::Garden => "Plant a story and see what comes up",
         }
     }
 
@@ -216,6 +228,24 @@ impl Theme {
                 field: rgb(252, 250, 244),
                 caret: rgb(170, 20, 24),
                 thumb: rgb(150, 138, 118),
+                light: true,
+            },
+            // A pale sky over a meadow, for the garden to grow in.
+            Theme::Garden => Palette {
+                desk: rgb(200, 226, 176),
+                desk_top: rgb(214, 234, 248),
+                dock: rgb(248, 252, 246),
+                dock_edge: rgb(178, 208, 170),
+                btn: rgb(230, 242, 226),
+                btn_hover: rgb(212, 232, 204),
+                text: rgb(40, 62, 46),
+                text_hot: rgb(18, 38, 24),
+                text_dim: rgb(96, 124, 96),
+                accent: rgb(204, 96, 60),
+                on_accent: Color32::WHITE,
+                field: rgb(252, 254, 250),
+                caret: rgb(184, 76, 40),
+                thumb: rgb(138, 180, 120),
                 light: true,
             },
         }

@@ -766,7 +766,7 @@ impl App {
         let sc = self.scale_of(page_rect);
         let setup = &self.doc.setup;
         let content = Rect::from_min_size(page_rect.min + setup.margin_origin() * sc, setup.content_size() * sc);
-        let layout = self.page_layout(&ctx, i, sc);
+        let mut layout = self.page_layout(&ctx, i, sc);
         let start = self.doc.spans[i].start;
         let page_len = self.doc.spans[i].chars() + usize::from(self.doc.hard_end(i));
 
@@ -780,7 +780,24 @@ impl App {
                 ui.painter().rect_filled(r.translate(content.min.to_vec2()), 1.0, color);
             }
         }
+        // A chapter title on the crane's hook is drawn where it hangs; it lies in its place all the
+        // while, for the caret and the page breaks (`eggs.rs`).
+        let mut lifted = None;
+        if let Some((pose, range)) = self.lifting(&ctx, i) {
+            let title = |p: &crate::layout::ParaLayout| p.start >= range.start && p.end <= range.end;
+            let place = layout.paras.iter().filter(|p| title(p)).map(|p| Rect::from_min_size(content.min + vec2(p.x, p.y), p.galley.size()));
+            self.eggs.place = place.reduce(|a, b| a.union(b));
+            if let Some(place) = self.eggs.place {
+                let by = crate::eggs::offset(pose, place, page_rect);
+                layout.paras.iter_mut().filter(|p| title(p)).for_each(|p| (p.x, p.y) = (p.x + by.x, p.y + by.y));
+                lifted = Some((range, by));
+            }
+        }
         self.paint_layout(ui.painter(), &layout, content.min);
+        if let Some((range, by)) = lifted {
+            let title = |p: &crate::layout::ParaLayout| p.start >= range.start && p.end <= range.end;
+            layout.paras.iter_mut().filter(|p| title(p)).for_each(|p| (p.x, p.y) = (p.x - by.x, p.y - by.y));
+        }
 
         if a != b {
             // Pictures are drawn over the highlight, so tint them afterwards.

@@ -766,7 +766,12 @@ impl App {
                 let kind = if self.doc.para_attrs_at(self.caret).list == kind { ListKind::None } else { kind };
                 self.set_para(ctx, |p| p.list = kind);
             }
-            Some(ParaChange::ChapterTitle(on)) => self.set_para(ctx, |p| p.set_chapter_title(on)),
+            Some(ParaChange::ChapterTitle(on)) => {
+                self.set_para(ctx, |p| p.set_chapter_title(on));
+                if on {
+                    self.maybe_lift_title(ctx);
+                }
+            }
             None => {}
         }
         if let Some(setup) = out.setup {

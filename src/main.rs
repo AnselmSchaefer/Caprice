@@ -7,6 +7,7 @@ mod contents;
 mod dropcap;
 mod edit;
 mod editor;
+mod eggs;
 mod emblem;
 mod export;
 mod fileio;
@@ -229,6 +230,8 @@ pub struct App {
     pub peeks: peek::Peeks,
     /// The colours around the pages, and where the choice is kept.
     pub themes: theme::Themes,
+    /// What grows and works in the Hidden Garden theme.
+    pub eggs: eggs::Eggs,
 }
 
 impl App {
@@ -316,6 +319,7 @@ impl App {
             start: start::Start::new(),
             peeks: peek::Peeks::default(),
             themes: theme::Themes::new(),
+            eggs: eggs::Eggs::default(),
         };
         app.saved_hash = app.content_hash();
         app
@@ -581,10 +585,13 @@ impl App {
         self.animate_batch(ui);
         self.animate_pads(ui);
         self.update_backdrop(&ctx);
+        self.update_lift(&ctx);
         self.pos = self.pos.clamp(0.0, self.last() as f32);
 
         let page_rect = self.page_rect(&ctx, area);
         self.last_page_rect = page_rect;
+        // On the desk, behind every page (`eggs.rs`).
+        self.draw_garden(ui, area, page_rect);
         let base = self.pos.floor() as usize;
         let t = self.pos - base as f32;
         self.animate_held(ui);
@@ -631,6 +638,7 @@ impl App {
                 self.text_boxes(ui, page_rect, i);
                 self.draw_notes(ui, page_rect, i);
                 self.draw_peek(ui, page_rect, i, false);
+                self.draw_crane(ui, page_rect, i, area);
                 self.pen_surface(ui, page_rect, i);
             }
         } else if self.slides_in(base) && self.appearance == Appearance::Book {
@@ -5483,5 +5491,125 @@ mod tests {
         h.app.doc.full_paginate(&ctx, &typing);
         let pdf = h.app.pdf(&ctx, 0..=h.app.last()).unwrap();
         std::fs::write(out, pdf).unwrap();
+    }
+
+    /// The Hidden Garden chosen and washed in, the crane coming every time (`odds`) or never.
+    fn in_the_garden(h: &mut Harness, odds: f64) {
+        h.frames(3, vec![], Modifiers::NONE);
+        let ctx = h.ctx.clone();
+        h.app.themes.choose(&ctx, theme::Theme::Garden);
+        h.app.eggs.odds = odds;
+        h.wait(1.0);
+    }
+
+    /// "Chapter One" made a chapter title with the Chapter button, the caret after it.
+    fn chapter_one(h: &mut Harness) {
+        h.type_text("Chapter One");
+        h.click_widget("Chapter");
+    }
+
+    fn beside_the_page(h: &Harness, plant: egui::Rect) -> bool {
+        let page = h.app.last_page_rect;
+        plant.right() < page.left() || plant.left() > page.right()
+    }
+
+    #[test]
+    fn in_the_hidden_garden_a_plant_grows_beside_the_pages_as_the_story_grows() {
+        let mut h = Harness::new();
+        in_the_garden(&mut h, 0.0);
+        let first = h.app.eggs.plants.clone();
+        assert_eq!(first.len(), 1, "one plant for a story without chapters");
+        assert!(beside_the_page(&h, first[0].0), "on the desk, not on the page: {:?}", first[0].0);
+        h.type_text(&"It was nearly midnight and the Prime Minister sat alone in his office. ".repeat(220));
+        let growing = h.app.eggs.plants[0].0;
+        h.frames(200, vec![], Modifiers::NONE);
+        let grown = h.app.eggs.plants[0].0;
+        assert!(growing.height() < grown.height(), "it grows in sight: {} then {}", growing.height(), grown.height());
+        assert!(grown.height() > first[0].0.height() * 2.0 && grown.bottom() == first[0].0.bottom(), "taller, from the same root");
+        assert!(beside_the_page(&h, grown));
+
+        // Taking the pages away again stops it growing; it does not wilt.
+        h.key(Key::A, Modifiers::COMMAND);
+        h.key(Key::Backspace, Modifiers::NONE);
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!(h.app.eggs.plants[0].0.height(), grown.height());
+    }
+
+    #[test]
+    fn each_chapter_grows_its_own_plant_and_flowers_once_the_next_begins() {
+        let mut h = Harness::new();
+        in_the_garden(&mut h, 0.0);
+        chapter_one(&mut h);
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text(&"It was nearly midnight and the Prime Minister sat alone in his office. ".repeat(160));
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!(h.app.eggs.plants.iter().map(|p| p.1).collect::<Vec<_>>(), [false], "a bud while the chapter is being written");
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("Chapter Two");
+        h.click_widget("Chapter");
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("The next morning.");
+        h.frames(200, vec![], Modifiers::NONE);
+        let plants = h.app.eggs.plants.clone();
+        assert_eq!(plants.iter().map(|p| p.1).collect::<Vec<_>>(), [true, false], "the first chapter flowered");
+        assert!(plants[0].0.height() > plants[1].0.height(), "the longer chapter is the taller plant");
+        let page = h.app.last_page_rect;
+        assert!(plants[0].0.right() < page.left() && plants[1].0.left() > page.right(), "one on either side of the page");
+        assert!(h.app.eggs.lift.is_none(), "the crane did not come: it comes only now and then");
+    }
+
+    #[test]
+    fn nothing_grows_and_no_crane_comes_in_the_other_themes() {
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.app.eggs.odds = 1.0;
+        chapter_one(&mut h);
+        assert!(h.app.eggs.plants.is_empty() && h.app.eggs.lift.is_none());
+    }
+
+    #[test]
+    fn now_and_then_a_crane_lifts_a_new_chapter_title_into_place() {
+        let mut h = Harness::new();
+        in_the_garden(&mut h, 1.0);
+        chapter_one(&mut h);
+        assert!(h.app.eggs.lift.is_some(), "the crane came");
+        let coming = h.painted_at("Chapter One").expect("the title is drawn");
+        h.frames(70, vec![], Modifiers::NONE);
+        let over = h.painted_at("Chapter One").unwrap();
+        h.frames(240, vec![], Modifiers::NONE);
+        assert!(h.app.eggs.lift.is_none(), "and went");
+        let rest = h.painted_at("Chapter One").unwrap();
+        assert!(coming.x > h.app.last_page_rect.right(), "it comes from beside the page, on the hook: {coming:?}");
+        assert!((over.x - rest.x).abs() < 5.0 && over.y < rest.y - 50.0, "then hangs over its place: {over:?}, {rest:?}");
+        assert!(h.in_page(egui::vec2(0.0, 0.0)).y <= rest.y, "and lies on the page");
+    }
+
+    #[test]
+    fn going_on_writing_while_the_crane_lifts_sets_the_title_down_at_once() {
+        let mut h = Harness::new();
+        in_the_garden(&mut h, 1.0);
+        chapter_one(&mut h);
+        h.frames(30, vec![], Modifiers::NONE);
+        h.type_text("!");
+        let set = h.painted_at("Chapter One!").expect("the title is drawn");
+        h.frames(120, vec![], Modifiers::NONE);
+        assert!(h.app.eggs.lift.is_none());
+        assert_eq!(h.painted_at("Chapter One!"), Some(set), "it was in its place at once");
+        assert_eq!(h.app.doc.flow.text, "Chapter One!\n");
+    }
+
+    #[test]
+    fn print_shows_neither_the_garden_nor_the_crane() {
+        let mut h = Harness::new();
+        chapter_one(&mut h);
+        let ctx = h.ctx.clone();
+        let plain = h.app.pdf(&ctx, 0..=0).unwrap();
+        let mut g = Harness::new();
+        in_the_garden(&mut g, 1.0);
+        chapter_one(&mut g);
+        g.frames(70, vec![], Modifiers::NONE);
+        assert!(g.app.eggs.lift.is_some() && !g.app.eggs.plants.is_empty());
+        let ctx = g.ctx.clone();
+        assert_eq!(g.app.pdf(&ctx, 0..=0).unwrap(), plain);
     }
 }
