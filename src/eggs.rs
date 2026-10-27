@@ -1,9 +1,13 @@
-//! Little things hidden in the Hidden Garden theme. A garden grows up from the bottom of the desk,
-//! a plant for each chapter, taller the more pages it has, and flowering once the next chapter has
-//! begun. Now and then, when the writer makes a paragraph a chapter title, a crane drives in from
-//! the side, carries the title over the page on its hook, lowers it into place and drives away.
+//! Little things hidden in the magic themes. In the Magic Garden a garden grows up from the bottom
+//! of the desk, a plant for each chapter, taller the more pages it has, and flowering once the next
+//! chapter has begun. Now and then, when the writer makes a paragraph a chapter title, it is
+//! brought in: in the garden a hot-air balloon floats down with it hanging below its basket, sets it
+//! in place and rises away; in the Magic City a crane drives in from the side, carries it over the
+//! page on its hook, lowers it into place and drives away. Both follow one course in time (`pose`),
+//! each along its own way (`rig`).
 //!
-//! None of it is on the page: the garden lies on the desk behind the pages, and the crane is drawn
+//! None of it is on the page: the garden lies on the desk behind the pages, and what brings a title
+//! is drawn
 //! over the page on the screen only, so nothing of it is printed or saved, and no page break moves
 //! for it. Like the emblem, it is drawn from shapes (egui fills only convex ones, R11), and what is
 //! shown is a function of the story and of time, so a test can look at any moment of it.
@@ -15,6 +19,25 @@ use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 
 use crate::App;
 use crate::theme::Theme;
+
+/// What brings a new chapter title in, in which theme.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Carrier {
+    /// In the Magic City.
+    Crane,
+    /// In the Magic Garden.
+    Balloon,
+}
+
+impl Carrier {
+    pub fn of(theme: Theme) -> Option<Carrier> {
+        match theme {
+            Theme::City => Some(Carrier::Crane),
+            Theme::Garden => Some(Carrier::Balloon),
+            _ => None,
+        }
+    }
+}
 
 /// How tall a plant grows at most, in shares of the desk's height, and how many pages it takes to
 /// grow most of the way: a chapter of `PAGES` pages is two thirds of the way up.
@@ -44,8 +67,14 @@ const STEEL_DARK: Color32 = Color32::from_rgb(196, 146, 28);
 const WEIGHT: Color32 = Color32::from_rgb(118, 120, 132);
 const CABLE: Color32 = Color32::from_rgb(70, 70, 82);
 
+const SILK: [Color32; 2] = [Color32::from_rgb(232, 76, 84), Color32::from_rgb(252, 206, 74)];
+const WICKER: Color32 = Color32::from_rgb(160, 110, 62);
+const WICKER_DARK: Color32 = Color32::from_rgb(122, 80, 44);
+const ROPE: Color32 = Color32::from_rgb(110, 92, 74);
+
 /// Seconds the crane takes to drive in, run the title out over the page, lower it, settle it,
-/// lift its hook off, and drive away; and to drive away when the writer goes on meanwhile.
+/// lift its hook off, and drive away; and to drive away when the writer goes on meanwhile. The
+/// balloon takes as long to come, float over, come down, let go and rise away.
 const ENTER: f32 = 0.5;
 const RUN: f32 = 0.7;
 const LOWER: f32 = 0.9;
@@ -61,7 +90,7 @@ pub struct Eggs {
     grown_for: Option<String>,
     grown: Vec<f32>,
     grown_at: f64,
-    /// The crane at work, if it is.
+    /// The crane or the balloon at work, if one is.
     pub lift: Option<Lift>,
     /// Where the title being lifted lies on the screen, from the last page drawn.
     pub place: Option<Rect>,
@@ -72,9 +101,10 @@ pub struct Eggs {
     pub plants: Vec<(Rect, bool)>,
 }
 
-/// The crane lifting the chapter title that begins at `at` into place on page `page`.
+/// The crane or the balloon bringing the chapter title that begins at `at` into place on page `page`.
 #[derive(Clone, Copy, Debug)]
 pub struct Lift {
+    pub by: Carrier,
     pub at: usize,
     pub page: usize,
     pub started: f64,
@@ -187,7 +217,7 @@ fn grass(story: &str, area: Rect, unit: f32) -> Vec<Shape> {
     out
 }
 
-/// Where the crane is in its work at `t` seconds, the writer having gone on at `duck`.
+/// Where the crane (or the balloon) is in its work at `t` seconds, the writer having gone on at `duck`.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Pose {
     /// 0: away beyond the side of the window, 1: standing beside the page.
@@ -232,35 +262,55 @@ pub fn pose(t: f32, duck: Option<f32>) -> Pose {
     }
 }
 
-/// Where the crane's parts are, for a title lying at `place`, on a page lying at `page`.
+/// Where the crane's parts are, or the balloon's, for a title lying at `place`, on a page lying at
+/// `page`.
 struct Rig {
-    /// The tower's middle, and the height of the arm.
+    /// The crane's tower's middle, and the height of its arm.
     mast_x: f32,
     jib_y: f32,
     /// The arm's two ends.
     jib: (f32, f32),
+    /// The crane's hook, or the bottom of the balloon's basket.
     hook: Pos2,
     /// How far the title is from its place.
     offset: Vec2,
 }
 
-fn rig(p: Pose, place: Rect, page: Rect) -> Rig {
+fn rig(by: Carrier, p: Pose, place: Rect, page: Rect) -> Rig {
     let hang = page.height() * 0.16;
-    let away = (1.0 - p.enter) * page.width() * 0.9;
-    let mast_x = page.right() + page.width() * 0.12 + away;
-    let jib_y = place.top() - hang - page.height() * 0.08;
-    let start = mast_x - page.width() * 0.1;
-    let hook_x = start + (place.center().x + away - start) * p.run;
-    let load = pos2(hook_x, place.center().y - hang * (1.0 - p.lower));
-    let offset = if p.hooked { load - place.center() } else { Vec2::ZERO };
-    let hook_y = if p.hooked { load.y - place.height() / 2.0 - 10.0 } else { place.top() - 10.0 - hang * 0.5 * p.hook };
-    let jib = (place.left().min(start) + away - 20.0, mast_x + page.width() * 0.14);
-    Rig { mast_x, jib_y, jib, hook: pos2(hook_x, hook_y), offset }
+    match by {
+        Carrier::Crane => {
+            let away = (1.0 - p.enter) * page.width() * 0.9;
+            let mast_x = page.right() + page.width() * 0.12 + away;
+            let jib_y = place.top() - hang - page.height() * 0.08;
+            let start = mast_x - page.width() * 0.1;
+            let hook_x = start + (place.center().x + away - start) * p.run;
+            let load = pos2(hook_x, place.center().y - hang * (1.0 - p.lower));
+            let offset = if p.hooked { load - place.center() } else { Vec2::ZERO };
+            let hook_y = if p.hooked { load.y - place.height() / 2.0 - 10.0 } else { place.top() - 10.0 - hang * 0.5 * p.hook };
+            let jib = (place.left().min(start) + away - 20.0, mast_x + page.width() * 0.14);
+            Rig { mast_x, jib_y, jib, hook: pos2(hook_x, hook_y), offset }
+        }
+        Carrier::Balloon => {
+            // Down from high up on the right, across, and down; let go, it rises away up to the left.
+            let away = 1.0 - p.enter;
+            let rope = page.height() * 0.05;
+            let (basket, offset) = if p.hooked {
+                let x = place.center().x + (1.0 - p.run) * page.width() * 0.5 + away * page.width() * 0.4;
+                let load = pos2(x, place.center().y - hang * (1.0 - p.lower) - away * page.height() * 0.6);
+                (load - vec2(0.0, place.height() / 2.0 + rope), load - place.center())
+            } else {
+                let up = rope + page.height() * 0.06 * p.hook;
+                (place.center_top() - vec2(0.0, up) + vec2(-0.25 * page.width(), -0.8 * page.height()) * away, Vec2::ZERO)
+            };
+            Rig { mast_x: 0.0, jib_y: 0.0, jib: (0.0, 0.0), hook: basket, offset }
+        }
+    }
 }
 
-/// How far the title is from its place at `p`.
-pub fn offset(p: Pose, place: Rect, page: Rect) -> Vec2 {
-    rig(p, place, page).offset
+/// How far the title is from its place at `p`, brought `by` that.
+pub fn offset(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec2 {
+    rig(by, p, place, page).offset
 }
 
 /// A beam of the crane between `a` and `b`, `w` thick: two rails and the lattice between them.
@@ -281,7 +331,7 @@ fn beam(a: Pos2, b: Pos2, w: f32, line: f32) -> Vec<Shape> {
 
 /// The crane at `p`, standing on the desk's bottom `ground`, the title's place at `place`.
 pub fn crane(p: Pose, place: Rect, page: Rect, ground: f32) -> Vec<Shape> {
-    let r = rig(p, place, page);
+    let r = rig(Carrier::Crane, p, place, page);
     let w = page.width() * 0.035;
     let line = (page.width() * 0.004).max(1.0);
     let mut out = beam(pos2(r.mast_x, ground), pos2(r.mast_x, r.jib_y), w, line);
@@ -310,8 +360,46 @@ pub fn crane(p: Pose, place: Rect, page: Rect, ground: f32) -> Vec<Shape> {
     out
 }
 
+/// The balloon at `p`, the title's place at `place`: its silk in stripes, the basket below, and
+/// while it carries the title, ropes down to it.
+pub fn balloon(p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
+    let r = rig(Carrier::Balloon, p, place, page);
+    let size = page.width() * 0.09;
+    let line = (page.width() * 0.003).max(1.0);
+    let basket = Rect::from_min_max(r.hook - vec2(size * 0.32, size * 0.42), r.hook + vec2(size * 0.32, 0.0));
+    let middle = basket.center_top() - vec2(0.0, size * 0.5 + size);
+    let mouth = basket.center_top() - vec2(0.0, size * 0.5);
+    let mut out = Vec::new();
+    for x in [basket.left() + line, basket.right() - line] {
+        out.push(Shape::line_segment([pos2(x, basket.top()), mouth + vec2((x - mouth.x) * 1.6, -size * 0.1)], Stroke::new(line * 0.7, ROPE)));
+    }
+    // The silk: a round top tapering to its mouth, drawn as a fan of stripes, each a convex piece.
+    let n = 8;
+    let at = |a: f32| middle + egui::Vec2::angled(a) * size;
+    for k in 0..n {
+        let (a, b) = (PI * (0.85 + 1.3 * k as f32 / n as f32), PI * (0.85 + 1.3 * (k + 1) as f32 / n as f32));
+        let mut points: Vec<Pos2> = (0..=4).map(|j| at(a + (b - a) * j as f32 / 4.0)).collect();
+        points.push(middle);
+        out.push(Shape::convex_polygon(points, SILK[k % 2], Stroke::NONE));
+    }
+    let (l, rt) = (at(PI * 0.85), at(PI * 0.15));
+    let lip = size * 0.22;
+    out.push(Shape::convex_polygon(vec![l, middle, mouth - vec2(lip, 0.0)], SILK[0], Stroke::NONE));
+    out.push(Shape::convex_polygon(vec![middle, rt, mouth + vec2(lip, 0.0)], SILK[1], Stroke::NONE));
+    out.push(Shape::convex_polygon(vec![middle, mouth + vec2(lip, 0.0), mouth - vec2(lip, 0.0)], SILK[1], Stroke::NONE));
+    out.push(Shape::rect_filled(basket, 2.0, WICKER));
+    out.push(Shape::rect_filled(Rect::from_min_size(basket.min, vec2(basket.width(), basket.height() * 0.25)), 2.0, WICKER_DARK));
+    if p.hooked {
+        let load = place.translate(r.offset);
+        for corner in [load.left_top() + vec2(load.width() * 0.1, 0.0), load.right_top() - vec2(load.width() * 0.1, 0.0)] {
+            out.push(Shape::line_segment([basket.center_bottom(), corner], Stroke::new(line * 0.7, ROPE)));
+        }
+    }
+    out
+}
+
 impl App {
-    /// The garden on the desk, behind the pages lying at `page`, in the Hidden Garden only.
+    /// The garden on the desk, behind the pages lying at `page`, in the Magic Garden only.
     pub fn draw_garden(&mut self, ui: &egui::Ui, area: Rect, page: Rect) {
         self.eggs.plants.clear();
         if self.themes.theme != Theme::Garden {
@@ -367,23 +455,21 @@ impl App {
         }
     }
 
-    /// The paragraph at the caret was just made a chapter title: now and then, in the Hidden
-    /// Garden, the crane comes to lift it into place.
+    /// The paragraph at the caret was just made a chapter title: now and then, in a magic theme,
+    /// the crane or the balloon comes to bring it into place.
     pub fn maybe_lift_title(&mut self, ctx: &egui::Context) {
-        if self.themes.theme != Theme::Garden {
-            return;
-        }
+        let Some(by) = Carrier::of(self.themes.theme) else { return };
         let (at, _) = self.doc.para_start(self.selection().0);
         // Only a title with words in it: an empty one is no load.
         if !self.doc.chapters(false).iter().any(|e| e.at == at) || self.eggs.roll() >= self.eggs.odds {
             return;
         }
         let started = ctx.input(|i| i.time);
-        self.eggs.lift = Some(Lift { at, page: self.doc.page_of(at), started, duck: None });
+        self.eggs.lift = Some(Lift { by, at, page: self.doc.page_of(at), started, duck: None });
         ctx.request_repaint();
     }
 
-    /// Once a frame: the crane hurries away when the writer goes on, and is gone when it is done or
+    /// Once a frame: the crane or the balloon hurries away when the writer goes on, and is gone when it is done or
     /// the page is turned.
     pub fn update_lift(&mut self, ctx: &egui::Context) {
         let Some(lift) = &mut self.eggs.lift else { return };
@@ -404,20 +490,23 @@ impl App {
         }
     }
 
-    /// The pose of the crane now, and the range of page `i`'s text (page-local) it is lifting.
-    pub fn lifting(&self, ctx: &egui::Context, i: usize) -> Option<(Pose, std::ops::Range<usize>)> {
+    /// What brings the title, where it is now, and the range of page `i`'s text (page-local) it is lifting.
+    pub fn lifting(&self, ctx: &egui::Context, i: usize) -> Option<(Carrier, Pose, std::ops::Range<usize>)> {
         let lift = self.eggs.lift.filter(|l| l.page == i)?;
         let now = ctx.input(|inp| inp.time);
         let p = pose((now - lift.started) as f32, lift.duck.map(|d| (d - lift.started) as f32));
         let start = self.doc.spans[i].start;
         let (end, _) = self.doc.term_from(lift.at, self.doc.char_to_byte(lift.at));
-        Some((p, lift.at.saturating_sub(start)..end.saturating_sub(start)))
+        Some((lift.by, p, lift.at.saturating_sub(start)..end.saturating_sub(start)))
     }
 
-    /// The crane over page `i` lying at `page`, if it is at work there.
-    pub fn draw_crane(&self, ui: &egui::Ui, page: Rect, i: usize, area: Rect) {
-        let (Some((p, _)), Some(place)) = (self.lifting(ui.ctx(), i), self.eggs.place) else { return };
-        ui.painter().extend(crane(p, place, page, area.bottom()));
+    /// The crane or the balloon over page `i` lying at `page`, if it is at work there.
+    pub fn draw_carrier(&self, ui: &egui::Ui, page: Rect, i: usize, area: Rect) {
+        let (Some((by, p, _)), Some(place)) = (self.lifting(ui.ctx(), i), self.eggs.place) else { return };
+        ui.painter().extend(match by {
+            Carrier::Crane => crane(p, place, page, area.bottom()),
+            Carrier::Balloon => balloon(p, place, page),
+        });
     }
 }
 
@@ -442,9 +531,23 @@ mod tests {
 
         let page = Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0));
         let place = Rect::from_min_size(pos2(500.0, 120.0), vec2(200.0, 30.0));
-        assert!(offset(at(0.0), place, page).x > page.width(), "the title comes with the crane, from far to the side");
-        assert!(offset(at(over), place, page).x.abs() < 0.01 && offset(at(over), place, page).y < -50.0, "above its place");
-        assert_eq!(offset(at(free), place, page), Vec2::ZERO, "in its place");
+        assert!(offset(Carrier::Crane, at(0.0), place, page).x > page.width(), "the title comes with the crane, from far to the side");
+        assert!(offset(Carrier::Crane, at(over), place, page).x.abs() < 0.01 && offset(Carrier::Crane, at(over), place, page).y < -50.0, "above its place");
+        assert_eq!(offset(Carrier::Crane, at(free), place, page), Vec2::ZERO, "in its place");
+    }
+
+    #[test]
+    fn the_balloon_floats_the_title_down_from_high_on_the_right_and_rises_away() {
+        let at = |t: f32| offset(Carrier::Balloon, pose(t, None), Rect::from_min_size(pos2(500.0, 120.0), vec2(200.0, 30.0)), Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0)));
+        let start = at(0.0);
+        assert!(start.x > 300.0 && start.y < -400.0, "from high up on the right: {start:?}");
+        let over = at(ENTER + RUN);
+        assert!(over.x.abs() < 0.01 && over.y < -50.0, "above its place: {over:?}");
+        assert_eq!(at(ENTER + RUN + LOWER + SETTLE + UNHOOK), Vec2::ZERO, "let go in its place");
+        let p = pose(ENTER + RUN + LOWER + SETTLE + UNHOOK + LEAVE / 2.0, None);
+        let place = Rect::from_min_size(pos2(500.0, 120.0), vec2(200.0, 30.0));
+        let rising = rig(Carrier::Balloon, p, place, Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0))).hook;
+        assert!(rising.y < place.top() - 100.0 && rising.x < place.center().x, "rising away up to the left: {rising:?}");
     }
 
     #[test]

@@ -230,7 +230,7 @@ pub struct App {
     pub peeks: peek::Peeks,
     /// The colours around the pages, and where the choice is kept.
     pub themes: theme::Themes,
-    /// What grows and works in the Hidden Garden theme.
+    /// What grows and flies in the Magic Garden theme, and what builds in the Magic City.
     pub eggs: eggs::Eggs,
 }
 
@@ -638,7 +638,7 @@ impl App {
                 self.text_boxes(ui, page_rect, i);
                 self.draw_notes(ui, page_rect, i);
                 self.draw_peek(ui, page_rect, i, false);
-                self.draw_crane(ui, page_rect, i, area);
+                self.draw_carrier(ui, page_rect, i, area);
                 self.pen_surface(ui, page_rect, i);
             }
         } else if self.slides_in(base) && self.appearance == Appearance::Book {
@@ -5493,11 +5493,16 @@ mod tests {
         std::fs::write(out, pdf).unwrap();
     }
 
-    /// The Hidden Garden chosen and washed in, the crane coming every time (`odds`) or never.
+    /// The Magic Garden chosen and washed in, the balloon coming every time (`odds`) or never.
     fn in_the_garden(h: &mut Harness, odds: f64) {
+        in_the_theme(h, theme::Theme::Garden, odds);
+    }
+
+    /// `theme` chosen and washed in, what brings a chapter title coming every time (`odds`) or never.
+    fn in_the_theme(h: &mut Harness, theme: theme::Theme, odds: f64) {
         h.frames(3, vec![], Modifiers::NONE);
         let ctx = h.ctx.clone();
-        h.app.themes.choose(&ctx, theme::Theme::Garden);
+        h.app.themes.choose(&ctx, theme);
         h.app.eggs.odds = odds;
         h.wait(1.0);
     }
@@ -5514,7 +5519,7 @@ mod tests {
     }
 
     #[test]
-    fn in_the_hidden_garden_a_plant_grows_beside_the_pages_as_the_story_grows() {
+    fn in_the_magic_garden_a_plant_grows_beside_the_pages_as_the_story_grows() {
         let mut h = Harness::new();
         in_the_garden(&mut h, 0.0);
         let first = h.app.eggs.plants.clone();
@@ -5555,11 +5560,14 @@ mod tests {
         assert!(plants[0].0.height() > plants[1].0.height(), "the longer chapter is the taller plant");
         let page = h.app.last_page_rect;
         assert!(plants[0].0.right() < page.left() && plants[1].0.left() > page.right(), "one on either side of the page");
-        assert!(h.app.eggs.lift.is_none(), "the crane did not come: it comes only now and then");
+        assert!(h.app.eggs.lift.is_none(), "the balloon did not come: it comes only now and then");
     }
 
     #[test]
-    fn nothing_grows_and_no_crane_comes_in_the_other_themes() {
+    fn nothing_grows_in_the_city_and_nothing_brings_a_title_in_the_other_themes() {
+        let mut h = Harness::new();
+        in_the_theme(&mut h, theme::Theme::City, 1.0);
+        assert!(h.app.eggs.plants.is_empty(), "no garden in the city");
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.app.eggs.odds = 1.0;
@@ -5567,49 +5575,68 @@ mod tests {
         assert!(h.app.eggs.plants.is_empty() && h.app.eggs.lift.is_none());
     }
 
-    #[test]
-    fn now_and_then_a_crane_lifts_a_new_chapter_title_into_place() {
-        let mut h = Harness::new();
-        in_the_garden(&mut h, 1.0);
-        chapter_one(&mut h);
-        assert!(h.app.eggs.lift.is_some(), "the crane came");
+    /// The title "Chapter One" as painted: as it is brought, over its place, and at rest.
+    fn title_brought_in(h: &mut Harness) -> (egui::Pos2, egui::Pos2, egui::Pos2) {
+        chapter_one(h);
+        assert!(h.app.eggs.lift.is_some(), "it came");
         let coming = h.painted_at("Chapter One").expect("the title is drawn");
         h.frames(70, vec![], Modifiers::NONE);
         let over = h.painted_at("Chapter One").unwrap();
         h.frames(240, vec![], Modifiers::NONE);
         assert!(h.app.eggs.lift.is_none(), "and went");
         let rest = h.painted_at("Chapter One").unwrap();
-        assert!(coming.x > h.app.last_page_rect.right(), "it comes from beside the page, on the hook: {coming:?}");
-        assert!((over.x - rest.x).abs() < 5.0 && over.y < rest.y - 50.0, "then hangs over its place: {over:?}, {rest:?}");
+        assert!((over.x - rest.x).abs() < 5.0 && over.y < rest.y - 50.0, "it hangs over its place: {over:?}, {rest:?}");
         assert!(h.in_page(egui::vec2(0.0, 0.0)).y <= rest.y, "and lies on the page");
+        (coming, over, rest)
     }
 
     #[test]
-    fn going_on_writing_while_the_crane_lifts_sets_the_title_down_at_once() {
+    fn now_and_then_in_the_magic_city_a_crane_lifts_a_new_chapter_title_into_place() {
+        let mut h = Harness::new();
+        in_the_theme(&mut h, theme::Theme::City, 1.0);
+        let (coming, _, rest) = title_brought_in(&mut h);
+        assert!(coming.x > h.app.last_page_rect.right() && (coming.y - rest.y).abs() < 200.0, "from beside the page, on the hook: {coming:?}");
+        assert!(h.app.eggs.plants.is_empty());
+    }
+
+    #[test]
+    fn now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title() {
         let mut h = Harness::new();
         in_the_garden(&mut h, 1.0);
-        chapter_one(&mut h);
-        h.frames(30, vec![], Modifiers::NONE);
-        h.type_text("!");
-        let set = h.painted_at("Chapter One!").expect("the title is drawn");
-        h.frames(120, vec![], Modifiers::NONE);
-        assert!(h.app.eggs.lift.is_none());
-        assert_eq!(h.painted_at("Chapter One!"), Some(set), "it was in its place at once");
-        assert_eq!(h.app.doc.flow.text, "Chapter One!\n");
+        let (coming, _, rest) = title_brought_in(&mut h);
+        assert!(coming.x > rest.x + 100.0 && coming.y < rest.y - 300.0, "floating down from high on the right: {coming:?}");
     }
 
     #[test]
-    fn print_shows_neither_the_garden_nor_the_crane() {
+    fn going_on_writing_while_a_title_is_brought_sets_it_down_at_once() {
+        for t in [theme::Theme::City, theme::Theme::Garden] {
+            let mut h = Harness::new();
+            in_the_theme(&mut h, t, 1.0);
+            chapter_one(&mut h);
+            h.frames(30, vec![], Modifiers::NONE);
+            h.type_text("!");
+            let set = h.painted_at("Chapter One!").expect("the title is drawn");
+            h.frames(120, vec![], Modifiers::NONE);
+            assert!(h.app.eggs.lift.is_none(), "{t:?}");
+            assert_eq!(h.painted_at("Chapter One!"), Some(set), "{t:?}: it was in its place at once");
+            assert_eq!(h.app.doc.flow.text, "Chapter One!\n");
+        }
+    }
+
+    #[test]
+    fn print_shows_neither_the_garden_nor_what_brings_a_title() {
         let mut h = Harness::new();
         chapter_one(&mut h);
         let ctx = h.ctx.clone();
         let plain = h.app.pdf(&ctx, 0..=0).unwrap();
-        let mut g = Harness::new();
-        in_the_garden(&mut g, 1.0);
-        chapter_one(&mut g);
-        g.frames(70, vec![], Modifiers::NONE);
-        assert!(g.app.eggs.lift.is_some() && !g.app.eggs.plants.is_empty());
-        let ctx = g.ctx.clone();
-        assert_eq!(g.app.pdf(&ctx, 0..=0).unwrap(), plain);
+        for t in [theme::Theme::City, theme::Theme::Garden] {
+            let mut g = Harness::new();
+            in_the_theme(&mut g, t, 1.0);
+            chapter_one(&mut g);
+            g.frames(70, vec![], Modifiers::NONE);
+            assert!(g.app.eggs.lift.is_some(), "{t:?}");
+            let ctx = g.ctx.clone();
+            assert!(g.app.pdf(&ctx, 0..=0).unwrap() == plain, "{t:?}");
+        }
     }
 }

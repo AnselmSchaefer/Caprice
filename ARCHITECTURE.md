@@ -94,7 +94,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `ideas.rs` | The What next window (lower left): ways the story could go on from the caret, kept in the scratchpad |
 | `fonts.rs` | Installed fonts loaded on demand, a missing one drawn with a twin of the same widths |
 | `theme.rs` | The themes (`Theme`, `Palette`): colours and egui visuals around the page, the palette in use (`pal`), fading from one to the next, the choice kept in the data folder; the page's own `PAPER` and `INK` |
-| `eggs.rs` | What is hidden in the Hidden Garden theme: a plant a chapter growing on the desk, and now and then a crane lifting a new chapter title into place |
+| `eggs.rs` | What is hidden in the magic themes: in the Magic Garden a plant a chapter growing on the desk and a balloon flying in a new chapter title now and then; in the Magic City a crane lifting it into place |
 
 ---
 
@@ -1018,41 +1018,47 @@ same in every theme, so what is printed (R20) and exported (R10) never depends o
 
 ### R30 — Hidden gems: on the desk, or over the page on the screen only; never moving anything
 
-The Hidden Garden theme (`Theme::Garden`) hides things for the writer to find (`eggs.rs`). Its
-blurb gives nothing away. What it hides is the theme's own: picking another theme is how to stop it.
+The magic themes hide things for the writer to find (`eggs.rs`): the Magic Garden (`Theme::Garden`)
+a garden and a hot-air balloon, the Magic City (`Theme::City`) a crane. Their blurbs give nothing
+away. What a theme hides is its own: picking another theme is how to stop it.
 
-- **The garden lies on the desk, behind every page.** `draw_garden` is called in `frame` right after
-  `page_rect` and before any page is drawn, so the pages hide what is behind them, in either look and
-  while turning. A plant a chapter (one for a story without chapters), taking turns on the left and
-  right of the page, as tall as its chapter's pages (`height_of`), flowering once the next chapter
-  has begun. The chapters come from `Doc::chapters` and `page_of`, so the garden follows whatever
-  changes them, with nothing to keep in step.
+- **The garden lies on the desk, behind every page**, in the Magic Garden only. `draw_garden` is
+  called in `frame` right after `page_rect` and before any page is drawn, so the pages hide what is
+  behind them, in either look and while turning. A plant a chapter (one for a story without
+  chapters), taking turns on the left and right of the page, as tall as its chapter's pages
+  (`height_of`), flowering once the next chapter has begun. The chapters come from `Doc::chapters`
+  and `page_of`, so the garden follows whatever changes them, with nothing to keep in step.
 - **It grows in sight and never wilts.** How far each plant has grown is kept for the story open
   (`Eggs::grown`, by `story_id`) and only goes up, a tenth of a second's growth a frame at most;
   a story opened comes with its garden grown. Its shapes come from a seed of `story_id` and the
   plant's number, and the stem's course at a height does not depend on how tall it is, so growing
   only adds at the top.
-- **The crane comes now and then** (`ODDS`), when the writer makes a paragraph with words in it a
-  chapter title with the Chapter button (`maybe_lift_title`, from `apply_tools`): not on opening a
-  file, undo, or a title made any other way. Its course is a function of time (`pose`); typing,
-  clicking or scrolling sets the title down at once and the crane hurries away (`update_lift`); a
-  page turned ends it.
-- **The title on the hook is only drawn elsewhere.** `editor_surface` moves the title's pieces of the
-  page's layout by `eggs::offset` while painting them and puts them back after, so the caret,
-  hit-testing, pagination and print see the title in its place all the while (R3, R20). The crane
-  is drawn in the settled branch in front of the page, after the peek's hand.
+- **A new chapter title is brought in now and then** (`ODDS`), when the writer makes a paragraph
+  with words in it a chapter title with the Chapter button (`maybe_lift_title`, from
+  `apply_tools`): not on opening a file, undo, or a title made any other way. Which theme brings it
+  how is `Carrier::of`: the balloon floats down from high on the right, the crane drives in from the
+  side. Both follow one course in time (`pose`: come, carry over the place, lower, settle, let go,
+  leave), each along its own way (`rig`). Typing, clicking or scrolling sets the title down at once
+  and the carrier hurries away (`update_lift`); a page turned ends it. A new carrier is a `Carrier`
+  variant, its way in `rig` and its drawing in `draw_carrier`.
+- **The title being brought is only drawn elsewhere.** `editor_surface` moves the title's pieces of
+  the page's layout by `eggs::offset` while painting them and puts them back after, so the caret,
+  hit-testing, pagination and print see the title in its place all the while (R3, R20). The
+  carrier is drawn in the settled branch in front of the page, after the peek's hand.
 - **None of it is printed or saved**: it is in none of `underlay`, `ink` or `furniture` (R20), and
-  nothing of it is in `Doc`. Its colours are the garden's and the crane's own, like the emblem's,
+  nothing of it is in `Doc`. Its colours are the garden's, the balloon's and the crane's own, like the emblem's,
   not the palette's: they are pictures, not chrome.
 - Tests: in `eggs.rs` `the_crane_drives_in_runs_the_title_out_lowers_it_and_drives_away`,
+  `the_balloon_floats_the_title_down_from_high_on_the_right_and_rises_away`,
   `the_crane_sets_the_title_down_at_once_when_the_writer_goes_on`,
   `a_plant_is_the_same_for_the_same_story_and_grows_only_at_its_top`; and
-  `in_the_hidden_garden_a_plant_grows_beside_the_pages_as_the_story_grows`,
+  `in_the_magic_garden_a_plant_grows_beside_the_pages_as_the_story_grows`,
   `each_chapter_grows_its_own_plant_and_flowers_once_the_next_begins`,
-  `nothing_grows_and_no_crane_comes_in_the_other_themes`,
-  `now_and_then_a_crane_lifts_a_new_chapter_title_into_place`,
-  `going_on_writing_while_the_crane_lifts_sets_the_title_down_at_once`,
-  `print_shows_neither_the_garden_nor_the_crane`.
+  `nothing_grows_in_the_city_and_nothing_brings_a_title_in_the_other_themes`,
+  `now_and_then_in_the_magic_city_a_crane_lifts_a_new_chapter_title_into_place`,
+  `now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title`,
+  `going_on_writing_while_a_title_is_brought_sets_it_down_at_once`,
+  `print_shows_neither_the_garden_nor_what_brings_a_title`.
 
 ---
 
@@ -1110,7 +1116,7 @@ page turns; leave it out of print (R20 is for what is on the page) (R28).
 `the_docks_stay_readable_in_every_theme` (R29). **Something new drawn around the page:** its colours
 from `theme::pal()` (R29).
 
-**A new hidden gem** (`eggs.rs`): only in `Theme::Garden`; on the desk before the pages, or over
+**A new hidden gem** (`eggs.rs`): only in its magic theme; on the desk before the pages, or over
 the settled page after them; a pose as a function of time that tests can look at, ending at once
 when the writer goes on; nothing moved in the layout, nothing in print or the file (R30).
 
@@ -1227,5 +1233,8 @@ when the writer goes on; nothing moved in the layout, nothing in print or the fi
   colours, and choosing another theme turns them off without one more setting. The garden is there
   all the time, as it grows with the story; the crane comes only now and then, so it stays a
   surprise (R30).
+- **2026-10-27 — Each magic theme brings a new chapter its own way.** The crane went to a Magic
+  City of its own and the garden, renamed Magic Garden, got a hot-air balloon: one course in time
+  for both, so the title is set down the same way, and only the path and the picture differ (R30).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

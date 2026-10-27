@@ -780,15 +780,15 @@ impl App {
                 ui.painter().rect_filled(r.translate(content.min.to_vec2()), 1.0, color);
             }
         }
-        // A chapter title on the crane's hook is drawn where it hangs; it lies in its place all the
+        // A chapter title on the crane's hook, or below the balloon, is drawn where it hangs; it lies in its place all the
         // while, for the caret and the page breaks (`eggs.rs`).
         let mut lifted = None;
-        if let Some((pose, range)) = self.lifting(&ctx, i) {
+        if let Some((by, pose, range)) = self.lifting(&ctx, i) {
             let title = |p: &crate::layout::ParaLayout| p.start >= range.start && p.end <= range.end;
             let place = layout.paras.iter().filter(|p| title(p)).map(|p| Rect::from_min_size(content.min + vec2(p.x, p.y), p.galley.size()));
             self.eggs.place = place.reduce(|a, b| a.union(b));
             if let Some(place) = self.eggs.place {
-                let by = crate::eggs::offset(pose, place, page_rect);
+                let by = crate::eggs::offset(by, pose, place, page_rect);
                 layout.paras.iter_mut().filter(|p| title(p)).for_each(|p| (p.x, p.y) = (p.x + by.x, p.y + by.y));
                 lifted = Some((range, by));
             }

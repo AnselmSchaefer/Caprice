@@ -73,7 +73,7 @@ Full list with reasons and tests in `ARCHITECTURE.md` §4.
     the text; the text and pictures; header, footer, boxes in front). Anything new
     drawn on a page goes into one of them, or it is not printed. None of them moves a page break.
     Tests never reach the system's printers: they set `App::print.spooler`.
-    The Hidden Garden's plants and crane (`eggs.rs`) are deliberately in none of them, and move no text.
+    The magic themes' garden, balloon and crane (`eggs.rs`) are deliberately in none of them, and move no text.
 12. **A story with a file saves itself; every story keeps versions by its id.** Anything that
     starts another story sets `story_id` and calls `Keeper::opened`. Leaving still offers to drop
     the changes since saving by hand (`as_saved`). `Harness` turns autosave, versions, the
@@ -81,7 +81,7 @@ Full list with reasons and tests in `ARCHITECTURE.md` §4.
     nothing outside their own folders.
 13. **Colours around the page come from `theme::pal()`**, never literals; the page itself (`PAPER`, `INK`)
     is the same in every theme.
-    Pictures (the emblem, the garden and crane) keep their own colours.
+    Pictures (the emblem, the garden, balloon and crane) keep their own colours.
 
 ## Files
 

@@ -68,10 +68,11 @@ pub enum Theme {
     Pistachio,
     Typewriter,
     Garden,
+    City,
 }
 
 impl Theme {
-    pub const ALL: [Theme; 8] = [
+    pub const ALL: [Theme; 9] = [
         Theme::Midnight,
         Theme::Lagoon,
         Theme::Marmalade,
@@ -80,6 +81,7 @@ impl Theme {
         Theme::Pistachio,
         Theme::Typewriter,
         Theme::Garden,
+        Theme::City,
     ];
 
     pub fn name(self) -> &'static str {
@@ -91,7 +93,8 @@ impl Theme {
             Theme::Bubblegum => "Bubblegum",
             Theme::Pistachio => "Pistachio Sorbet",
             Theme::Typewriter => "Typewriter",
-            Theme::Garden => "Hidden Garden",
+            Theme::Garden => "Magic Garden",
+            Theme::City => "Magic City",
         }
     }
 
@@ -104,8 +107,9 @@ impl Theme {
             Theme::Bubblegum => "Pink, sweet, and a little bit sticky",
             Theme::Pistachio => "A scoop of green on a summer afternoon",
             Theme::Typewriter => "Clack, clack, ding. The ribbon is red",
-            // What grows in it (`eggs.rs`) is for the writer to find.
+            // What is hidden in these (`eggs.rs`) is for the writer to find.
             Theme::Garden => "Plant a story and see what comes up",
+            Theme::City => "Lights on in a city that builds itself",
         }
     }
 
@@ -247,6 +251,24 @@ impl Theme {
                 caret: rgb(184, 76, 40),
                 thumb: rgb(138, 180, 120),
                 light: true,
+            },
+            // Dusk over the rooftops, the windows lit.
+            Theme::City => Palette {
+                desk: rgb(30, 30, 52),
+                desk_top: rgb(84, 64, 116),
+                dock: rgb(44, 42, 70),
+                dock_edge: rgb(78, 72, 112),
+                btn: rgb(60, 56, 92),
+                btn_hover: rgb(78, 72, 116),
+                text: rgb(236, 230, 246),
+                text_hot: Color32::WHITE,
+                text_dim: rgb(166, 156, 196),
+                accent: rgb(255, 196, 64),
+                on_accent: rgb(36, 26, 8),
+                field: rgb(36, 34, 58),
+                caret: rgb(240, 170, 40),
+                thumb: rgb(140, 124, 190),
+                light: false,
             },
         }
     }
