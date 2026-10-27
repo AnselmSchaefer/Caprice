@@ -390,19 +390,17 @@ pub fn balloon(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
     for (x, end) in [(basket.left() + line, mouth - vec2(lip, 0.0)), (basket.right() - line, mouth + vec2(lip, 0.0))] {
         out.push(Shape::line_segment([pos2(x, basket.top()), end], Stroke::new(line * 0.7, ROPE)));
     }
-    // The silk: a round top tapering to its mouth, drawn as a fan of stripes, each a convex piece.
+    // The silk: a round top tapering to its mouth, drawn as stripes running from the top down to
+    // the mouth, each a convex piece, so the colours take turns all the way round.
     let n = 8;
     let at = |a: f32| middle + egui::Vec2::angled(a) * size;
+    let lip_at = |j: usize| mouth + vec2(lip * (2.0 * j as f32 / n as f32 - 1.0), 0.0);
     for k in 0..n {
         let (a, b) = (PI * (0.85 + 1.3 * k as f32 / n as f32), PI * (0.85 + 1.3 * (k + 1) as f32 / n as f32));
         let mut points: Vec<Pos2> = (0..=4).map(|j| at(a + (b - a) * j as f32 / 4.0)).collect();
-        points.push(middle);
+        points.extend([lip_at(k + 1), lip_at(k)]);
         out.push(Shape::convex_polygon(points, SILK[k % 2], Stroke::NONE));
     }
-    let (l, rt) = (at(PI * 0.85), at(PI * 0.15));
-    out.push(Shape::convex_polygon(vec![l, middle, mouth - vec2(lip, 0.0)], SILK[0], Stroke::NONE));
-    out.push(Shape::convex_polygon(vec![middle, rt, mouth + vec2(lip, 0.0)], SILK[1], Stroke::NONE));
-    out.push(Shape::convex_polygon(vec![middle, mouth + vec2(lip, 0.0), mouth - vec2(lip, 0.0)], SILK[1], Stroke::NONE));
     out.push(Shape::rect_filled(basket, 2.0, WICKER));
     out.push(Shape::rect_filled(Rect::from_min_size(basket.min, vec2(basket.width(), basket.height() * 0.25)), 2.0, WICKER_DARK));
     // From the basket's bottom corners down to the ends of the title.
@@ -613,6 +611,42 @@ mod tests {
         let high = Rect::from_min_size(pos2(500.0, 120.0), vec2(200.0, 30.0));
         let r = rig(Carrier::Balloon { right: true }, pose(ENTER + RUN, None), high, page);
         assert!(r.hook.y - r.size * TALL >= page.top() - page.height() * 0.05, "{:?} {}", r.hook, r.size);
+    }
+
+    #[test]
+    fn the_balloon_s_stripes_take_turns_in_colour_all_the_way_across() {
+        let page = Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0));
+        let place = Rect::from_min_size(pos2(500.0, 400.0), vec2(200.0, 30.0));
+        let by = Carrier::Balloon { right: true };
+        let p = pose(ENTER + RUN, None);
+        let r = rig(by, p, place, page);
+        let silk: Vec<_> = balloon(by, p, place, page).into_iter().filter_map(|s| match s {
+            Shape::Path(path) if SILK.contains(&path.fill) => Some(path),
+            _ => None,
+        }).collect();
+        let inside = |points: &[Pos2], q: Pos2| {
+            let side = |i: usize| {
+                let (e, d) = (points[(i + 1) % points.len()] - points[i], q - points[i]);
+                e.x * d.y - e.y * d.x
+            };
+            let sides: Vec<f32> = (0..points.len()).map(side).collect();
+            sides.iter().all(|&c| c >= 0.0) || sides.iter().all(|&c| c <= 0.0)
+        };
+        // Across the silk low down, where it tapers to its mouth, and across its widest.
+        let mouth = r.hook.y - r.size * 0.92;
+        for y in [mouth - r.size * 0.3, mouth - r.size] {
+            let mut met: Vec<usize> = Vec::new();
+            for i in 0..=400 {
+                let q = pos2(r.hook.x - r.size * 1.2 + r.size * 2.4 * i as f32 / 400.0, y);
+                if let Some(k) = silk.iter().rposition(|s| inside(&s.points, q)) && met.last() != Some(&k) {
+                    met.push(k);
+                }
+            }
+            assert!(met.len() >= 4, "{y}: crossed {met:?}");
+            for w in met.windows(2) {
+                assert_ne!(silk[w[0]].fill, silk[w[1]].fill, "{y}: two stripes of one colour side by side: {met:?}");
+            }
+        }
     }
 
     #[test]
