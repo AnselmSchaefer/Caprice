@@ -176,6 +176,10 @@ pub struct DocFile {
     /// Where page numbering changes (`numbers.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     numbers: Vec<crate::numbers::NumberMark>,
+    /// The most pages each plant of the garden has grown to (`eggs.rs`). Older files have none: their
+    /// garden starts from the pages they have.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    garden: Vec<u32>,
 }
 
 fn yes() -> bool {
@@ -310,6 +314,7 @@ impl DocFile {
             created: 0,
             boxes,
             numbers: doc.number_marks.clone(),
+            garden: doc.garden.clone(),
         }
     }
 
@@ -376,6 +381,7 @@ impl DocFile {
             doc.number_marks.push(crate::numbers::NumberMark { at: shift(m.at).min(total - 1), ..m });
         }
         doc.number_marks.sort_by_key(|m| m.at);
+        doc.garden = self.garden;
         for n in self.notes {
             let (start, end) = (shift(n.start).min(total), shift(n.end).min(total));
             let id = doc.next_note_id;
@@ -421,7 +427,10 @@ impl App {
     pub fn content_hash(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        serde_json::to_string(&self.doc_file()).unwrap_or_default().hash(&mut h);
+        // The garden only grows with the text, so it is no change of its own: left out, a story
+        // just opened or begun is not unsaved for its garden being worked out.
+        let file = DocFile { garden: Vec::new(), ..self.doc_file() };
+        serde_json::to_string(&file).unwrap_or_default().hash(&mut h);
         h.finish()
     }
 
@@ -603,8 +612,10 @@ impl App {
     /// Show the story in `file` in place of the one shown, from its first page.
     pub fn adopt(&mut self, ctx: &egui::Context, mut file: DocFile) {
         let scene = file.scene.take();
+        let id = file.id.clone();
         let mut doc = file.into_doc();
         doc.version = self.doc.version + 1;
+        self.keep_garden(&id, &mut doc.garden);
         self.pads.clear();
         self.search.matches.clear();
         let fonts: BTreeSet<String> = doc.flow.styles.iter().map(|s| s.font.to_string()).collect();

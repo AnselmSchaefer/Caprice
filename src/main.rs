@@ -591,6 +591,7 @@ impl App {
         let page_rect = self.page_rect(&ctx, area);
         self.last_page_rect = page_rect;
         // On the desk, behind every page (`eggs.rs`).
+        self.grow_garden();
         self.draw_garden(ui, area, page_rect);
         let base = self.pos.floor() as usize;
         let t = self.pos - base as f32;
@@ -5669,5 +5670,92 @@ mod tests {
             let ctx = g.ctx.clone();
             assert!(g.app.pdf(&ctx, 0..=0).unwrap() == plain, "{t:?}");
         }
+    }
+
+    /// The height the garden's first plant was drawn at, once grown.
+    fn first_plant(h: &mut Harness) -> f32 {
+        h.frames(200, vec![], Modifiers::NONE);
+        h.app.eggs.plants[0].0.height()
+    }
+
+    #[test]
+    fn a_chapter_taken_out_keeps_its_plant_and_it_flowers() {
+        let mut h = Harness::new();
+        in_the_garden(&mut h, 0.0);
+        chapter_one(&mut h);
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("It was dark.\n");
+        let two = h.app.caret;
+        h.type_text("Chapter Two");
+        h.click_widget("Chapter");
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("The next morning.");
+        h.frames(10, vec![], Modifiers::NONE);
+        assert_eq!(h.app.eggs.plants.len(), 2);
+        // The second chapter taken out, title and all.
+        let ctx = h.ctx.clone();
+        let end = h.app.doc.total_chars() - 1;
+        h.app.replace_range(&ctx, two, end, "");
+        h.frames(10, vec![], Modifiers::NONE);
+        assert_eq!(h.app.doc.chapters(false).len(), 1);
+        assert_eq!(h.app.eggs.plants.iter().map(|p| p.1).collect::<Vec<_>>(), [false, true], "still two plants; the second flowered");
+    }
+
+    #[test]
+    fn the_garden_is_kept_with_the_story_and_does_not_shrink_when_it_is_opened_again_smaller() {
+        let dir = test_dir("garden");
+        let path = dir.join("story.caprice");
+        // Written in another theme: the garden grows all the same.
+        let mut h = Harness::new();
+        pages_of_text(&mut h);
+        let pages = h.app.doc.pages() as u32;
+        assert!(h.app.eggs.plants.is_empty(), "nothing drawn outside the Magic Garden");
+        h.key(Key::A, Modifiers::COMMAND);
+        h.key(Key::Backspace, Modifiers::NONE);
+        h.type_text("Only this is left.");
+        assert_eq!(h.app.doc.pages(), 1);
+        h.app.save_to(path.clone());
+        assert!(std::fs::read_to_string(&path).unwrap().contains(r#""garden""#), "kept in the file");
+
+        let mut other = Harness::new();
+        in_the_garden(&mut other, 0.0);
+        let ctx = other.ctx.clone();
+        other.app.open_path(&ctx, path.clone());
+        assert!(!other.app.unsaved(), "the garden is no change to save");
+        assert_eq!(other.app.doc.garden, [pages]);
+        let opened = first_plant(&mut other);
+        let mut fresh = Harness::new();
+        in_the_garden(&mut fresh, 0.0);
+        fresh.app.doc.garden = vec![pages];
+        assert_eq!(opened, first_plant(&mut fresh), "as tall as its most pages, not its one page now");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dropping_the_changes_since_saving_keeps_the_garden_grown_since() {
+        let dir = test_dir("garden-drop");
+        let mut h = Harness::new();
+        in_the_garden(&mut h, 0.0);
+        h.type_text("A beginning.");
+        h.app.save_to(dir.join("story.caprice"));
+        let small = first_plant(&mut h);
+        h.type_text(&" It was nearly midnight and the Prime Minister sat alone in his office.".repeat(220));
+        let grown = first_plant(&mut h);
+        let kept = h.app.doc.garden.clone();
+        assert!(grown > small * 2.0);
+        let ctx = h.ctx.clone();
+        h.app.drop_changes(&ctx);
+        assert_eq!(h.app.doc.pages(), 1, "the text is as saved");
+        assert_eq!(first_plant(&mut h), grown, "the garden is not");
+        assert_eq!(h.app.doc.garden, kept, "and it is kept so, for the next time it is saved");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_story_begun_is_not_unsaved_for_its_garden() {
+        let mut h = Harness::new();
+        in_the_garden(&mut h, 0.0);
+        assert_eq!(h.app.doc.garden, [1]);
+        assert!(!h.app.unsaved());
     }
 }

@@ -278,6 +278,8 @@ paginating).
   becomes a scene pinned at 0 in `App::open_scene`. `scene` now only holds the description and
   whether pictures show.
 - Unsaved changes = a hash of the serialized `DocFile`, so anything saved counts automatically.
+  Only the garden is left out of it (`content_hash`): it grows only with the text, and a story
+  begun or opened must not be unsaved for its garden being measured (R30).
 - `PageSetup::page_numbers` is read only from files from before footers: `into_doc` makes it a
   plain footer of the page number (`Band::page_numbers`) and it is never written again. (Older
   Caprice opening a newer file shows no page numbers.)
@@ -288,6 +290,8 @@ paginating).
   older files take the file's own date (created, else modified) on opening, and keep it once saved.
 - A look's peek (`Look::peek`, an SVG) and whether the cast peeks (`Doc::peeks`, on unless turned
   off: older files peek) are left out of the file while unused (R28).
+- `DocFile::garden`: the most pages each plant has grown to (R30). It is history, not derived:
+  the text no longer holds what was taken out. Older files have none and start from their pages.
 - Tests: `roundtrip_keeps_text_styles_breaks_and_setup`, `version_1_files_still_load_as_separate_pages`,
   `a_peek_and_whether_the_cast_peeks_are_saved_and_older_files_peek`,
   `files_from_before_footers_keep_their_page_numbers_as_a_footer`,
@@ -296,7 +300,9 @@ paginating).
   `an_older_files_one_scene_opens_pinned_to_the_start_of_the_story`,
   `story_notes_are_saved_and_sent_with_questions_about_the_story_but_not_corrections`,
   `the_scratchpad_stays_on_the_right_as_it_is_while_pages_turn_and_is_saved`,
-  `a_scene_that_names_someone_in_the_cast_is_painted_with_their_look_and_model_sheet`.
+  `a_scene_that_names_someone_in_the_cast_is_painted_with_their_look_and_model_sheet`,
+  `the_garden_is_kept_with_the_story_and_does_not_shrink_when_it_is_opened_again_smaller`,
+  `a_story_begun_is_not_unsaved_for_its_garden`.
 
 ### R10 — Word export maps the model, not the pixels
 
@@ -309,7 +315,7 @@ a `TOC` field (Caprice's page numbers are only its cached result, and Word updat
   then `soffice --headless --convert-to pdf out.docx`). Not yet checked in Microsoft Word itself.
 - Scenes are not exported (decided: they are a writing aid, too faint to print).
 - Story notes, the scratchpad and the cast are not exported (decided: notes to Claude and to
-  oneself, not part of the book).
+  oneself, not part of the book). Nor is the garden (R30): it is the app's, not the book's.
 - Headers and footers are Word's header and footer parts, their fields Word's (`PAGE`,
   `STYLEREF "Heading 1"`), their looks paragraph borders, shading, a "❦" and an
   ellipse shape (module comment of `export.rs`); Facing pages are odd and even headers
@@ -1028,11 +1034,20 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   chapters), taking turns on the left and right of the page, as tall as its chapter's pages
   (`height_of`), flowering once the next chapter has begun. The chapters come from `Doc::chapters`
   and `page_of`, so the garden follows whatever changes them, with nothing to keep in step.
-- **It grows in sight and never wilts.** How far each plant has grown is kept for the story open
-  (`Eggs::grown`, by `story_id`) and only goes up, a tenth of a second's growth a frame at most;
-  a story opened comes with its garden grown. Its shapes come from a seed of `story_id` and the
-  plant's number, and the stem's course at a height does not depend on how tall it is, so growing
-  only adds at the top.
+- **It never shrinks, and is kept with the story** (`Doc::garden`, saved as `DocFile::garden`): the
+  most pages each plant has had, a plant a chapter in order. `grow_garden` raises it, in every
+  theme, whenever the story's version or its number of pages changed, so the Magic Garden shows
+  all the story's growth. Taking text away, a chapter out, undo, opening the file again smaller:
+  none of it lowers a plant, and a chapter taken out keeps its plant, which flowers. Whatever puts
+  another `Doc` in place of the open one goes through `adopt`, which keeps the bigger garden when
+  it is the same story (`keep_garden`: a version, its file again, dropping the changes since
+  saving); anything else that replaces `doc` must do the same. Plants are matched to chapters by
+  order, so a chapter put in between takes the next plant (decided: tying plants to their titles
+  like notes, R7, costs more than it is worth here).
+- **It grows in sight.** How far each plant is drawn grown (`Eggs::grown`, by `story_id`) only goes
+  up, a tenth of a second's growth a frame at most; a story opened comes with its garden grown.
+  Its shapes come from a seed of `story_id` (saved, R22) and the plant's number, and the stem's
+  course at a height does not depend on how tall it is, so growing only adds at the top.
 - **A new chapter title is brought in now and then** (`ODDS`), when the writer makes a paragraph
   with words in it a chapter title with the Chapter button (`maybe_lift_title`, from
   `apply_tools`): not on opening a file, undo, or a title made any other way. Which theme brings it
@@ -1059,6 +1074,10 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   `a_plant_is_the_same_for_the_same_story_and_grows_only_at_its_top`; and
   `in_the_magic_garden_a_plant_grows_beside_the_pages_as_the_story_grows`,
   `each_chapter_grows_its_own_plant_and_flowers_once_the_next_begins`,
+  `a_chapter_taken_out_keeps_its_plant_and_it_flowers`,
+  `the_garden_is_kept_with_the_story_and_does_not_shrink_when_it_is_opened_again_smaller`,
+  `dropping_the_changes_since_saving_keeps_the_garden_grown_since`,
+  `a_story_begun_is_not_unsaved_for_its_garden`,
   `nothing_grows_in_the_city_and_nothing_brings_a_title_in_the_other_themes`,
   `now_and_then_in_the_magic_city_a_crane_lifts_a_new_chapter_title_into_place`,
   `now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title_from_either_side`,
@@ -1239,6 +1258,10 @@ when the writer goes on; nothing moved in the layout, nothing in print or the fi
   colours, and choosing another theme turns them off without one more setting. The garden is there
   all the time, as it grows with the story; the crane comes only now and then, so it stays a
   surprise (R30).
+- **2026-10-27 — The garden is kept with the story.** Asked for: it never shrinks, even when text
+  and pages are taken out and the file is opened again. Worked out from the text alone it could
+  not remember what was taken out, so each plant's most pages are saved with the story, measured in
+  every theme, and left out of what counts as unsaved (R9, R30).
 - **2026-10-27 — Each magic theme brings a new chapter its own way.** The crane went to a Magic
   City of its own and the garden, renamed Magic Garden, got a hot-air balloon: one course in time
   for both, so the title is set down the same way, and only the path and the picture differ (R30).

@@ -67,6 +67,7 @@ Full list with reasons and tests in `ARCHITECTURE.md` §4.
    `Doc::page_numbers`, never `i + 1`.
 8. **Files hold only stored state.** New fields get `#[serde(default)]`; old formats are converted
    in `DocFile::into_doc`.
+   The garden's most pages (`Doc::garden`) are stored: history, and never counted as unsaved.
 9. **Every formatting feature needs a Word mapping** in `export.rs`, or a decision that it has none.
 10. **Tests never call Claude** unless marked `#[ignore]` and calling `claude::allow_live()`.
 11. **Print draws `App::underlay`, `PageLayout::ink` and `App::furniture`**, in that order (boxes behind

@@ -92,6 +92,8 @@ pub struct Eggs {
     grown_for: Option<String>,
     grown: Vec<f32>,
     grown_at: f64,
+    /// The story, its version and its number of pages when the garden was last measured.
+    measured: Option<(String, u64, usize)>,
     /// The crane or the balloon at work, if one is.
     pub lift: Option<Lift>,
     /// Where the title being lifted lies on the screen, from the last page drawn.
@@ -119,7 +121,7 @@ pub struct Lift {
 impl Default for Eggs {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64);
-        Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, lift: None, place: None, odds: ODDS, balloon_right: false, rng: seed | 1, plants: Vec::new() }
+        Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, measured: None, lift: None, place: None, odds: ODDS, balloon_right: false, rng: seed | 1, plants: Vec::new() }
     }
 }
 
@@ -415,6 +417,46 @@ pub fn balloon(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
 }
 
 impl App {
+    /// The garden kept with the story (`Doc::garden`) grown to the pages each chapter has now, if
+    /// it has more: in every theme, so the Magic Garden shows all the story's growth. It never
+    /// shrinks, and keeps a plant for a chapter taken out. Measured again only when the text or the
+    /// pages have changed.
+    pub fn grow_garden(&mut self) {
+        let now = (self.doc.version, self.doc.spans.len());
+        if self.eggs.measured.as_ref().is_some_and(|(id, v, n)| *id == self.story_id && (*v, *n) == now) {
+            return;
+        }
+        self.eggs.measured = Some((self.story_id.clone(), now.0, now.1));
+        // A plant a chapter, as many pages as it has; a story without chapters grows one.
+        let starts: Vec<usize> = self.doc.chapters(false).iter().map(|e| self.doc.page_of(e.at)).collect();
+        let pages = self.doc.pages();
+        let mut sizes: Vec<usize> = (0..starts.len()).map(|k| starts.get(k + 1).copied().unwrap_or(pages).saturating_sub(starts[k]).max(1)).collect();
+        if sizes.is_empty() {
+            sizes.push(pages);
+        }
+        let garden = &mut self.doc.garden;
+        if garden.len() < sizes.len() {
+            garden.resize(sizes.len(), 0);
+        }
+        for (g, n) in garden.iter_mut().zip(sizes) {
+            *g = (*g).max(n as u32);
+        }
+    }
+
+    /// The story `id` comes in with `garden` in place of the one open: if it is the same story (a
+    /// version of it, or its file again), it keeps the plants it has grown since.
+    pub fn keep_garden(&self, id: &str, garden: &mut Vec<u32>) {
+        if self.eggs.measured.as_ref().is_none_or(|(was, _, _)| was != id) {
+            return;
+        }
+        if garden.len() < self.doc.garden.len() {
+            garden.resize(self.doc.garden.len(), 0);
+        }
+        for (g, &had) in garden.iter_mut().zip(&self.doc.garden) {
+            *g = (*g).max(had);
+        }
+    }
+
     /// The garden on the desk, behind the pages lying at `page`, in the Magic Garden only.
     pub fn draw_garden(&mut self, ui: &egui::Ui, area: Rect, page: Rect) {
         self.eggs.plants.clear();
@@ -422,15 +464,9 @@ impl App {
             return;
         }
         let now = ui.ctx().input(|i| i.time);
-        // A plant a chapter, as tall as its pages; a story without chapters grows one.
-        let chapters = self.doc.chapters(false);
-        let starts: Vec<usize> = chapters.iter().map(|e| self.doc.page_of(e.at)).collect();
-        let pages = self.doc.pages();
-        let mut sizes: Vec<usize> = (0..starts.len()).map(|k| starts.get(k + 1).copied().unwrap_or(pages).saturating_sub(starts[k]).max(1)).collect();
-        if sizes.is_empty() {
-            sizes.push(pages);
-        }
-        let targets: Vec<f32> = sizes.iter().map(|&n| height_of(n)).collect();
+        // As tall as the most pages each has had (`grow_garden`).
+        let targets: Vec<f32> = self.doc.garden.iter().map(|&n| height_of(n as usize)).collect();
+        let chapters = self.doc.chapters(false).len().max(1);
         let e = &mut self.eggs;
         if e.grown_for.as_deref() != Some(&self.story_id) {
             // A story just opened comes with its garden grown.
@@ -464,8 +500,8 @@ impl App {
             let x = if left { page.left() - gap * (j as f32 + 0.6) } else { page.right() + gap * (j as f32 + 0.6) };
             let height = (g * TALLEST * area.height()).max(4.0 * unit);
             let root = pos2(x, area.bottom());
-            // A chapter flowers once the next one has begun.
-            let flower = k + 1 < n;
+            // A chapter flowers once the next one has begun; the plant of one taken out has too.
+            let flower = k + 1 != chapters;
             painter.extend(plant(&self.story_id, k, root, height, flower, unit));
             e.plants.push((Rect::from_min_max(pos2(x, root.y - height), root), flower));
         }
