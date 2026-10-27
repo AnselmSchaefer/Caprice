@@ -782,10 +782,11 @@ impl App {
         }
         // A chapter title on the crane's hook, or below the balloon, is drawn where it hangs; it lies in its place all the
         // while, for the caret and the page breaks (`eggs.rs`).
+        // The galley's own rect, not its size from `x`: a centered title is placed by its middle.
         let mut lifted = None;
         if let Some((by, pose, range)) = self.lifting(&ctx, i) {
             let title = |p: &crate::layout::ParaLayout| p.start >= range.start && p.end <= range.end;
-            let place = layout.paras.iter().filter(|p| title(p)).map(|p| Rect::from_min_size(content.min + vec2(p.x, p.y), p.galley.size()));
+            let place = layout.paras.iter().filter(|p| title(p)).map(|p| p.galley.rect.translate(content.min.to_vec2() + vec2(p.x, p.y)));
             self.eggs.place = place.reduce(|a, b| a.union(b));
             if let Some(place) = self.eggs.place {
                 let by = crate::eggs::offset(by, pose, place, page_rect);

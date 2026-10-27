@@ -25,15 +25,15 @@ use crate::theme::Theme;
 pub enum Carrier {
     /// In the Magic City.
     Crane,
-    /// In the Magic Garden.
-    Balloon,
+    /// In the Magic Garden, from the right side or the left: each comes from the other side.
+    Balloon { right: bool },
 }
 
 impl Carrier {
     pub fn of(theme: Theme) -> Option<Carrier> {
         match theme {
             Theme::City => Some(Carrier::Crane),
-            Theme::Garden => Some(Carrier::Balloon),
+            Theme::Garden => Some(Carrier::Balloon { right: true }),
             _ => None,
         }
     }
@@ -70,7 +70,9 @@ const CABLE: Color32 = Color32::from_rgb(70, 70, 82);
 const SILK: [Color32; 2] = [Color32::from_rgb(232, 76, 84), Color32::from_rgb(252, 206, 74)];
 const WICKER: Color32 = Color32::from_rgb(160, 110, 62);
 const WICKER_DARK: Color32 = Color32::from_rgb(122, 80, 44);
-const ROPE: Color32 = Color32::from_rgb(110, 92, 74);
+pub const ROPE: Color32 = Color32::from_rgb(110, 92, 74);
+/// How tall the balloon is from the bottom of its basket to the top of its silk, in its sizes.
+const TALL: f32 = 2.92;
 
 /// Seconds the crane takes to drive in, run the title out over the page, lower it, settle it,
 /// lift its hook off, and drive away; and to drive away when the writer goes on meanwhile. The
@@ -96,6 +98,8 @@ pub struct Eggs {
     pub place: Option<Rect>,
     /// The chance that making a chapter title calls the crane (`ODDS`; tests set it to 0 or 1).
     pub odds: f64,
+    /// The side the last balloon came from: the next comes from the other.
+    balloon_right: bool,
     rng: u64,
     /// Each plant drawn last frame: from its root to its tip, and whether it flowered; for tests.
     pub plants: Vec<(Rect, bool)>,
@@ -115,7 +119,7 @@ pub struct Lift {
 impl Default for Eggs {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64);
-        Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, lift: None, place: None, odds: ODDS, rng: seed | 1, plants: Vec::new() }
+        Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, lift: None, place: None, odds: ODDS, balloon_right: false, rng: seed | 1, plants: Vec::new() }
     }
 }
 
@@ -272,6 +276,8 @@ struct Rig {
     jib: (f32, f32),
     /// The crane's hook, or the bottom of the balloon's basket.
     hook: Pos2,
+    /// The balloon's size: the radius of its silk.
+    size: f32,
     /// How far the title is from its place.
     offset: Vec2,
 }
@@ -289,21 +295,28 @@ fn rig(by: Carrier, p: Pose, place: Rect, page: Rect) -> Rig {
             let offset = if p.hooked { load - place.center() } else { Vec2::ZERO };
             let hook_y = if p.hooked { load.y - place.height() / 2.0 - 10.0 } else { place.top() - 10.0 - hang * 0.5 * p.hook };
             let jib = (place.left().min(start) + away - 20.0, mast_x + page.width() * 0.14);
-            Rig { mast_x, jib_y, jib, hook: pos2(hook_x, hook_y), offset }
+            Rig { mast_x, jib_y, jib, hook: pos2(hook_x, hook_y), size: 0.0, offset }
         }
-        Carrier::Balloon => {
-            // Down from high up on the right, across, and down; let go, it rises away up to the left.
+        Carrier::Balloon { right } => {
+            // In from the side at the title's height, a little above it; let go, it floats on and
+            // away past the other side. A title is often high on its page, so the balloon hangs
+            // only as high as there is room for below the top of the page, and is smaller there.
+            let side = if right { 1.0 } else { -1.0 };
             let away = 1.0 - p.enter;
-            let rope = page.height() * 0.05;
+            let rope = page.height() * 0.02;
+            let room = place.top() - (page.top() - page.height() * 0.03) - rope;
+            let size = (room / TALL).clamp(page.width() * 0.035, page.width() * 0.06);
+            let hang = (room - size * TALL).clamp(0.0, page.height() * 0.08);
             let (basket, offset) = if p.hooked {
-                let x = place.center().x + (1.0 - p.run) * page.width() * 0.5 + away * page.width() * 0.4;
-                let load = pos2(x, place.center().y - hang * (1.0 - p.lower) - away * page.height() * 0.6);
+                let x = place.center().x + side * ((1.0 - p.run) * page.width() * 0.35 + away * page.width() * 0.6);
+                let bob = (p.run * PI).sin() * page.height() * 0.015;
+                let load = pos2(x, place.center().y - hang * (1.0 - p.lower) - bob);
                 (load - vec2(0.0, place.height() / 2.0 + rope), load - place.center())
             } else {
-                let up = rope + page.height() * 0.06 * p.hook;
-                (place.center_top() - vec2(0.0, up) + vec2(-0.25 * page.width(), -0.8 * page.height()) * away, Vec2::ZERO)
+                let up = rope + page.height() * 0.04 * p.hook;
+                (place.center_top() - vec2(0.0, up) + vec2(-side * 0.7 * page.width(), -0.1 * page.height()) * away, Vec2::ZERO)
             };
-            Rig { mast_x: 0.0, jib_y: 0.0, jib: (0.0, 0.0), hook: basket, offset }
+            Rig { mast_x: 0.0, jib_y: 0.0, jib: (0.0, 0.0), hook: basket, size, offset }
         }
     }
 }
@@ -362,16 +375,18 @@ pub fn crane(p: Pose, place: Rect, page: Rect, ground: f32) -> Vec<Shape> {
 
 /// The balloon at `p`, the title's place at `place`: its silk in stripes, the basket below, and
 /// while it carries the title, ropes down to it.
-pub fn balloon(p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
-    let r = rig(Carrier::Balloon, p, place, page);
-    let size = page.width() * 0.09;
+pub fn balloon(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
+    let r = rig(by, p, place, page);
+    let size = r.size;
     let line = (page.width() * 0.003).max(1.0);
     let basket = Rect::from_min_max(r.hook - vec2(size * 0.32, size * 0.42), r.hook + vec2(size * 0.32, 0.0));
     let middle = basket.center_top() - vec2(0.0, size * 0.5 + size);
     let mouth = basket.center_top() - vec2(0.0, size * 0.5);
+    let lip = size * 0.22;
     let mut out = Vec::new();
-    for x in [basket.left() + line, basket.right() - line] {
-        out.push(Shape::line_segment([pos2(x, basket.top()), mouth + vec2((x - mouth.x) * 1.6, -size * 0.1)], Stroke::new(line * 0.7, ROPE)));
+    // From the basket's corners up to the silk's mouth.
+    for (x, end) in [(basket.left() + line, mouth - vec2(lip, 0.0)), (basket.right() - line, mouth + vec2(lip, 0.0))] {
+        out.push(Shape::line_segment([pos2(x, basket.top()), end], Stroke::new(line * 0.7, ROPE)));
     }
     // The silk: a round top tapering to its mouth, drawn as a fan of stripes, each a convex piece.
     let n = 8;
@@ -383,16 +398,17 @@ pub fn balloon(p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
         out.push(Shape::convex_polygon(points, SILK[k % 2], Stroke::NONE));
     }
     let (l, rt) = (at(PI * 0.85), at(PI * 0.15));
-    let lip = size * 0.22;
     out.push(Shape::convex_polygon(vec![l, middle, mouth - vec2(lip, 0.0)], SILK[0], Stroke::NONE));
     out.push(Shape::convex_polygon(vec![middle, rt, mouth + vec2(lip, 0.0)], SILK[1], Stroke::NONE));
     out.push(Shape::convex_polygon(vec![middle, mouth + vec2(lip, 0.0), mouth - vec2(lip, 0.0)], SILK[1], Stroke::NONE));
     out.push(Shape::rect_filled(basket, 2.0, WICKER));
     out.push(Shape::rect_filled(Rect::from_min_size(basket.min, vec2(basket.width(), basket.height() * 0.25)), 2.0, WICKER_DARK));
+    // From the basket's bottom corners down to the ends of the title.
     if p.hooked {
         let load = place.translate(r.offset);
-        for corner in [load.left_top() + vec2(load.width() * 0.1, 0.0), load.right_top() - vec2(load.width() * 0.1, 0.0)] {
-            out.push(Shape::line_segment([basket.center_bottom(), corner], Stroke::new(line * 0.7, ROPE)));
+        let ends = [(basket.left_bottom(), load.left_top()), (basket.right_bottom(), load.right_top())];
+        for (from, to) in ends {
+            out.push(Shape::line_segment([from, to], Stroke::new(line * 0.7, ROPE)));
         }
     }
     out
@@ -458,11 +474,15 @@ impl App {
     /// The paragraph at the caret was just made a chapter title: now and then, in a magic theme,
     /// the crane or the balloon comes to bring it into place.
     pub fn maybe_lift_title(&mut self, ctx: &egui::Context) {
-        let Some(by) = Carrier::of(self.themes.theme) else { return };
+        let Some(mut by) = Carrier::of(self.themes.theme) else { return };
         let (at, _) = self.doc.para_start(self.selection().0);
         // Only a title with words in it: an empty one is no load.
         if !self.doc.chapters(false).iter().any(|e| e.at == at) || self.eggs.roll() >= self.eggs.odds {
             return;
+        }
+        if let Carrier::Balloon { right } = &mut by {
+            self.eggs.balloon_right = !self.eggs.balloon_right;
+            *right = self.eggs.balloon_right;
         }
         let started = ctx.input(|i| i.time);
         self.eggs.lift = Some(Lift { by, at, page: self.doc.page_of(at), started, duck: None });
@@ -505,7 +525,7 @@ impl App {
         let (Some((by, p, _)), Some(place)) = (self.lifting(ui.ctx(), i), self.eggs.place) else { return };
         ui.painter().extend(match by {
             Carrier::Crane => crane(p, place, page, area.bottom()),
-            Carrier::Balloon => balloon(p, place, page),
+            by @ Carrier::Balloon { .. } => balloon(by, p, place, page),
         });
     }
 }
@@ -537,17 +557,26 @@ mod tests {
     }
 
     #[test]
-    fn the_balloon_floats_the_title_down_from_high_on_the_right_and_rises_away() {
-        let at = |t: f32| offset(Carrier::Balloon, pose(t, None), Rect::from_min_size(pos2(500.0, 120.0), vec2(200.0, 30.0)), Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0)));
-        let start = at(0.0);
-        assert!(start.x > 300.0 && start.y < -400.0, "from high up on the right: {start:?}");
-        let over = at(ENTER + RUN);
-        assert!(over.x.abs() < 0.01 && over.y < -50.0, "above its place: {over:?}");
-        assert_eq!(at(ENTER + RUN + LOWER + SETTLE + UNHOOK), Vec2::ZERO, "let go in its place");
-        let p = pose(ENTER + RUN + LOWER + SETTLE + UNHOOK + LEAVE / 2.0, None);
-        let place = Rect::from_min_size(pos2(500.0, 120.0), vec2(200.0, 30.0));
-        let rising = rig(Carrier::Balloon, p, place, Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0))).hook;
-        assert!(rising.y < place.top() - 100.0 && rising.x < place.center().x, "rising away up to the left: {rising:?}");
+    fn the_balloon_floats_the_title_in_from_the_side_and_away_past_the_other() {
+        let page = Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0));
+        let place = Rect::from_min_size(pos2(500.0, 400.0), vec2(200.0, 30.0));
+        for right in [true, false] {
+            let by = Carrier::Balloon { right };
+            let side = if right { 1.0 } else { -1.0 };
+            let at = |t: f32| offset(by, pose(t, None), place, page);
+            let start = at(0.0);
+            assert!(start.x * side > 400.0 && start.y.abs() < 100.0, "{right}: from the side, near the title's height: {start:?}");
+            let over = at(ENTER + RUN);
+            assert!(over.x.abs() < 0.01 && over.y < -20.0, "{right}: a little above its place: {over:?}");
+            assert_eq!(at(ENTER + RUN + LOWER + SETTLE + UNHOOK), Vec2::ZERO, "{right}: let go in its place");
+            let p = pose(ENTER + RUN + LOWER + SETTLE + UNHOOK + LEAVE / 2.0, None);
+            let going = rig(by, p, place, page).hook;
+            assert!((going.x - place.center().x) * side < -100.0, "{right}: away past the other side: {going:?}");
+        }
+        // A title high on its page: the balloon hangs lower and is smaller, its top still near the page.
+        let high = Rect::from_min_size(pos2(500.0, 120.0), vec2(200.0, 30.0));
+        let r = rig(Carrier::Balloon { right: true }, pose(ENTER + RUN, None), high, page);
+        assert!(r.hook.y - r.size * TALL >= page.top() - page.height() * 0.05, "{:?} {}", r.hook, r.size);
     }
 
     #[test]

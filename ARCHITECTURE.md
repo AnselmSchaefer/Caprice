@@ -1036,27 +1036,33 @@ away. What a theme hides is its own: picking another theme is how to stop it.
 - **A new chapter title is brought in now and then** (`ODDS`), when the writer makes a paragraph
   with words in it a chapter title with the Chapter button (`maybe_lift_title`, from
   `apply_tools`): not on opening a file, undo, or a title made any other way. Which theme brings it
-  how is `Carrier::of`: the balloon floats down from high on the right, the crane drives in from the
-  side. Both follow one course in time (`pose`: come, carry over the place, lower, settle, let go,
+  how is `Carrier::of`: the balloon floats in from the side at the title's height, each from the
+  other side than the last, and away past the other; the crane drives in from the right. A title
+  is often high on its page, so the balloon hangs only as high as there is room for below the top
+  of the page, and is smaller there. Both follow one course in time (`pose`: come, carry over the place, lower, settle, let go,
   leave), each along its own way (`rig`). Typing, clicking or scrolling sets the title down at once
   and the carrier hurries away (`update_lift`); a page turned ends it. A new carrier is a `Carrier`
   variant, its way in `rig` and its drawing in `draw_carrier`.
 - **The title being brought is only drawn elsewhere.** `editor_surface` moves the title's pieces of
-  the page's layout by `eggs::offset` while painting them and puts them back after, so the caret,
-  hit-testing, pagination and print see the title in its place all the while (R3, R20). The
+  the page's layout by `eggs::offset` while painting them and puts them back after. Its place is
+  its galleys' own rects (`galley.rect` at `x`, `y`), not their sizes from `x`: a centered title is
+  placed by its middle, and taking `x` for its left edge once hung it half its width beside the
+  ropes. The caret, hit-testing, pagination and print see the title in its place all the while
+  (R3, R20). The
   carrier is drawn in the settled branch in front of the page, after the peek's hand.
 - **None of it is printed or saved**: it is in none of `underlay`, `ink` or `furniture` (R20), and
   nothing of it is in `Doc`. Its colours are the garden's, the balloon's and the crane's own, like the emblem's,
   not the palette's: they are pictures, not chrome.
 - Tests: in `eggs.rs` `the_crane_drives_in_runs_the_title_out_lowers_it_and_drives_away`,
-  `the_balloon_floats_the_title_down_from_high_on_the_right_and_rises_away`,
+  `the_balloon_floats_the_title_in_from_the_side_and_away_past_the_other`,
   `the_crane_sets_the_title_down_at_once_when_the_writer_goes_on`,
   `a_plant_is_the_same_for_the_same_story_and_grows_only_at_its_top`; and
   `in_the_magic_garden_a_plant_grows_beside_the_pages_as_the_story_grows`,
   `each_chapter_grows_its_own_plant_and_flowers_once_the_next_begins`,
   `nothing_grows_in_the_city_and_nothing_brings_a_title_in_the_other_themes`,
   `now_and_then_in_the_magic_city_a_crane_lifts_a_new_chapter_title_into_place`,
-  `now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title`,
+  `now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title_from_either_side`,
+  `the_title_hangs_from_the_balloon_by_ropes_tied_to_its_ends`,
   `going_on_writing_while_a_title_is_brought_sets_it_down_at_once`,
   `print_shows_neither_the_garden_nor_what_brings_a_title`.
 

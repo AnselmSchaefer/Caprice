@@ -5585,7 +5585,7 @@ mod tests {
         h.frames(240, vec![], Modifiers::NONE);
         assert!(h.app.eggs.lift.is_none(), "and went");
         let rest = h.painted_at("Chapter One").unwrap();
-        assert!((over.x - rest.x).abs() < 5.0 && over.y < rest.y - 50.0, "it hangs over its place: {over:?}, {rest:?}");
+        assert!((over.x - rest.x).abs() < 5.0 && over.y <= rest.y, "it is carried over its place: {over:?}, {rest:?}");
         assert!(h.in_page(egui::vec2(0.0, 0.0)).y <= rest.y, "and lies on the page");
         (coming, over, rest)
     }
@@ -5594,17 +5594,48 @@ mod tests {
     fn now_and_then_in_the_magic_city_a_crane_lifts_a_new_chapter_title_into_place() {
         let mut h = Harness::new();
         in_the_theme(&mut h, theme::Theme::City, 1.0);
-        let (coming, _, rest) = title_brought_in(&mut h);
+        let (coming, over, rest) = title_brought_in(&mut h);
+        assert!(over.y < rest.y - 50.0, "it hangs high over its place: {over:?}");
         assert!(coming.x > h.app.last_page_rect.right() && (coming.y - rest.y).abs() < 200.0, "from beside the page, on the hook: {coming:?}");
         assert!(h.app.eggs.plants.is_empty());
     }
 
     #[test]
-    fn now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title() {
+    fn now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title_from_either_side() {
         let mut h = Harness::new();
         in_the_garden(&mut h, 1.0);
         let (coming, _, rest) = title_brought_in(&mut h);
-        assert!(coming.x > rest.x + 100.0 && coming.y < rest.y - 300.0, "floating down from high on the right: {coming:?}");
+        assert!(coming.x > rest.x + 100.0 && (coming.y - rest.y).abs() < 150.0, "in from the right, near its height: {coming:?}");
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("Chapter Two");
+        h.click_widget("Chapter");
+        let from = h.painted_at("Chapter Two").unwrap();
+        h.frames(300, vec![], Modifiers::NONE);
+        assert!(from.x < h.painted_at("Chapter Two").unwrap().x - 100.0, "the next from the left: {from:?}");
+    }
+
+    #[test]
+    fn the_title_hangs_from_the_balloon_by_ropes_tied_to_its_ends() {
+        let mut h = Harness::new();
+        in_the_garden(&mut h, 1.0);
+        chapter_one(&mut h);
+        h.frames(50, vec![], Modifiers::NONE);
+        let title = h.painted.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.job.text == "Chapter One" => Some(t.galley.rect.translate(t.pos.to_vec2())),
+            _ => None,
+        });
+        let title = title.expect("the title is drawn");
+        let ropes: Vec<[egui::Pos2; 2]> = h.painted.iter().filter_map(|cs| match &cs.shape {
+            egui::Shape::LineSegment { points, stroke } if stroke.color == eggs::ROPE => Some(*points),
+            _ => None,
+        }).collect();
+        for end in [title.left_top(), title.right_top()] {
+            assert!(ropes.iter().any(|r| r[1].distance(end) < 1.0), "a rope tied to {end:?}: {ropes:?}");
+        }
+        // And the other ends of those ropes are at the basket, above the middle of the title.
+        let tied: Vec<_> = ropes.iter().filter(|r| r[1].y == title.top()).collect();
+        let basket = (tied[0][0].x + tied[1][0].x) / 2.0;
+        assert!((basket - title.center().x).abs() < 1.0 && tied[0][0].y < title.top(), "{basket} over {:?}", title.center());
     }
 
     #[test]
