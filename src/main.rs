@@ -5581,6 +5581,20 @@ mod tests {
     }
 
     #[test]
+    fn a_long_story_s_city_fills_the_desk_on_both_sides_and_grows_higher() {
+        let mut h = Harness::new();
+        // A story that has had two hundred pages.
+        h.app.doc.garden = vec![200];
+        in_the_theme(&mut h, theme::Theme::City, 0.0);
+        let houses = h.app.eggs.houses.clone();
+        let page = h.app.last_page_rect;
+        assert!(houses.iter().any(|h| h.0.right() < page.left()) && houses.iter().any(|h| h.0.left() > page.right()), "on both sides: {houses:?}");
+        assert!(houses.iter().all(|house| beside_the_page(&h, house.0) && house.0.right() <= 1240.0 && house.0.left() >= 0.0));
+        assert_eq!(houses.iter().map(|h| h.1).sum::<usize>(), 200);
+        assert!(houses.iter().all(|h| h.1 > 7), "each higher than a house gets while there is room: {houses:?}");
+    }
+
+    #[test]
     fn in_the_magic_city_each_new_page_gives_a_house_a_floor_made_of_light_from_a_window() {
         let mut h = Harness::new();
         in_the_theme(&mut h, theme::Theme::City, 0.0);

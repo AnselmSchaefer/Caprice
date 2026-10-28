@@ -128,10 +128,10 @@ pub struct Eggs {
     rng: u64,
     /// Each plant drawn last frame: from its root to its tip, and whether it flowered; for tests.
     pub plants: Vec<(Rect, bool)>,
-    /// The story the city was built for, and how many floors each chapter's street has risen to,
-    /// the last perhaps in part, while it is being built.
+    /// The story the city was built for, and how many floors it has risen to, the last perhaps in
+    /// part, while it is being built.
     built_for: Option<String>,
-    built: Vec<f32>,
+    built: f32,
     built_at: f64,
     /// Each house drawn last frame: its floors from the ground to the top of the last one built,
     /// and how many; and the light of a floor being built, if one is; for tests.
@@ -154,7 +154,7 @@ impl Default for Eggs {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64);
         Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, measured: None, lift: None, place: None, odds: ODDS, balloon_right: false, rng: seed | 1, plants: Vec::new(),
-            built_for: None, built: Vec::new(), built_at: 0.0, houses: Vec::new(), light: None }
+            built_for: None, built: 0.0, built_at: 0.0, houses: Vec::new(), light: None }
     }
 }
 
@@ -455,7 +455,8 @@ pub struct House {
     pub ground: f32,
     /// A floor's height.
     pub storey: f32,
-    /// The most floors it gets: the street's next floors go to the next house.
+    /// The most floors it gets while there is room on the desk for another house; once there is
+    /// none, it grows on.
     pub most: usize,
     /// Floors built, and how far the next one is (0 when none is being built).
     pub floors: usize,
@@ -469,9 +470,9 @@ pub struct House {
 }
 
 impl House {
-    /// House `j` of chapter `k`'s street, the same for the same story, standing on `ground`.
-    pub fn of(story: &str, k: usize, j: usize, ground: f32, unit: f32) -> House {
-        let seed = (1 << 20) + k * 64 + j;
+    /// The city's house `i`, the same for the same story, standing on `ground`.
+    pub fn of(story: &str, i: usize, ground: f32, unit: f32) -> House {
+        let seed = (1 << 20) + i;
         let mut seeds = Seeds::of(story, seed);
         let pick = |seeds: &mut Seeds, n: usize| (seeds.next(0.0, n as f32) as usize).min(n - 1);
         let width = seeds.next(34.0, 52.0) * unit;
@@ -633,6 +634,55 @@ impl House {
     }
 }
 
+/// The houses of a city of `built` floors (the last perhaps in part) on the desk `area`, beside
+/// the page lying at `page`: as many as there is room for, taking turns on the left and right of
+/// the page, from its edges outwards, and on whether each stands on the left. Each is built up to
+/// its `most` before the next is begun; once all are, the next floors go to each in turn, so the
+/// houses grow ever higher. A floor once built stays on its house.
+pub fn city(story: &str, area: Rect, page: Rect, unit: f32, built: f32) -> Vec<(bool, House)> {
+    let gap = 8.0 * unit;
+    let gutter = [page.left() - area.left(), area.right() - page.right()];
+    // How far out from the page's edge each side is taken.
+    let mut used = [gap, gap];
+    let mut out: Vec<(bool, House)> = Vec::new();
+    let (mut left, mut full) = (true, [false, false]);
+    while !(full[0] && full[1]) {
+        let side = usize::from(!left);
+        let mut h = House::of(story, out.len(), area.bottom(), unit);
+        if full[side] || used[side] + h.width + gap > gutter[side] {
+            full[side] = true;
+        } else {
+            h.left = if left { page.left() - used[side] - h.width } else { page.right() + used[side] };
+            used[side] += h.width + gap;
+            out.push((left, h));
+        }
+        left = !left;
+    }
+    let (whole, part) = (built.floor() as usize, built.fract());
+    let room: usize = out.iter().map(|(_, h)| h.most).sum();
+    let mut next = None;
+    let mut rest = whole;
+    for (k, (_, h)) in out.iter_mut().enumerate() {
+        h.floors = rest.min(h.most);
+        rest -= h.floors;
+        if next.is_none() && h.floors < h.most {
+            next = Some(k);
+        }
+    }
+    if !out.is_empty() && whole >= room {
+        // Every house is as high as it gets while there is room: now each grows in turn.
+        let (n, over) = (out.len(), whole - room);
+        for (k, (_, h)) in out.iter_mut().enumerate() {
+            h.floors = h.most + over / n + usize::from(k < over % n);
+        }
+        next = Some(over % n);
+    }
+    if let Some(k) = next.filter(|_| part > 0.0) {
+        out[k].1.building = part;
+    }
+    out
+}
+
 /// `color`, see-through by `alpha`.
 fn glow(color: Color32, alpha: f32) -> Color32 {
     let [r, g, b, _] = color.to_array();
@@ -740,34 +790,26 @@ impl App {
         }
     }
 
-    /// The city on the desk, behind the pages lying at `page`, in the Magic City only: a street a
-    /// chapter, the streets taking turns on either side of the page, with a floor for each page the
-    /// chapter has had (`Doc::garden`, so it never comes down either).
+    /// The city on the desk, behind the pages lying at `page`, in the Magic City only, with a floor
+    /// for each page each chapter has had (`Doc::garden`, so it never comes down either).
     pub fn draw_city(&mut self, ui: &egui::Ui, area: Rect, page: Rect) {
         (self.eggs.houses, self.eggs.light) = (Vec::new(), None);
         if self.themes.theme != Theme::City {
             return;
         }
         let now = ui.ctx().input(|i| i.time);
-        let targets: Vec<f32> = self.doc.garden.iter().map(|&n| n as f32).collect();
+        let target = self.doc.garden.iter().sum::<u32>() as f32;
         let e = &mut self.eggs;
         if e.built_for.as_deref() != Some(&self.story_id) {
             // A story just opened comes with its city built.
-            (e.built_for, e.built) = (Some(self.story_id.clone()), targets.clone());
+            (e.built_for, e.built) = (Some(self.story_id.clone()), target);
         }
-        e.built.resize(targets.len(), 0.0);
         let dt = (now - e.built_at).clamp(0.0, 0.1) as f32;
         e.built_at = now;
-        let mut building = false;
-        for (b, &t) in e.built.iter_mut().zip(&targets) {
-            if *b < t {
-                // A floor at a time, quicker when many are waiting.
-                *b = (*b + (t - *b).max(3.0) / 3.0 / BUILD * dt).min(t);
-                building = true;
-            }
-        }
         // Lit windows flicker: a candle needs no more than this.
-        if building {
+        if e.built < target {
+            // A floor at a time, quicker when many are waiting.
+            e.built = (e.built + (target - e.built).max(3.0) / 3.0 / BUILD * dt).min(target);
             ui.ctx().request_repaint();
         } else {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
@@ -775,43 +817,19 @@ impl App {
 
         let unit = (area.height() / 900.0).clamp(0.6, 1.6);
         let story = &self.story_id;
-        let mut streets: [Vec<House>; 2] = [Vec::new(), Vec::new()];
-        for (k, (&target, &shown)) in targets.iter().zip(&e.built).enumerate() {
-            // The street's floors go to its houses in turn, each filled before the next is begun.
-            let (mut wanted, mut shown, mut j) = (target, shown, 0);
-            while wanted > 0.0 {
-                let mut house = House::of(story, k, j, area.bottom(), unit);
-                let here = shown.min(house.most as f32);
-                (house.floors, house.building) = (here.floor() as usize, here.fract());
-                (wanted, shown, j) = (wanted - house.most as f32, shown - here, j + 1);
-                streets[k % 2].push(house);
-            }
-        }
+        let houses = city(story, area, page, unit, e.built);
         let painter = ui.painter();
-        for (side, street) in streets.iter_mut().enumerate() {
-            // From the page's edge outwards; closer together when there are more than there is room for.
-            let left = side == 0;
-            let gutter = if left { page.left() - area.left() } else { area.right() - page.right() };
-            let gap = 8.0 * unit;
-            let natural: f32 = street.iter().map(|h| h.width + gap).sum::<f32>() + gap;
-            let squeeze = (gutter / natural).min(1.0);
-            let mut x = gap * squeeze;
-            for h in street.iter_mut() {
-                h.left = if left { page.left() - x - h.width } else { page.right() + x };
-                x += (h.width + gap) * squeeze;
+        for (i, (left, h)) in houses.iter().enumerate() {
+            if h.floors == 0 && h.building == 0.0 {
+                continue;
             }
-            for (i, h) in street.iter().enumerate() {
-                if h.floors == 0 && h.building == 0.0 {
-                    continue;
-                }
-                // A house begun takes its light from the window of its neighbour nearer the page.
-                let from = i.checked_sub(1).and_then(|i| street[i].source(story));
-                let (shapes, light) = h.draw(story, from, now);
-                painter.extend(shapes);
-                let top = h.floor(h.floors).bottom();
-                e.houses.push((Rect::from_min_max(pos2(h.left, top), pos2(h.left + h.width, h.ground)), h.floors));
-                e.light = e.light.or(light);
-            }
+            // A house begun takes its light from the window of its neighbour nearer the page.
+            let from = houses[..i].iter().rev().find(|(l, _)| l == left).and_then(|(_, n)| n.source(story));
+            let (shapes, light) = h.draw(story, from, now);
+            painter.extend(shapes);
+            let top = h.floor(h.floors).bottom();
+            e.houses.push((Rect::from_min_max(pos2(h.left, top), pos2(h.left + h.width, h.ground)), h.floors));
+            e.light = e.light.or(light);
         }
     }
 
@@ -972,7 +990,7 @@ mod tests {
 
     #[test]
     fn a_new_floor_is_a_light_that_flows_out_of_a_window_and_spreads_into_the_floor() {
-        let mut h = House::of("a", 0, 0, 900.0, 1.0);
+        let mut h = House::of("a", 0, 900.0, 1.0);
         (h.left, h.floors) = (100.0, 2);
         let window = h.source("a").unwrap();
         assert!(h.floor(1).contains(window), "a window of the top floor");
@@ -989,15 +1007,53 @@ mod tests {
         let spread = light(0.999).unwrap();
         assert!(spread.min.distance(next.min) < 0.5 && spread.max.distance(next.max) < 0.5, "spread into the floor: {spread:?} {next:?}");
         // A house's first floor takes its light from its neighbour's window.
-        let mut first = House::of("a", 0, 1, 900.0, 1.0);
+        let mut first = House::of("a", 1, 900.0, 1.0);
         first.building = 0.01;
         let from = pos2(50.0, 850.0);
         assert!(first.draw("a", Some(from), 0.0).1.unwrap().center().distance(from) < 1.0);
     }
 
     #[test]
+    fn the_houses_take_turns_on_either_side_of_the_page_as_many_as_there_is_room_for() {
+        let (area, page) = (Rect::from_min_size(Pos2::ZERO, vec2(1240.0, 900.0)), Rect::from_min_size(pos2(320.0, 40.0), vec2(600.0, 820.0)));
+        let houses = city("a", area, page, 1.0, 1000.0);
+        assert!(houses.len() >= 8, "{}", houses.len());
+        assert!(houses[0].0 && !houses[1].0 && houses[2].0, "left, right, left");
+        for (k, (left, h)) in houses.iter().enumerate() {
+            let r = h.floor(0);
+            assert!(area.contains_rect(r), "{k}: on the desk: {r:?}");
+            assert!(if *left { r.right() < page.left() } else { r.left() > page.right() }, "{k}: beside the page on its side: {r:?}");
+            for (_, o) in &houses[..k] {
+                assert!(!r.intersects(o.floor(0)), "{k}: clear of the others");
+            }
+        }
+        // The first house alone while it has room for its floors.
+        let small = city("a", area, page, 1.0, 2.0);
+        assert_eq!(small.iter().map(|(_, h)| h.floors).collect::<Vec<_>>()[..2], [2, 0]);
+    }
+
+    #[test]
+    fn once_the_desk_is_full_the_houses_grow_higher_a_floor_each_in_turn() {
+        let (area, page) = (Rect::from_min_size(Pos2::ZERO, vec2(1240.0, 900.0)), Rect::from_min_size(pos2(320.0, 40.0), vec2(600.0, 820.0)));
+        let floors = |n: f32| city("a", area, page, 1.0, n).into_iter().map(|(_, h)| h.floors).collect::<Vec<_>>();
+        let most: Vec<usize> = city("a", area, page, 1.0, 0.0).into_iter().map(|(_, h)| h.most).collect();
+        let room: usize = most.iter().sum();
+        assert_eq!(floors(room as f32), most, "each as high as it gets while there is room");
+        let n = most.len();
+        let high = floors((room + 3 * n) as f32);
+        assert!(high.iter().zip(&most).all(|(f, m)| *f == m + 3), "and then higher: {high:?}");
+        for k in 0..room + 2 * n {
+            let (was, now) = (floors(k as f32), floors(k as f32 + 1.0));
+            let grew: Vec<usize> = (0..n).filter(|&i| now[i] != was[i]).collect();
+            assert!(grew.len() == 1 && now[grew[0]] == was[grew[0]] + 1, "{k}: one floor on one house, the rest stay: {was:?} {now:?}");
+            let half = city("a", area, page, 1.0, k as f32 + 0.5);
+            assert!(half[grew[0]].1.building == 0.5, "{k}: the floor being built is on that house");
+        }
+    }
+
+    #[test]
     fn some_windows_are_lit_and_flicker_the_same_ones_for_the_same_story() {
-        let h = House::of("a", 0, 0, 900.0, 1.0);
+        let h = House::of("a", 0, 900.0, 1.0);
         let windows: Vec<(usize, usize)> = (0..8).flat_map(|f| (0..3).map(move |w| (f, w))).collect();
         let lit: Vec<(usize, usize)> = windows.iter().copied().filter(|&(f, w)| h.light_in("a", f, w, 0.0) != DARK).collect();
         assert!(!lit.is_empty() && lit.len() < windows.len(), "some lit, some dark: {lit:?}");
@@ -1005,7 +1061,7 @@ mod tests {
             let seen: Vec<Color32> = (0..20).map(|t| h.light_in("a", f, w, t as f64 * 0.1)).collect();
             assert!(seen.iter().all(|c| c.r() > 200 && *c != DARK), "lit all the while: {seen:?}");
             assert!(seen.windows(2).filter(|p| p[0] != p[1]).count() > 10, "it flickers: {seen:?}");
-            assert_eq!(h.light_in("a", f, w, 0.5), House::of("a", 0, 0, 900.0, 1.0).light_in("a", f, w, 0.5));
+            assert_eq!(h.light_in("a", f, w, 0.5), House::of("a", 0, 900.0, 1.0).light_in("a", f, w, 0.5));
         }
     }
 

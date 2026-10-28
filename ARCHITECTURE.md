@@ -1045,11 +1045,14 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   order, so a chapter put in between takes the next plant (decided: tying plants to their titles
   like notes, R7, costs more than it is worth here).
 - **The city stands on the desk the same way**, in the Magic City only: `draw_city` is called right
-  after `draw_garden`, so it is behind every page too. A street a chapter, the streets taking turns
-  on either side of the page; a floor for each page the chapter has had, read from the same
-  `Doc::garden`, so the city never comes down either and needs nothing kept of its own. A street's
-  floors go to its houses in turn (`House::of`: each has its `most`, then the next is begun); when
-  there are more houses than room, they stand closer and overlap. A new floor is built in sight
+  after `draw_garden`, so it is behind every page too. A floor for each page each chapter has had,
+  the sum of the same `Doc::garden`, so the city never comes down either and needs nothing kept of
+  its own. `city` lays it out: as many houses as there is room for on the desk, taking turns on the
+  left and right of the page from its edges outwards, never overlapping; each is built up to its
+  `most`, then the next is begun; once all are, each new floor goes to the next house in turn, so
+  they grow ever higher, past the top of the window if the story is long enough. A floor built
+  stays on its house while the window keeps its size; a window made narrower holds fewer houses,
+  and the floors are dealt again. A new floor is built in sight
   (`Eggs::built`, like `grown` below, `BUILD` seconds a floor, quicker when many wait): a light
   flows out of a window of the top floor (a lit one if it has one; for a house's first floor, a
   window of its neighbour nearer the page) for the first `FLOW` of it, then spreads into the floor,
@@ -1085,8 +1088,11 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   `the_crane_sets_the_title_down_at_once_when_the_writer_goes_on`,
   `a_plant_is_the_same_for_the_same_story_and_grows_only_at_its_top`,
   `a_new_floor_is_a_light_that_flows_out_of_a_window_and_spreads_into_the_floor`,
+  `the_houses_take_turns_on_either_side_of_the_page_as_many_as_there_is_room_for`,
+  `once_the_desk_is_full_the_houses_grow_higher_a_floor_each_in_turn`,
   `some_windows_are_lit_and_flicker_the_same_ones_for_the_same_story`; and
   `in_the_magic_city_each_new_page_gives_a_house_a_floor_made_of_light_from_a_window`,
+  `a_long_story_s_city_fills_the_desk_on_both_sides_and_grows_higher`,
   `in_the_magic_garden_a_plant_grows_beside_the_pages_as_the_story_grows`,
   `each_chapter_grows_its_own_plant_and_flowers_once_the_next_begins`,
   `a_chapter_taken_out_keeps_its_plant_and_it_flowers`,
@@ -1283,7 +1289,9 @@ when the writer goes on; nothing moved in the layout, nothing in print or the fi
 - **2026-10-28 — The Magic City builds itself a floor a page.** Asked for: little magic houses with
   flickering windows, a new floor each new page, made of light flowing out of a window. The floors
   are counted from the garden's saved pages per chapter rather than a field of their own, so the
-  city is kept with the story and never comes down, with nothing new in the file (R9, R30). Houses
-  hold a few floors each, so a long chapter is a street, not a tower past the top of the window.
+  city is kept with the story and never comes down, with nothing new in the file (R9, R30). The
+  houses fill the desk on both sides first, a few floors each; once there is no room for another,
+  they grow higher rather than crowding closer (asked for: squeezed-in houses overlapped, and a
+  story without chapters built only on the left).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.
