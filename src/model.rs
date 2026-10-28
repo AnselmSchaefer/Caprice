@@ -512,7 +512,8 @@ pub struct Doc {
     /// Where page numbering changes, in the order of the story (`numbers.rs`).
     pub number_marks: Vec<crate::numbers::NumberMark>,
     /// The most pages each plant of the garden has grown to (`eggs.rs`), a plant a chapter in
-    /// order: kept with the story so that taking text away never makes the garden shrink.
+    /// order: kept with the story so that taking text away never makes the garden shrink. The
+    /// Magic City's streets have as many floors.
     pub garden: Vec<u32>,
 }
 

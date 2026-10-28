@@ -1,12 +1,14 @@
 //! Little things hidden in the magic themes. In the Magic Garden a garden grows up from the bottom
 //! of the desk, a plant for each chapter, taller the more pages it has, and flowering once the next
-//! chapter has begun. Now and then, when the writer makes a paragraph a chapter title, it is
+//! chapter has begun. In the Magic City a street of little houses stands there instead, a floor for
+//! each page: a new floor is a light that flows out of a window and spreads into the floor, and
+//! some windows are lit, flickering. Now and then, when the writer makes a paragraph a chapter title, it is
 //! brought in: in the garden a hot-air balloon floats down with it hanging below its basket, sets it
 //! in place and rises away; in the Magic City a crane drives in from the side, carries it over the
 //! page on its hook, lowers it into place and drives away. Both follow one course in time (`pose`),
 //! each along its own way (`rig`).
 //!
-//! None of it is on the page: the garden lies on the desk behind the pages, and what brings a title
+//! None of it is on the page: the garden and the city lie on the desk behind the pages, and what brings a title
 //! is drawn
 //! over the page on the screen only, so nothing of it is printed or saved, and no page break moves
 //! for it. Like the emblem, it is drawn from shapes (egui fills only convex ones, R11), and what is
@@ -74,6 +76,27 @@ pub const ROPE: Color32 = Color32::from_rgb(110, 92, 74);
 /// How tall the balloon is from the bottom of its basket to the top of its silk, in its sizes.
 const TALL: f32 = 2.92;
 
+/// The Magic City's houses: their walls, roofs and doors, a window dark and lit, and the light a
+/// new floor is made of.
+const WALLS: [Color32; 5] = [
+    Color32::from_rgb(96, 70, 134),
+    Color32::from_rgb(54, 98, 122),
+    Color32::from_rgb(74, 78, 146),
+    Color32::from_rgb(132, 74, 116),
+    Color32::from_rgb(60, 106, 100),
+];
+const ROOFS: [Color32; 3] = [Color32::from_rgb(44, 38, 78), Color32::from_rgb(150, 64, 96), Color32::from_rgb(36, 72, 96)];
+const DOOR: Color32 = Color32::from_rgb(52, 34, 46);
+const DARK: Color32 = Color32::from_rgb(34, 30, 58);
+const GLOW: Color32 = Color32::from_rgb(255, 216, 124);
+const GLOW_DIM: Color32 = Color32::from_rgb(224, 146, 58);
+pub const LIGHT: Color32 = Color32::from_rgb(255, 238, 178);
+const STAR: Color32 = Color32::from_rgb(255, 222, 112);
+/// Seconds a new floor takes: its light flows out of a window for the first `FLOW` of it, and
+/// spreads into the floor for the rest.
+pub const BUILD: f32 = 1.6;
+pub const FLOW: f32 = 0.45;
+
 /// Seconds the crane takes to drive in, run the title out over the page, lower it, settle it,
 /// lift its hook off, and drive away; and to drive away when the writer goes on meanwhile. The
 /// balloon takes as long to come, float over, come down, let go and rise away.
@@ -105,6 +128,15 @@ pub struct Eggs {
     rng: u64,
     /// Each plant drawn last frame: from its root to its tip, and whether it flowered; for tests.
     pub plants: Vec<(Rect, bool)>,
+    /// The story the city was built for, and how many floors each chapter's street has risen to,
+    /// the last perhaps in part, while it is being built.
+    built_for: Option<String>,
+    built: Vec<f32>,
+    built_at: f64,
+    /// Each house drawn last frame: its floors from the ground to the top of the last one built,
+    /// and how many; and the light of a floor being built, if one is; for tests.
+    pub houses: Vec<(Rect, usize)>,
+    pub light: Option<Rect>,
 }
 
 /// The crane or the balloon bringing the chapter title that begins at `at` into place on page `page`.
@@ -121,7 +153,8 @@ pub struct Lift {
 impl Default for Eggs {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64);
-        Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, measured: None, lift: None, place: None, odds: ODDS, balloon_right: false, rng: seed | 1, plants: Vec::new() }
+        Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, measured: None, lift: None, place: None, odds: ODDS, balloon_right: false, rng: seed | 1, plants: Vec::new(),
+            built_for: None, built: Vec::new(), built_at: 0.0, houses: Vec::new(), light: None }
     }
 }
 
@@ -414,6 +447,208 @@ pub fn balloon(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
     out
 }
 
+/// A house of the Magic City: where it stands, how it looks, and how far it is built.
+#[derive(Clone, Debug)]
+pub struct House {
+    pub left: f32,
+    pub width: f32,
+    pub ground: f32,
+    /// A floor's height.
+    pub storey: f32,
+    /// The most floors it gets: the street's next floors go to the next house.
+    pub most: usize,
+    /// Floors built, and how far the next one is (0 when none is being built).
+    pub floors: usize,
+    pub building: f32,
+    /// What its windows, its colours and its roof come from.
+    seed: usize,
+    windows: usize,
+    wall: Color32,
+    roof: (Color32, usize),
+    unit: f32,
+}
+
+impl House {
+    /// House `j` of chapter `k`'s street, the same for the same story, standing on `ground`.
+    pub fn of(story: &str, k: usize, j: usize, ground: f32, unit: f32) -> House {
+        let seed = (1 << 20) + k * 64 + j;
+        let mut seeds = Seeds::of(story, seed);
+        let pick = |seeds: &mut Seeds, n: usize| (seeds.next(0.0, n as f32) as usize).min(n - 1);
+        let width = seeds.next(34.0, 52.0) * unit;
+        let most = 3 + pick(&mut seeds, 5);
+        let windows = 2 + pick(&mut seeds, 2);
+        let wall = WALLS[pick(&mut seeds, WALLS.len())];
+        let roof = (ROOFS[pick(&mut seeds, ROOFS.len())], pick(&mut seeds, 3));
+        House { left: 0.0, width, ground, storey: 22.0 * unit, most, floors: 0, building: 0.0, seed, windows, wall, roof, unit }
+    }
+
+    /// Floor `f`, counted from the ground.
+    pub fn floor(&self, f: usize) -> Rect {
+        let bottom = self.ground - f as f32 * self.storey;
+        Rect::from_min_max(pos2(self.left, bottom - self.storey), pos2(self.left + self.width, bottom))
+    }
+
+    /// Window `w` of floor `f`. The ground floor has a door in the middle, so only its windows
+    /// clear of it are there.
+    pub fn window(&self, f: usize, w: usize) -> Option<Rect> {
+        let floor = self.floor(f);
+        let x = floor.left() + floor.width() * (w as f32 + 0.5) / self.windows as f32;
+        if f == 0 && self.windows % 2 == 1 && w == self.windows / 2 {
+            return None;
+        }
+        Some(Rect::from_center_size(pos2(x, floor.center().y - self.storey * 0.04), vec2(self.width * 0.16, self.storey * 0.44)))
+    }
+
+    /// The colour of window `f`, `w` at `time`: some are lit, flickering as if by candles, and
+    /// the rest dark; the same windows for the same story.
+    pub fn light_in(&self, story: &str, f: usize, w: usize, time: f64) -> Color32 {
+        let mut seeds = Seeds::of(story, self.seed * 1024 + f * 8 + w);
+        if seeds.next(0.0, 1.0) > 0.45 {
+            return DARK;
+        }
+        let (phase, speed) = (seeds.next(0.0, 2.0 * PI), seeds.next(0.8, 1.3));
+        let t = (time % 1000.0) as f32 * speed;
+        let wave = (t * 2.3 + phase).sin() * 0.5 + (t * 5.9 + phase * 1.7).sin() * 0.3 + (t * 12.7 + phase * 2.9).sin() * 0.2;
+        GLOW_DIM.lerp_to_gamma(GLOW, 0.7 + 0.3 * wave)
+    }
+
+    /// Where the light for its next floor comes from: a window of its top floor, a lit one if it
+    /// has one.
+    fn source(&self, story: &str) -> Option<Pos2> {
+        let f = self.floors.checked_sub(1)?;
+        let windows: Vec<(usize, Rect)> = (0..self.windows).filter_map(|w| Some((w, self.window(f, w)?))).collect();
+        let lit = windows.iter().find(|(w, _)| self.light_in(story, f, *w, 0.0) != DARK);
+        lit.or(windows.first()).map(|(_, r)| r.center())
+    }
+
+    /// The house at `time`, and the light of its floor being built, if one is. A house without a
+    /// floor yet takes the light for its first from `from`, a window of its neighbour.
+    pub fn draw(&self, story: &str, from: Option<Pos2>, time: f64) -> (Vec<Shape>, Option<Rect>) {
+        let u = self.unit;
+        let mut out = Vec::new();
+        let edge = self.wall.lerp_to_gamma(Color32::BLACK, 0.3);
+        for f in 0..self.floors {
+            let floor = self.floor(f);
+            out.push(Shape::rect_filled(floor, 0.0, self.wall));
+            out.push(Shape::line_segment([floor.left_top(), floor.right_top()], Stroke::new(1.2 * u, edge)));
+            for w in 0..self.windows {
+                if let Some(r) = self.window(f, w) {
+                    out.extend(window(r, self.light_in(story, f, w, time), u));
+                }
+            }
+        }
+        if self.floors > 0 {
+            let door = Rect::from_center_size(self.floor(0).center_bottom() - vec2(0.0, self.storey * 0.3), vec2(self.width * 0.2, self.storey * 0.6));
+            out.push(Shape::rect_filled(door, egui::CornerRadius { nw: (3.0 * u) as u8, ne: (3.0 * u) as u8, sw: 0, se: 0 }, DOOR));
+        }
+        let next = self.floor(self.floors);
+        let ease = |s: f32| {
+            let s = s.clamp(0.0, 1.0);
+            s * s * (3.0 - 2.0 * s)
+        };
+        let (mut light, mut front) = (None, Vec::new());
+        let mut roof_at = next.bottom();
+        if self.building > 0.0 {
+            let start = self.source(story).or(from).unwrap_or(pos2(next.center().x, self.ground));
+            if self.building < FLOW {
+                // The light flows out of the window and up in an arc to where the floor will be,
+                // a trail of light behind it.
+                let a = ease(self.building / FLOW);
+                let bend = pos2((start.x + next.center().x) / 2.0, start.y.min(next.center().y) - self.storey);
+                let at = |a: f32| {
+                    let b = 1.0 - a;
+                    (start.to_vec2() * b * b + bend.to_vec2() * 2.0 * b * a + next.center().to_vec2() * a * a).to_pos2()
+                };
+                let r = (1.5 + 3.5 * a) * u;
+                for k in (1..=5).rev() {
+                    let back = (a - k as f32 * 0.05).max(0.0);
+                    front.push(Shape::circle_filled(at(back), r * (1.0 - k as f32 * 0.15), glow(GLOW, 0.6 - k as f32 * 0.1)));
+                }
+                front.push(Shape::circle_filled(at(a), r * 2.4, glow(GLOW, 0.3)));
+                front.push(Shape::circle_filled(at(a), r, LIGHT));
+                light = Some(Rect::from_center_size(at(a), Vec2::splat(r * 2.0)));
+            } else {
+                // It spreads into the floor, lifting the roof, and cools into the wall; its windows
+                // come last.
+                let b = ease((self.building - FLOW) / (1.0 - FLOW));
+                let r = 5.0 * u;
+                let spread = Rect::from_min_max(
+                    (next.center() - Vec2::splat(r)).lerp(next.min, b),
+                    (next.center() + Vec2::splat(r)).lerp(next.max, b),
+                );
+                roof_at = next.bottom() + (next.top() - next.bottom()) * b;
+                light = Some(spread);
+            }
+        }
+        if self.floors > 0 || self.building >= FLOW {
+            out.extend(self.roof(roof_at));
+        }
+        // The light goes in front of the roof it flows past.
+        out.extend(front);
+        if let (Some(spread), true) = (light, self.building >= FLOW) {
+            let b = ease((self.building - FLOW) / (1.0 - FLOW));
+            out.push(Shape::rect_filled(spread.expand(3.0 * u), 2.0 * u, glow(GLOW, 0.4 * (1.0 - b))));
+            out.push(Shape::rect_filled(spread, 2.0 * u * (1.0 - b), LIGHT.lerp_to_gamma(self.wall, b)));
+            if b > 0.6 {
+                for w in 0..self.windows {
+                    if let Some(r) = self.window(self.floors, w) {
+                        let lit = self.light_in(story, self.floors, w, time);
+                        out.extend(window(r, self.wall.lerp_to_gamma(lit, (b - 0.6) / 0.4), u));
+                    }
+                }
+            }
+        }
+        (out, light)
+    }
+
+    /// Its roof, sitting at `y`: a pointed one, a tall hat, or a dome, a star at its top.
+    fn roof(&self, y: f32) -> Vec<Shape> {
+        let u = self.unit;
+        let (color, kind) = self.roof;
+        let (l, r, mid) = (self.left - 3.0 * u, self.left + self.width + 3.0 * u, self.left + self.width / 2.0);
+        let mut out = Vec::new();
+        let tip = match kind {
+            0 => {
+                let tip = pos2(mid, y - self.width * 0.55);
+                out.push(Shape::convex_polygon(vec![pos2(l, y), tip, pos2(r, y)], color, Stroke::NONE));
+                tip
+            }
+            1 => {
+                let tip = pos2(mid, y - self.width * 0.95);
+                let (l, r) = (self.left + self.width * 0.12, self.left + self.width * 0.88);
+                out.push(Shape::convex_polygon(vec![pos2(l, y), tip, pos2(r, y)], color, Stroke::NONE));
+                tip
+            }
+            _ => {
+                let radius = self.width * 0.42;
+                let points = (0..=12).map(|k| pos2(mid, y) + egui::Vec2::angled(PI + PI * k as f32 / 12.0) * radius).collect();
+                out.push(Shape::convex_polygon(points, color, Stroke::NONE));
+                let tip = pos2(mid, y - radius - 7.0 * u);
+                out.push(Shape::line_segment([pos2(mid, y - radius), tip], Stroke::new(1.2 * u, color)));
+                tip
+            }
+        };
+        out.push(Shape::circle_filled(tip, 2.0 * u, STAR));
+        out
+    }
+}
+
+/// `color`, see-through by `alpha`.
+fn glow(color: Color32, alpha: f32) -> Color32 {
+    let [r, g, b, _] = color.to_array();
+    Color32::from_rgba_unmultiplied(r, g, b, (alpha.clamp(0.0, 1.0) * 255.0) as u8)
+}
+
+/// A window at `r` of `color`, a soft glow about it when it is lit.
+fn window(r: Rect, color: Color32, u: f32) -> Vec<Shape> {
+    let mut out = Vec::new();
+    if color != DARK {
+        out.push(Shape::rect_filled(r.expand(2.0 * u), 2.0 * u, glow(color, 0.18)));
+    }
+    out.push(Shape::rect_filled(r, 1.0 * u, color));
+    out
+}
+
 impl App {
     /// The garden kept with the story (`Doc::garden`) grown to the pages each chapter has now, if
     /// it has more: in every theme, so the Magic Garden shows all the story's growth. It never
@@ -502,6 +737,81 @@ impl App {
             let flower = k + 1 != chapters;
             painter.extend(plant(&self.story_id, k, root, height, flower, unit));
             e.plants.push((Rect::from_min_max(pos2(x, root.y - height), root), flower));
+        }
+    }
+
+    /// The city on the desk, behind the pages lying at `page`, in the Magic City only: a street a
+    /// chapter, the streets taking turns on either side of the page, with a floor for each page the
+    /// chapter has had (`Doc::garden`, so it never comes down either).
+    pub fn draw_city(&mut self, ui: &egui::Ui, area: Rect, page: Rect) {
+        (self.eggs.houses, self.eggs.light) = (Vec::new(), None);
+        if self.themes.theme != Theme::City {
+            return;
+        }
+        let now = ui.ctx().input(|i| i.time);
+        let targets: Vec<f32> = self.doc.garden.iter().map(|&n| n as f32).collect();
+        let e = &mut self.eggs;
+        if e.built_for.as_deref() != Some(&self.story_id) {
+            // A story just opened comes with its city built.
+            (e.built_for, e.built) = (Some(self.story_id.clone()), targets.clone());
+        }
+        e.built.resize(targets.len(), 0.0);
+        let dt = (now - e.built_at).clamp(0.0, 0.1) as f32;
+        e.built_at = now;
+        let mut building = false;
+        for (b, &t) in e.built.iter_mut().zip(&targets) {
+            if *b < t {
+                // A floor at a time, quicker when many are waiting.
+                *b = (*b + (t - *b).max(3.0) / 3.0 / BUILD * dt).min(t);
+                building = true;
+            }
+        }
+        // Lit windows flicker: a candle needs no more than this.
+        if building {
+            ui.ctx().request_repaint();
+        } else {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
+        }
+
+        let unit = (area.height() / 900.0).clamp(0.6, 1.6);
+        let story = &self.story_id;
+        let mut streets: [Vec<House>; 2] = [Vec::new(), Vec::new()];
+        for (k, (&target, &shown)) in targets.iter().zip(&e.built).enumerate() {
+            // The street's floors go to its houses in turn, each filled before the next is begun.
+            let (mut wanted, mut shown, mut j) = (target, shown, 0);
+            while wanted > 0.0 {
+                let mut house = House::of(story, k, j, area.bottom(), unit);
+                let here = shown.min(house.most as f32);
+                (house.floors, house.building) = (here.floor() as usize, here.fract());
+                (wanted, shown, j) = (wanted - house.most as f32, shown - here, j + 1);
+                streets[k % 2].push(house);
+            }
+        }
+        let painter = ui.painter();
+        for (side, street) in streets.iter_mut().enumerate() {
+            // From the page's edge outwards; closer together when there are more than there is room for.
+            let left = side == 0;
+            let gutter = if left { page.left() - area.left() } else { area.right() - page.right() };
+            let gap = 8.0 * unit;
+            let natural: f32 = street.iter().map(|h| h.width + gap).sum::<f32>() + gap;
+            let squeeze = (gutter / natural).min(1.0);
+            let mut x = gap * squeeze;
+            for h in street.iter_mut() {
+                h.left = if left { page.left() - x - h.width } else { page.right() + x };
+                x += (h.width + gap) * squeeze;
+            }
+            for (i, h) in street.iter().enumerate() {
+                if h.floors == 0 && h.building == 0.0 {
+                    continue;
+                }
+                // A house begun takes its light from the window of its neighbour nearer the page.
+                let from = i.checked_sub(1).and_then(|i| street[i].source(story));
+                let (shapes, light) = h.draw(story, from, now);
+                painter.extend(shapes);
+                let top = h.floor(h.floors).bottom();
+                e.houses.push((Rect::from_min_max(pos2(h.left, top), pos2(h.left + h.width, h.ground)), h.floors));
+                e.light = e.light.or(light);
+            }
         }
     }
 
@@ -658,6 +968,45 @@ mod tests {
         // After it set the title down, going on changes nothing.
         let late = ENTER + RUN + LOWER + SETTLE + UNHOOK + 0.1;
         assert_eq!(pose(late + 0.1, Some(late)), pose(late + 0.1, None));
+    }
+
+    #[test]
+    fn a_new_floor_is_a_light_that_flows_out_of_a_window_and_spreads_into_the_floor() {
+        let mut h = House::of("a", 0, 0, 900.0, 1.0);
+        (h.left, h.floors) = (100.0, 2);
+        let window = h.source("a").unwrap();
+        assert!(h.floor(1).contains(window), "a window of the top floor");
+        let next = h.floor(2);
+        let light = |s: f32| {
+            let mut h = h.clone();
+            h.building = s;
+            h.draw("a", None, 0.0).1
+        };
+        assert!(light(0.0).is_none(), "nothing being built");
+        assert!(light(0.01).unwrap().center().distance(window) < 1.0, "out of the window");
+        let flown = light(FLOW - 0.001).unwrap();
+        assert!(flown.center().distance(next.center()) < 1.0 && flown.width() < next.width() / 2.0, "a little light where the floor will be");
+        let spread = light(0.999).unwrap();
+        assert!(spread.min.distance(next.min) < 0.5 && spread.max.distance(next.max) < 0.5, "spread into the floor: {spread:?} {next:?}");
+        // A house's first floor takes its light from its neighbour's window.
+        let mut first = House::of("a", 0, 1, 900.0, 1.0);
+        first.building = 0.01;
+        let from = pos2(50.0, 850.0);
+        assert!(first.draw("a", Some(from), 0.0).1.unwrap().center().distance(from) < 1.0);
+    }
+
+    #[test]
+    fn some_windows_are_lit_and_flicker_the_same_ones_for_the_same_story() {
+        let h = House::of("a", 0, 0, 900.0, 1.0);
+        let windows: Vec<(usize, usize)> = (0..8).flat_map(|f| (0..3).map(move |w| (f, w))).collect();
+        let lit: Vec<(usize, usize)> = windows.iter().copied().filter(|&(f, w)| h.light_in("a", f, w, 0.0) != DARK).collect();
+        assert!(!lit.is_empty() && lit.len() < windows.len(), "some lit, some dark: {lit:?}");
+        for (f, w) in lit {
+            let seen: Vec<Color32> = (0..20).map(|t| h.light_in("a", f, w, t as f64 * 0.1)).collect();
+            assert!(seen.iter().all(|c| c.r() > 200 && *c != DARK), "lit all the while: {seen:?}");
+            assert!(seen.windows(2).filter(|p| p[0] != p[1]).count() > 10, "it flickers: {seen:?}");
+            assert_eq!(h.light_in("a", f, w, 0.5), House::of("a", 0, 0, 900.0, 1.0).light_in("a", f, w, 0.5));
+        }
     }
 
     #[test]

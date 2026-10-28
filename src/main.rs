@@ -593,6 +593,7 @@ impl App {
         // On the desk, behind every page (`eggs.rs`).
         self.grow_garden();
         self.draw_garden(ui, area, page_rect);
+        self.draw_city(ui, area, page_rect);
         let base = self.pos.floor() as usize;
         let t = self.pos - base as f32;
         self.animate_held(ui);
@@ -5565,15 +5566,51 @@ mod tests {
     }
 
     #[test]
-    fn nothing_grows_in_the_city_and_nothing_brings_a_title_in_the_other_themes() {
+    fn the_garden_grows_only_in_its_theme_the_houses_only_in_the_city_and_nothing_brings_a_title_elsewhere() {
         let mut h = Harness::new();
         in_the_theme(&mut h, theme::Theme::City, 1.0);
         assert!(h.app.eggs.plants.is_empty(), "no garden in the city");
         let mut h = Harness::new();
+        in_the_garden(&mut h, 0.0);
+        assert!(h.app.eggs.houses.is_empty(), "no houses in the garden");
+        let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.app.eggs.odds = 1.0;
         chapter_one(&mut h);
-        assert!(h.app.eggs.plants.is_empty() && h.app.eggs.lift.is_none());
+        assert!(h.app.eggs.plants.is_empty() && h.app.eggs.houses.is_empty() && h.app.eggs.lift.is_none());
+    }
+
+    #[test]
+    fn in_the_magic_city_each_new_page_gives_a_house_a_floor_made_of_light_from_a_window() {
+        let mut h = Harness::new();
+        in_the_theme(&mut h, theme::Theme::City, 0.0);
+        let first = h.app.eggs.houses.clone();
+        assert_eq!(first.iter().map(|h| h.1).collect::<Vec<_>>(), [1], "a house of one floor for a story of one page");
+        assert!(beside_the_page(&h, first[0].0), "on the desk, not on the page: {:?}", first[0].0);
+        while h.app.doc.pages() < 2 {
+            h.type_text(&"It was nearly midnight and the Prime Minister sat alone in his office. ".repeat(5));
+        }
+        let light = h.app.eggs.light.expect("a light comes to make the new floor");
+        assert!(first[0].0.expand(20.0).contains(light.center()) && light.width() < 20.0, "out of the house's window: {light:?}");
+        assert_eq!(h.app.eggs.houses[0].1, 1, "not a floor yet");
+        h.frames(150, vec![], Modifiers::NONE);
+        assert!(h.app.eggs.light.is_none(), "the light became the floor");
+        let two = h.app.eggs.houses[0];
+        assert!(two.1 == 2 && two.0.height() > first[0].0.height() * 1.9 && two.0.bottom() == first[0].0.bottom(), "{two:?}");
+
+        // A floor for every page, built one after the other; taking the pages away leaves them.
+        h.type_text(&"It was nearly midnight and the Prime Minister sat alone in his office. ".repeat(220));
+        let pages = h.app.doc.pages();
+        h.frames(30, vec![], Modifiers::NONE);
+        let floors = |h: &Harness| h.app.eggs.houses.iter().map(|h| h.1).sum::<usize>();
+        assert!(floors(&h) < pages, "built in sight");
+        h.frames(600, vec![], Modifiers::NONE);
+        assert_eq!(floors(&h), pages);
+        assert!(h.app.eggs.houses.iter().all(|house| beside_the_page(&h, house.0)));
+        h.key(Key::A, Modifiers::COMMAND);
+        h.key(Key::Backspace, Modifiers::NONE);
+        h.frames(60, vec![], Modifiers::NONE);
+        assert_eq!(floors(&h), pages);
     }
 
     /// The title "Chapter One" as painted: as it is brought, over its place, and at rest.
@@ -5656,7 +5693,7 @@ mod tests {
     }
 
     #[test]
-    fn print_shows_neither_the_garden_nor_what_brings_a_title() {
+    fn print_shows_neither_the_garden_the_houses_nor_what_brings_a_title() {
         let mut h = Harness::new();
         chapter_one(&mut h);
         let ctx = h.ctx.clone();
@@ -5666,7 +5703,7 @@ mod tests {
             in_the_theme(&mut g, t, 1.0);
             chapter_one(&mut g);
             g.frames(70, vec![], Modifiers::NONE);
-            assert!(g.app.eggs.lift.is_some(), "{t:?}");
+            assert!(g.app.eggs.lift.is_some() && !(g.app.eggs.plants.is_empty() && g.app.eggs.houses.is_empty()), "{t:?}");
             let ctx = g.ctx.clone();
             assert!(g.app.pdf(&ctx, 0..=0).unwrap() == plain, "{t:?}");
         }

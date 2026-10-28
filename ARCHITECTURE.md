@@ -94,7 +94,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `ideas.rs` | The What next window (lower left): ways the story could go on from the caret, kept in the scratchpad |
 | `fonts.rs` | Installed fonts loaded on demand, a missing one drawn with a twin of the same widths |
 | `theme.rs` | The themes (`Theme`, `Palette`): colours and egui visuals around the page, the palette in use (`pal`), fading from one to the next, the choice kept in the data folder; the page's own `PAPER` and `INK` |
-| `eggs.rs` | What is hidden in the magic themes: in the Magic Garden a plant a chapter growing on the desk and a balloon flying in a new chapter title now and then; in the Magic City a crane lifting it into place |
+| `eggs.rs` | What is hidden in the magic themes: in the Magic Garden a plant a chapter growing on the desk and a balloon flying in a new chapter title now and then; in the Magic City a street of houses a chapter, a floor a page, and a crane lifting a new title into place |
 
 ---
 
@@ -1025,7 +1025,7 @@ same in every theme, so what is printed (R20) and exported (R10) never depends o
 ### R30 — Hidden gems: on the desk, or over the page on the screen only; never moving anything
 
 The magic themes hide things for the writer to find (`eggs.rs`): the Magic Garden (`Theme::Garden`)
-a garden and a hot-air balloon, the Magic City (`Theme::City`) a crane. Their blurbs give nothing
+a garden and a hot-air balloon, the Magic City (`Theme::City`) houses and a crane. Their blurbs give nothing
 away. What a theme hides is its own: picking another theme is how to stop it.
 
 - **The garden lies on the desk, behind every page**, in the Magic Garden only. `draw_garden` is
@@ -1044,6 +1044,18 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   saving); anything else that replaces `doc` must do the same. Plants are matched to chapters by
   order, so a chapter put in between takes the next plant (decided: tying plants to their titles
   like notes, R7, costs more than it is worth here).
+- **The city stands on the desk the same way**, in the Magic City only: `draw_city` is called right
+  after `draw_garden`, so it is behind every page too. A street a chapter, the streets taking turns
+  on either side of the page; a floor for each page the chapter has had, read from the same
+  `Doc::garden`, so the city never comes down either and needs nothing kept of its own. A street's
+  floors go to its houses in turn (`House::of`: each has its `most`, then the next is begun); when
+  there are more houses than room, they stand closer and overlap. A new floor is built in sight
+  (`Eggs::built`, like `grown` below, `BUILD` seconds a floor, quicker when many wait): a light
+  flows out of a window of the top floor (a lit one if it has one; for a house's first floor, a
+  window of its neighbour nearer the page) for the first `FLOW` of it, then spreads into the floor,
+  lifting the roof, and cools into the wall. Which windows are lit, and their flicker, come from
+  `story_id` and the window, so a test can look at any moment. Flickering needs frames: in the
+  Magic City the app asks for one every 80 ms even when idle; nothing else in the app does.
 - **It grows in sight.** How far each plant is drawn grown (`Eggs::grown`, by `story_id`) only goes
   up, a tenth of a second's growth a frame at most; a story opened comes with its garden grown.
   Its shapes come from a seed of `story_id` (saved, R22) and the plant's number, and the stem's
@@ -1066,24 +1078,27 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   (R3, R20). The
   carrier is drawn in the settled branch in front of the page, after the peek's hand.
 - **None of it is printed or saved**: it is in none of `underlay`, `ink` or `furniture` (R20), and
-  nothing of it is in `Doc`. Its colours are the garden's, the balloon's and the crane's own, like the emblem's,
+  nothing of it is in `Doc`. Its colours are the garden's, the houses', the balloon's and the crane's own, like the emblem's,
   not the palette's: they are pictures, not chrome.
 - Tests: in `eggs.rs` `the_crane_drives_in_runs_the_title_out_lowers_it_and_drives_away`,
   `the_balloon_floats_the_title_in_from_the_side_and_away_past_the_other`,
   `the_crane_sets_the_title_down_at_once_when_the_writer_goes_on`,
-  `a_plant_is_the_same_for_the_same_story_and_grows_only_at_its_top`; and
+  `a_plant_is_the_same_for_the_same_story_and_grows_only_at_its_top`,
+  `a_new_floor_is_a_light_that_flows_out_of_a_window_and_spreads_into_the_floor`,
+  `some_windows_are_lit_and_flicker_the_same_ones_for_the_same_story`; and
+  `in_the_magic_city_each_new_page_gives_a_house_a_floor_made_of_light_from_a_window`,
   `in_the_magic_garden_a_plant_grows_beside_the_pages_as_the_story_grows`,
   `each_chapter_grows_its_own_plant_and_flowers_once_the_next_begins`,
   `a_chapter_taken_out_keeps_its_plant_and_it_flowers`,
   `the_garden_is_kept_with_the_story_and_does_not_shrink_when_it_is_opened_again_smaller`,
   `dropping_the_changes_since_saving_keeps_the_garden_grown_since`,
   `a_story_begun_is_not_unsaved_for_its_garden`,
-  `nothing_grows_in_the_city_and_nothing_brings_a_title_in_the_other_themes`,
+  `the_garden_grows_only_in_its_theme_the_houses_only_in_the_city_and_nothing_brings_a_title_elsewhere`,
   `now_and_then_in_the_magic_city_a_crane_lifts_a_new_chapter_title_into_place`,
   `now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title_from_either_side`,
   `the_title_hangs_from_the_balloon_by_ropes_tied_to_its_ends`,
   `going_on_writing_while_a_title_is_brought_sets_it_down_at_once`,
-  `print_shows_neither_the_garden_nor_what_brings_a_title`.
+  `print_shows_neither_the_garden_the_houses_nor_what_brings_a_title`.
 
 ---
 
@@ -1265,5 +1280,10 @@ when the writer goes on; nothing moved in the layout, nothing in print or the fi
 - **2026-10-27 — Each magic theme brings a new chapter its own way.** The crane went to a Magic
   City of its own and the garden, renamed Magic Garden, got a hot-air balloon: one course in time
   for both, so the title is set down the same way, and only the path and the picture differ (R30).
+- **2026-10-28 — The Magic City builds itself a floor a page.** Asked for: little magic houses with
+  flickering windows, a new floor each new page, made of light flowing out of a window. The floors
+  are counted from the garden's saved pages per chapter rather than a field of their own, so the
+  city is kept with the story and never comes down, with nothing new in the file (R9, R30). Houses
+  hold a few floors each, so a long chapter is a street, not a tower past the top of the window.
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.
