@@ -1056,8 +1056,12 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   (`Eggs::built`, like `grown` below, `BUILD` seconds a floor, quicker when many wait): a light
   flows out of a window of the top floor (a lit one if it has one; for a house's first floor, a
   window of its neighbour nearer the page) for the first `FLOW` of it, then spreads into the floor,
-  lifting the roof, and cools into the wall. Which windows are lit, and their flicker, come from
-  `story_id` and the window, so a test can look at any moment. Flickering needs frames: in the
+  lifting the roof, and cools into the wall. Which windows are lit, and which of those flicker
+  (a few, and only slightly: the rest burn steadily), come from `story_id` and the window, so a
+  test can look at any moment. How a house looks (its roof, a little tower, a statue, balconies,
+  arched windows) comes from its seed too, drawn after where it stands and how high it gets, so a
+  new look never moves a floor. Whatever is added to a house stays within 4 of its walls: houses
+  stand 8 apart, so nothing reaches the next one. Flickering needs frames: in the
   Magic City the app asks for one every 80 ms even when idle; nothing else in the app does.
 - **It grows in sight.** How far each plant is drawn grown (`Eggs::grown`, by `story_id`) only goes
   up, a tenth of a second's growth a frame at most; a story opened comes with its garden grown.
@@ -1090,7 +1094,8 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   `a_new_floor_is_a_light_that_flows_out_of_a_window_and_spreads_into_the_floor`,
   `the_houses_take_turns_on_either_side_of_the_page_as_many_as_there_is_room_for`,
   `once_the_desk_is_full_the_houses_grow_higher_a_floor_each_in_turn`,
-  `some_windows_are_lit_and_flicker_the_same_ones_for_the_same_story`; and
+  `some_windows_are_lit_a_few_flickering_slightly_the_same_ones_for_the_same_story`,
+  `some_houses_have_a_little_tower_or_a_statue_and_none_reaches_the_next_house`; and
   `in_the_magic_city_each_new_page_gives_a_house_a_floor_made_of_light_from_a_window`,
   `a_long_story_s_city_fills_the_desk_on_both_sides_and_grows_higher`,
   `in_the_magic_garden_a_plant_grows_beside_the_pages_as_the_story_grows`,

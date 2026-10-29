@@ -1,8 +1,9 @@
 //! Little things hidden in the magic themes. In the Magic Garden a garden grows up from the bottom
 //! of the desk, a plant for each chapter, taller the more pages it has, and flowering once the next
 //! chapter has begun. In the Magic City a street of little houses stands there instead, a floor for
-//! each page: a new floor is a light that flows out of a window and spreads into the floor, and
-//! some windows are lit, flickering. Now and then, when the writer makes a paragraph a chapter title, it is
+//! each page: a new floor is a light that flows out of a window and spreads into the floor. Some
+//! windows are lit, a few of them flickering slightly; some houses have a little tower with a
+//! pennant, a statue on the roof, balconies or arched windows. Now and then, when the writer makes a paragraph a chapter title, it is
 //! brought in: in the garden a hot-air balloon floats down with it hanging below its basket, sets it
 //! in place and rises away; in the Magic City a crane drives in from the side, carries it over the
 //! page on its hook, lowers it into place and drives away. Both follow one course in time (`pose`),
@@ -92,6 +93,10 @@ const GLOW: Color32 = Color32::from_rgb(255, 216, 124);
 const GLOW_DIM: Color32 = Color32::from_rgb(224, 146, 58);
 pub const LIGHT: Color32 = Color32::from_rgb(255, 238, 178);
 const STAR: Color32 = Color32::from_rgb(255, 222, 112);
+/// The statues on the roofs, of stone or gilded, and the pennants on the towers.
+const STONE: Color32 = Color32::from_rgb(198, 192, 216);
+const GILT: Color32 = Color32::from_rgb(234, 190, 90);
+const PENNANT: Color32 = Color32::from_rgb(232, 76, 84);
 /// Seconds a new floor takes: its light flows out of a window for the first `FLOW` of it, and
 /// spreads into the floor for the rest.
 pub const BUILD: f32 = 1.6;
@@ -466,6 +471,11 @@ pub struct House {
     windows: usize,
     wall: Color32,
     roof: (Color32, usize),
+    /// A little tower at a corner of its roof, on the left or the right; a statue at the top of
+    /// its roof, which kind and of what; and windows round at the top.
+    tower: Option<bool>,
+    statue: Option<(usize, Color32)>,
+    arched: bool,
     unit: f32,
 }
 
@@ -479,8 +489,28 @@ impl House {
         let most = 3 + pick(&mut seeds, 5);
         let windows = 2 + pick(&mut seeds, 2);
         let wall = WALLS[pick(&mut seeds, WALLS.len())];
-        let roof = (ROOFS[pick(&mut seeds, ROOFS.len())], pick(&mut seeds, 3));
-        House { left: 0.0, width, ground, storey: 22.0 * unit, most, floors: 0, building: 0.0, seed, windows, wall, roof, unit }
+        let roof = (ROOFS[pick(&mut seeds, ROOFS.len())], pick(&mut seeds, 5));
+        // Drawn after where it stands and how high it gets, so those stay what they were.
+        let tower = (seeds.next(0.0, 1.0) < 0.4).then(|| seeds.next(0.0, 1.0) < 0.5);
+        let statue = (roof.1 == 3 || seeds.next(0.0, 1.0) < 0.15).then(|| (pick(&mut seeds, 3), [STONE, GILT][pick(&mut seeds, 2)]));
+        let arched = seeds.next(0.0, 1.0) < 0.4;
+        House {
+            left: 0.0,
+            width,
+            ground,
+            storey: 22.0 * unit,
+            most,
+            floors: 0,
+            building: 0.0,
+            seed,
+            windows,
+            wall,
+            roof,
+            tower,
+            statue,
+            arched,
+            unit,
+        }
     }
 
     /// Floor `f`, counted from the ground.
@@ -500,17 +530,27 @@ impl House {
         Some(Rect::from_center_size(pos2(x, floor.center().y - self.storey * 0.04), vec2(self.width * 0.16, self.storey * 0.44)))
     }
 
-    /// The colour of window `f`, `w` at `time`: some are lit, flickering as if by candles, and
-    /// the rest dark; the same windows for the same story.
+    /// The colour of window `f`, `w` at `time`: some are lit and the rest dark, the same windows
+    /// for the same story. Most lit ones burn steadily, each a little warmer or paler; a few
+    /// flicker slightly, as if by a candle.
     pub fn light_in(&self, story: &str, f: usize, w: usize, time: f64) -> Color32 {
         let mut seeds = Seeds::of(story, self.seed * 1024 + f * 8 + w);
         if seeds.next(0.0, 1.0) > 0.45 {
             return DARK;
         }
-        let (phase, speed) = (seeds.next(0.0, 2.0 * PI), seeds.next(0.8, 1.3));
+        let (warmth, phase, speed) = (seeds.next(0.75, 0.95), seeds.next(0.0, 2.0 * PI), seeds.next(0.8, 1.3));
+        if seeds.next(0.0, 1.0) > 0.35 {
+            return GLOW_DIM.lerp_to_gamma(GLOW, warmth);
+        }
         let t = (time % 1000.0) as f32 * speed;
         let wave = (t * 2.3 + phase).sin() * 0.5 + (t * 5.9 + phase * 1.7).sin() * 0.3 + (t * 12.7 + phase * 2.9).sin() * 0.2;
-        GLOW_DIM.lerp_to_gamma(GLOW, 0.7 + 0.3 * wave)
+        GLOW_DIM.lerp_to_gamma(GLOW, warmth + 0.08 * wave)
+    }
+
+    /// Whether floor `f` has a little balcony under one of its windows, and which.
+    fn balcony(&self, story: &str, f: usize) -> Option<usize> {
+        let mut seeds = Seeds::of(story, self.seed * 1024 + f * 8 + 7);
+        (f > 0 && seeds.next(0.0, 1.0) < 0.22).then(|| (seeds.next(0.0, self.windows as f32) as usize).min(self.windows - 1))
     }
 
     /// Where the light for its next floor comes from: a window of its top floor, a lit one if it
@@ -534,8 +574,11 @@ impl House {
             out.push(Shape::line_segment([floor.left_top(), floor.right_top()], Stroke::new(1.2 * u, edge)));
             for w in 0..self.windows {
                 if let Some(r) = self.window(f, w) {
-                    out.extend(window(r, self.light_in(story, f, w, time), u));
+                    out.extend(window(r, self.light_in(story, f, w, time), self.arched, u));
                 }
+            }
+            if let Some(r) = self.balcony(story, f).and_then(|w| self.window(f, w)) {
+                out.extend(balcony(r, self.wall.lerp_to_gamma(Color32::WHITE, 0.3), u));
             }
         }
         if self.floors > 0 {
@@ -582,7 +625,7 @@ impl House {
             }
         }
         if self.floors > 0 || self.building >= FLOW {
-            out.extend(self.roof(roof_at));
+            out.extend(self.roof(story, roof_at, time));
         }
         // The light goes in front of the roof it flows past.
         out.extend(front);
@@ -594,7 +637,7 @@ impl House {
                 for w in 0..self.windows {
                     if let Some(r) = self.window(self.floors, w) {
                         let lit = self.light_in(story, self.floors, w, time);
-                        out.extend(window(r, self.wall.lerp_to_gamma(lit, (b - 0.6) / 0.4), u));
+                        out.extend(window(r, self.wall.lerp_to_gamma(lit, (b - 0.6) / 0.4), self.arched, u));
                     }
                 }
             }
@@ -602,8 +645,10 @@ impl House {
         (out, light)
     }
 
-    /// Its roof, sitting at `y`: a pointed one, a tall hat, or a dome, a star at its top.
-    fn roof(&self, y: f32) -> Vec<Shape> {
+    /// Its roof, sitting at `y`: a pointed one, a tall hat, a dome, a flat one with battlements,
+    /// or an onion; at its top a star or a statue, and perhaps a little tower at a corner. All of
+    /// it stays above the house, no wider than its eaves, so it never reaches the next house.
+    fn roof(&self, story: &str, y: f32, time: f64) -> Vec<Shape> {
         let u = self.unit;
         let (color, kind) = self.roof;
         let (l, r, mid) = (self.left - 3.0 * u, self.left + self.width + 3.0 * u, self.left + self.width / 2.0);
@@ -620,7 +665,7 @@ impl House {
                 out.push(Shape::convex_polygon(vec![pos2(l, y), tip, pos2(r, y)], color, Stroke::NONE));
                 tip
             }
-            _ => {
+            2 => {
                 let radius = self.width * 0.42;
                 let points = (0..=12).map(|k| pos2(mid, y) + egui::Vec2::angled(PI + PI * k as f32 / 12.0) * radius).collect();
                 out.push(Shape::convex_polygon(points, color, Stroke::NONE));
@@ -628,10 +673,123 @@ impl House {
                 out.push(Shape::line_segment([pos2(mid, y - radius), tip], Stroke::new(1.2 * u, color)));
                 tip
             }
+            3 => {
+                // A parapet with battlements, the statue standing in the middle.
+                let top = y - 4.0 * u;
+                out.push(Shape::rect_filled(Rect::from_min_max(pos2(l, top), pos2(r, y)), 0.0, color));
+                let n = ((r - l) / (6.0 * u)) as usize | 1;
+                let step = (r - l) / n as f32;
+                for k in (0..n).step_by(2) {
+                    let x = l + k as f32 * step;
+                    out.push(Shape::rect_filled(Rect::from_min_max(pos2(x, top - 3.5 * u), pos2(x + step, top)), 0.0, color));
+                }
+                pos2(mid, top)
+            }
+            _ => {
+                // An onion: a round body and a point drawn up from it.
+                let radius = self.width * 0.3;
+                let c = pos2(mid, y - radius * 0.7);
+                out.push(Shape::rect_filled(Rect::from_min_max(pos2(mid - radius * 0.7, c.y), pos2(mid + radius * 0.7, y)), 0.0, color));
+                out.push(Shape::circle_filled(c, radius, color));
+                let tip = pos2(mid, c.y - radius * 1.9);
+                let shoulder = c.y - radius * 0.7;
+                out.push(Shape::convex_polygon(
+                    vec![pos2(mid - radius * 0.72, shoulder), tip, pos2(mid + radius * 0.72, shoulder)],
+                    color,
+                    Stroke::NONE,
+                ));
+                tip
+            }
         };
-        out.push(Shape::circle_filled(tip, 2.0 * u, STAR));
+        match self.statue {
+            Some((which, stone)) => out.extend(statue(which, tip, stone, u)),
+            None => out.push(Shape::circle_filled(tip, 2.0 * u, STAR)),
+        }
+        if let Some(left) = self.tower {
+            out.extend(self.tower(story, left, y, time));
+        }
         out
     }
+
+    /// A little round tower at the left or right corner of the roof at `y`, in front of it: a
+    /// lit or dark window, a pointed cap, and a pennant fluttering at its top.
+    fn tower(&self, story: &str, left: bool, y: f32, time: f64) -> Vec<Shape> {
+        let u = self.unit;
+        let w = self.width * 0.26;
+        let x = if left { self.left - 2.0 * u } else { self.left + self.width + 2.0 * u - w };
+        let body = Rect::from_min_max(pos2(x, y - self.storey * 0.95), pos2(x + w, y + 2.0 * u));
+        let edge = self.wall.lerp_to_gamma(Color32::BLACK, 0.3);
+        let mut out = vec![
+            Shape::rect_filled(body, 0.0, self.wall.lerp_to_gamma(Color32::WHITE, 0.08)),
+            Shape::rect_filled(Rect::from_min_max(body.left_bottom() - vec2(1.0 * u, 2.5 * u), body.right_bottom() + vec2(1.0 * u, 0.0)), 0.0, edge),
+        ];
+        let pane = Rect::from_center_size(body.center() - vec2(0.0, self.storey * 0.08), vec2(w * 0.4, self.storey * 0.36));
+        out.extend(window(pane, self.light_in(story, 127, 0, time), true, u));
+        let (color, _) = self.roof;
+        let tip = pos2(body.center().x, body.top() - w * 1.15);
+        let cap = vec![pos2(body.left() - 1.5 * u, body.top()), tip, pos2(body.right() + 1.5 * u, body.top())];
+        out.push(Shape::convex_polygon(cap, color, Stroke::NONE));
+        // The pennant flies away from the house, and flutters.
+        let pole = tip - vec2(0.0, 7.0 * u);
+        out.push(Shape::line_segment([tip, pole], Stroke::new(1.0 * u, CABLE)));
+        let away = if left { -1.0 } else { 1.0 };
+        let flutter = ((time % 1000.0) as f32 * 3.1 + self.seed as f32).sin() * 0.8 * u;
+        let flag = vec![pole, pos2(pole.x + away * 6.0 * u, pole.y + 1.8 * u + flutter), pole + vec2(0.0, 3.6 * u)];
+        out.push(Shape::convex_polygon(flag, PENNANT, Stroke::NONE));
+        out
+    }
+}
+
+/// A little statue standing on `at`, on a plinth: an owl, a figure holding up a star, or a cat
+/// sitting with its tail curled round.
+fn statue(which: usize, at: Pos2, stone: Color32, u: f32) -> Vec<Shape> {
+    let shade = stone.lerp_to_gamma(Color32::BLACK, 0.25);
+    let plinth = Rect::from_min_max(at - vec2(4.5 * u, 3.0 * u), at + vec2(4.5 * u, 0.0));
+    let mut out = vec![Shape::rect_filled(plinth, 0.5 * u, shade)];
+    let base = plinth.center_top();
+    let oval = |c: Pos2, rx: f32, ry: f32| {
+        let points = (0..16).map(|k| c + egui::Vec2::angled(2.0 * PI * k as f32 / 16.0) * vec2(rx, ry)).collect();
+        Shape::convex_polygon(points, stone, Stroke::NONE)
+    };
+    let ears = |c: Pos2, r: f32, out: &mut Vec<Shape>| {
+        for side in [-1.0, 1.0] {
+            let ear = vec![c + vec2(side * r * 0.9, -r * 0.2), c + vec2(side * r * 0.85, -r * 1.6), c + vec2(side * r * 0.1, -r * 0.8)];
+            out.push(Shape::convex_polygon(ear, stone, Stroke::NONE));
+        }
+    };
+    match which {
+        0 => {
+            // An owl, its eyes alight.
+            out.push(oval(base - vec2(0.0, 4.5 * u), 3.6 * u, 4.6 * u));
+            let head = base - vec2(0.0, 10.0 * u);
+            out.push(Shape::circle_filled(head, 3.2 * u, stone));
+            ears(head, 3.2 * u, &mut out);
+            for side in [-1.0, 1.0] {
+                out.push(Shape::circle_filled(head + vec2(side * 1.4 * u, 0.0), 1.0 * u, GLOW));
+            }
+        }
+        1 => {
+            // A figure in a long robe, holding a star up high.
+            let robe = vec![base + vec2(-3.6 * u, 0.0), base + vec2(-1.4 * u, -10.0 * u), base + vec2(1.4 * u, -10.0 * u), base + vec2(3.6 * u, 0.0)];
+            out.push(Shape::convex_polygon(robe, stone, Stroke::NONE));
+            let head = base - vec2(0.0, 12.2 * u);
+            out.push(Shape::circle_filled(head, 2.3 * u, stone));
+            let hand = base + vec2(4.5 * u, -16.0 * u);
+            out.push(Shape::line_segment([base + vec2(1.0 * u, -9.0 * u), hand], Stroke::new(1.3 * u, stone)));
+            out.push(Shape::circle_filled(hand - vec2(0.0, 1.5 * u), 2.0 * u, STAR));
+        }
+        _ => {
+            // A cat sitting, its tail curled round its feet.
+            out.push(oval(base - vec2(0.0, 4.0 * u), 3.4 * u, 4.2 * u));
+            let head = base - vec2(-0.6 * u, 9.5 * u);
+            out.push(Shape::circle_filled(head, 2.6 * u, stone));
+            ears(head, 2.6 * u, &mut out);
+            let tail = [base + vec2(2.6 * u, -u), base + vec2(5.2 * u, -2.0 * u), base + vec2(5.6 * u, -5.5 * u)];
+            out.push(Shape::line_segment([tail[0], tail[1]], Stroke::new(1.3 * u, stone)));
+            out.push(Shape::line_segment([tail[1], tail[2]], Stroke::new(1.3 * u, stone)));
+        }
+    }
+    out
 }
 
 /// The houses of a city of `built` floors (the last perhaps in part) on the desk `area`, beside
@@ -689,13 +847,29 @@ fn glow(color: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(r, g, b, (alpha.clamp(0.0, 1.0) * 255.0) as u8)
 }
 
-/// A window at `r` of `color`, a soft glow about it when it is lit.
-fn window(r: Rect, color: Color32, u: f32) -> Vec<Shape> {
+/// A window at `r` of `color`, round at the top if `arched`, a soft glow about it when it is lit.
+fn window(r: Rect, color: Color32, arched: bool, u: f32) -> Vec<Shape> {
     let mut out = Vec::new();
+    let top = if arched { (r.width() / 2.0) as u8 } else { u as u8 };
+    let round = egui::CornerRadius { nw: top, ne: top, sw: u as u8, se: u as u8 };
     if color != DARK {
-        out.push(Shape::rect_filled(r.expand(2.0 * u), 2.0 * u, glow(color, 0.18)));
+        out.push(Shape::rect_filled(r.expand(2.0 * u), round + (2.0 * u) as u8, glow(color, 0.18)));
     }
-    out.push(Shape::rect_filled(r, 1.0 * u, color));
+    out.push(Shape::rect_filled(r, round, color));
+    out
+}
+
+/// A little balcony under the window at `r`: a floor and a railing of `color`.
+fn balcony(r: Rect, color: Color32, u: f32) -> Vec<Shape> {
+    let (l, rt, y) = (r.left() - 3.0 * u, r.right() + 3.0 * u, r.bottom() + 1.5 * u);
+    let mut out = vec![Shape::rect_filled(Rect::from_min_max(pos2(l, y), pos2(rt, y + 1.8 * u)), 0.5 * u, color)];
+    let rail = y - 4.0 * u;
+    out.push(Shape::line_segment([pos2(l, rail), pos2(rt, rail)], Stroke::new(1.0 * u, color)));
+    let n = ((rt - l) / (2.6 * u)) as usize;
+    for k in 0..=n {
+        let x = l + (rt - l) * k as f32 / n.max(1) as f32;
+        out.push(Shape::line_segment([pos2(x, rail), pos2(x, y)], Stroke::new(0.7 * u, color)));
+    }
     out
 }
 
@@ -1052,16 +1226,49 @@ mod tests {
     }
 
     #[test]
-    fn some_windows_are_lit_and_flicker_the_same_ones_for_the_same_story() {
-        let h = House::of("a", 0, 900.0, 1.0);
-        let windows: Vec<(usize, usize)> = (0..8).flat_map(|f| (0..3).map(move |w| (f, w))).collect();
-        let lit: Vec<(usize, usize)> = windows.iter().copied().filter(|&(f, w)| h.light_in("a", f, w, 0.0) != DARK).collect();
-        assert!(!lit.is_empty() && lit.len() < windows.len(), "some lit, some dark: {lit:?}");
-        for (f, w) in lit {
-            let seen: Vec<Color32> = (0..20).map(|t| h.light_in("a", f, w, t as f64 * 0.1)).collect();
-            assert!(seen.iter().all(|c| c.r() > 200 && *c != DARK), "lit all the while: {seen:?}");
-            assert!(seen.windows(2).filter(|p| p[0] != p[1]).count() > 10, "it flickers: {seen:?}");
-            assert_eq!(h.light_in("a", f, w, 0.5), House::of("a", 0, 900.0, 1.0).light_in("a", f, w, 0.5));
+    fn some_windows_are_lit_a_few_flickering_slightly_the_same_ones_for_the_same_story() {
+        let (mut steady, mut flickering) = (0, 0);
+        for i in 0..6 {
+            let h = House::of("a", i, 900.0, 1.0);
+            let windows: Vec<(usize, usize)> = (0..8).flat_map(|f| (0..3).map(move |w| (f, w))).collect();
+            let lit: Vec<(usize, usize)> = windows.iter().copied().filter(|&(f, w)| h.light_in("a", f, w, 0.0) != DARK).collect();
+            assert!(!lit.is_empty() && lit.len() < windows.len(), "some lit, some dark: {lit:?}");
+            for (f, w) in lit {
+                let seen: Vec<Color32> = (0..20).map(|t| h.light_in("a", f, w, t as f64 * 0.1)).collect();
+                assert!(seen.iter().all(|c| c.r() > 200 && *c != DARK), "lit all the while: {seen:?}");
+                let greens: Vec<u8> = seen.iter().map(|c| c.g()).collect();
+                let swing = greens.iter().max().unwrap() - greens.iter().min().unwrap();
+                assert!(swing < 20, "only slightly: {greens:?}");
+                if swing == 0 { steady += 1 } else { flickering += 1 }
+                assert_eq!(h.light_in("a", f, w, 0.5), House::of("a", i, 900.0, 1.0).light_in("a", f, w, 0.5));
+            }
+        }
+        assert!(flickering > 0 && steady > flickering, "most burn steadily, a few flicker: {steady} {flickering}");
+    }
+
+    #[test]
+    fn some_houses_have_a_little_tower_or_a_statue_and_none_reaches_the_next_house() {
+        let houses: Vec<House> = (0..40).map(|i| House::of("a", i, 900.0, 1.0)).collect();
+        assert!(houses.iter().any(|h| h.tower.is_some()) && houses.iter().any(|h| h.tower.is_none()), "towers on some");
+        assert!(houses.iter().any(|h| h.statue.is_some()) && houses.iter().any(|h| h.statue.is_none()), "statues on some");
+        assert!(houses.iter().any(|h| h.arched) && (1..20).any(|f| houses[0].balcony("a", f).is_some()), "arches and balconies");
+        for (i, mut h) in houses.into_iter().enumerate() {
+            assert_eq!(h.tower, House::of("a", i, 900.0, 1.0).tower, "the same for the same story");
+            (h.left, h.floors) = (100.0, 3);
+            let drawn = h.draw("a", None, 1.0).0.iter().fold(Rect::NOTHING, |r, s| r | s.visual_bounding_rect());
+            // Houses stand 8 apart: each may reach a little less than half the way.
+            assert!(drawn.left() > h.left - 4.0 && drawn.right() < h.left + h.width + 4.0, "{i}: within its eaves: {drawn:?}");
+            let shapes = |h: &House| h.draw("a", None, 1.0).0;
+            let top = |s: &[Shape]| s.iter().map(|s| s.visual_bounding_rect().top()).fold(f32::MAX, f32::min);
+            if h.statue.is_some() {
+                let (with, plain) = (House { tower: None, ..h.clone() }, House { tower: None, statue: None, ..h.clone() });
+                assert!(top(&shapes(&with)) < top(&shapes(&plain)) - 6.0, "{i}: the statue stands up at the top of the roof");
+            }
+            if h.tower.is_some() {
+                // The tower is drawn last, in front of the roof.
+                let (all, plain) = (shapes(&h), shapes(&House { tower: None, ..h.clone() }));
+                assert!(top(&all[plain.len()..]) < h.floor(2).top() - h.storey, "{i}: the tower rises above the roof's eaves");
+            }
         }
     }
 
@@ -1076,3 +1283,4 @@ mod tests {
         assert!(height_of(1) < height_of(4) && height_of(40) < 1.0, "taller with more pages, never past its tallest");
     }
 }
+
