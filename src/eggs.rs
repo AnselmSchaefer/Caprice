@@ -455,6 +455,44 @@ pub fn offset(by: Carrier, p: Pose, place: Rect, page: Rect, desk: Rect) -> Vec2
     rig(by, p, place, page, desk).offset
 }
 
+/// A filled convex shape that egui draws cleanly. egui pushes a shape's soft edge out along each
+/// corner, the further the sharper the corner, without end: a corner folded nearly flat (a tooth
+/// seen edge on) drew a spike right across the window. So points on top of each other are merged,
+/// sharp corners cut by a hair, and a sliver too thin to see is left out.
+fn solid(points: Vec<Pos2>, color: Color32) -> Shape {
+    let mut ps: Vec<Pos2> = Vec::new();
+    for p in points {
+        if ps.last().is_none_or(|q| q.distance(p) > 0.05) {
+            ps.push(p);
+        }
+    }
+    while ps.len() > 1 && ps[0].distance(ps[ps.len() - 1]) <= 0.05 {
+        ps.pop();
+    }
+    let n = ps.len();
+    if n < 3 {
+        return Shape::Noop;
+    }
+    let area = (0..n).map(|i| ps[i].to_vec2().rot90().dot(ps[(i + 1) % n].to_vec2())).sum::<f32>().abs() / 2.0;
+    let longest = (0..n).map(|i| ps[i].distance(ps[(i + 1) % n])).fold(0.0, f32::max);
+    if area / longest < 0.3 {
+        return Shape::Noop;
+    }
+    let mut out = Vec::with_capacity(2 * n);
+    for i in 0..n {
+        let (before, p, after) = (ps[(i + n - 1) % n], ps[i], ps[(i + 1) % n]);
+        let (a, b) = ((before - p).normalized(), (after - p).normalized());
+        // Sharper than about 25 degrees: two corners of more than a right angle instead.
+        if a.dot(b) > 0.9 {
+            let cut = 0.4f32.min(p.distance(before) * 0.3).min(p.distance(after) * 0.3);
+            out.extend([p + a * cut, p + b * cut]);
+        } else {
+            out.push(p);
+        }
+    }
+    Shape::convex_polygon(out, color, Stroke::NONE)
+}
+
 /// An oval around `c`, `a` long along `along` and `b` across it: convex.
 fn oval(c: Pos2, along: Vec2, a: f32, b: f32, color: Color32) -> Shape {
     let across = vec2(-along.y, along.x);
@@ -462,7 +500,7 @@ fn oval(c: Pos2, along: Vec2, a: f32, b: f32, color: Color32) -> Shape {
         let r = k as f32 / 20.0 * 2.0 * PI;
         c + along * a * r.cos() + across * b * r.sin()
     });
-    Shape::convex_polygon(points.collect(), color, Stroke::NONE)
+    solid(points.collect(), color)
 }
 
 /// A tongue of fire from `at` along `dir`, `len` long: a lens, which is convex.
@@ -472,7 +510,7 @@ fn flame(at: Pos2, dir: Vec2, len: f32, width: f32, color: Color32) -> Shape {
         let (s, w) = if k <= 8 { (k as f32 / 8.0, 1.0) } else { (2.0 - k as f32 / 8.0, -1.0) };
         at + dir * len * s + side * w * (s * PI).sin()
     });
-    Shape::convex_polygon(points.collect(), color, Stroke::NONE)
+    solid(points.collect(), color)
 }
 
 /// The smallest convex shape around `points`, so that anything can be filled (R11).
@@ -491,7 +529,7 @@ fn hull(mut points: Vec<Pos2>, color: Color32) -> Shape {
         if pass == 0 { points.iter().for_each(|&q| walk(q)) } else { points.iter().rev().for_each(|&q| walk(q)) }
         out.pop();
     }
-    Shape::convex_polygon(out, color, Stroke::NONE)
+    solid(out, color)
 }
 
 /// A body tapering along `spine`, `widths` thick at its points: a convex piece for each stretch
@@ -501,7 +539,7 @@ fn ribbon(spine: &[Pos2], widths: &[f32], color: Color32) -> Vec<Shape> {
     for (k, w) in spine.windows(2).enumerate() {
         let n = (w[1] - w[0]).normalized().rot90();
         let (a, b) = (widths[k] / 2.0, widths[k + 1] / 2.0);
-        out.push(Shape::convex_polygon(vec![w[0] + n * a, w[1] + n * b, w[1] - n * b, w[0] - n * a], color, Stroke::NONE));
+        out.push(solid(vec![w[0] + n * a, w[1] + n * b, w[1] - n * b, w[0] - n * a], color));
     }
     out.extend(spine.iter().zip(widths).map(|(&p, &w)| Shape::circle_filled(p, w / 2.0, color)));
     out
@@ -744,25 +782,29 @@ fn wing(out: &mut Vec<Shape>, shoulder: Pos2, root: Pos2, f: f32, k: f32, lift: 
         .map(|(i, len)| wrist + dir(angle - (0.15 + i as f32 * 0.42) * spread) * *len * k * spread.sqrt())
         .collect();
     let scallop = |a: Pos2, b: Pos2| a + (b - a) * 0.5 + (wrist - (a + (b - a) * 0.5)) * 0.16;
-    out.push(Shape::convex_polygon(vec![shoulder, elbow, wrist], skin[0], Stroke::NONE));
+    out.push(solid(vec![shoulder, elbow, wrist], skin[0]));
     let mut edge = tips.clone();
     edge.push(root);
     for (i, w) in edge.windows(2).enumerate() {
         let m = scallop(w[0], w[1]);
         let color = skin[i % 2];
-        out.push(Shape::convex_polygon(vec![wrist, w[0], m], color, Stroke::NONE));
-        out.push(Shape::convex_polygon(vec![wrist, m, w[1]], color, Stroke::NONE));
+        out.push(solid(vec![wrist, w[0], m], color));
+        out.push(solid(vec![wrist, m, w[1]], color));
     }
-    out.push(Shape::convex_polygon(vec![wrist, root, shoulder], skin[0], Stroke::NONE));
+    out.push(solid(vec![wrist, root, shoulder], skin[0]));
     // The bones: the arm thick, the fingers thinning, and a claw at the wrist.
-    out.push(Shape::line(vec![shoulder, elbow, wrist], Stroke::new(0.09 * k, BONE)));
+    // In pieces, not one line: a line's sharp turn is drawn as a spike, like a sharp corner.
+    for bone in [[shoulder, elbow], [elbow, wrist]] {
+        out.push(Shape::line_segment(bone, Stroke::new(0.09 * k, BONE)));
+    }
+    out.push(Shape::circle_filled(elbow, 0.045 * k, BONE));
     for &tip in &tips {
         let mid = wrist + (tip - wrist) * 0.5;
         out.push(Shape::line_segment([wrist, mid], Stroke::new(0.05 * k, BONE)));
         out.push(Shape::line_segment([mid, tip], Stroke::new(0.03 * k, BONE)));
     }
     let up = dir(angle + 0.9);
-    out.push(Shape::convex_polygon(vec![wrist - up.rot90() * 0.04 * k, wrist + up * 0.16 * k, wrist + up.rot90() * 0.04 * k], CLAW, Stroke::NONE));
+    out.push(solid(vec![wrist - up.rot90() * 0.04 * k, wrist + up * 0.16 * k, wrist + up.rot90() * 0.04 * k], CLAW));
 }
 
 /// The dragon at `p`, the title's place at `place`: its wings beating, its tail swaying, the title
@@ -824,7 +866,10 @@ pub fn dragon(by: Carrier, p: Pose, place: Rect, page: Rect, desk: Rect) -> Vec<
 
     out.extend(ribbon(&spine, &widths, SCALES));
     // Its back catches the light, the scales show along its flank, plates cross its belly.
-    out.push(Shape::line(spine[..tail + 4].iter().zip(&top).zip(&widths).map(|((&q, &n), &w)| q + n * w * 0.3).collect(), Stroke::new(0.06 * s, SCALES_LIGHT)));
+    let light: Vec<Pos2> = spine[..tail + 4].iter().zip(&top).zip(&widths).map(|((&q, &n), &w)| q + n * w * 0.3).collect();
+    for w in light.windows(2) {
+        out.push(Shape::line_segment([w[0], w[1]], Stroke::new(0.06 * s, SCALES_LIGHT)));
+    }
     for k in neck..tail + 6 {
         for row in [-0.05, 0.12] {
             let at = spine[k] + top[k] * widths[k] * row + (spine[k + 1] - spine[k]) * 0.5 * (row * 4.0);
@@ -844,11 +889,11 @@ pub fn dragon(by: Carrier, p: Pose, place: Rect, page: Rect, desk: Rect) -> Vec<
         let along = (spine[k + 1] - spine[k]).normalized();
         let base = spine[k] + n * w * 0.42;
         let h = 0.1 * s + 0.22 * w;
-        out.push(Shape::convex_polygon(vec![base - along * 0.25 * h, base + n * h + along * 0.35 * h, base + along * 0.45 * h], SCALES_DARK, Stroke::NONE));
+        out.push(solid(vec![base - along * 0.25 * h, base + n * h + along * 0.35 * h, base + along * 0.45 * h], SCALES_DARK));
     }
     let (end, before) = (spine[spine.len() - 1], spine[spine.len() - 2]);
     let (on, across) = ((end - before).normalized(), (end - before).normalized().rot90());
-    out.push(Shape::convex_polygon(vec![end + on * 0.45 * s, end + across * 0.2 * s, end - on * 0.08 * s, end - across * 0.2 * s], SCALES_DARK, Stroke::NONE));
+    out.push(solid(vec![end + on * 0.45 * s, end + across * 0.2 * s, end - on * 0.08 * s, end - across * 0.2 * s], SCALES_DARK));
 
     // The near legs, down to the title's top, three claws of each foot curled over it.
     leg(&mut out, front_hip, d.feet[0], false, SCALES);
@@ -1701,6 +1746,35 @@ mod tests {
                     };
                     let seen = shapes.iter().fold(Rect::NOTHING, |r, s| r | s.visual_bounding_rect());
                     assert!(!seen.intersects(desk()), "{by:?} at {t}: {seen:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_of_the_dragon_or_the_balloon_streaks_across_the_screen_as_it_flies() {
+        // Drawn as egui draws it, every triangle stays near the dragon, however its wings, head and
+        // fire are turned: a sharp turn in a line, or a shape folded on itself, once drew long
+        // spikes across the window.
+        let page = Rect::from_min_size(pos2(400.0, 50.0), vec2(600.0, 800.0));
+        let place = Rect::from_min_size(pos2(600.0, 300.0), vec2(200.0, 30.0));
+        let mut paint = egui::epaint::Tessellator::new(1.0, Default::default(), [1, 1], vec![]);
+        for by in [true, false].into_iter().flat_map(|right| [Carrier::Dragon { right }, Carrier::Balloon { right }]) {
+            for k in 0..800 {
+                let t = k as f32 * 0.01;
+                let p = pose_of(by, t, None);
+                let r = rig(by, p, place, page, desk());
+                let near = Rect::from_center_size(r.hook, Vec2::splat(12.0 * r.size)).union(place.translate(r.offset));
+                let shapes = match by {
+                    Carrier::Dragon { .. } => dragon(by, p, place, page, desk()),
+                    Carrier::Balloon { .. } => balloon(by, p, place, page, desk()),
+                };
+                for shape in shapes {
+                    let mut mesh = egui::epaint::Mesh::default();
+                    paint.tessellate_shape(shape.clone(), &mut mesh);
+                    for v in &mesh.vertices {
+                        assert!(v.pos.is_finite() && near.contains(v.pos), "{by:?} at {t}: {:?} far from {near:?} in {shape:?}", v.pos);
+                    }
                 }
             }
         }

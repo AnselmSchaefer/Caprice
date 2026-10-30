@@ -1081,7 +1081,14 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   is gone: `rig` takes the desk (`Eggs::desk`, set each frame from the window's area) and goes
   past its edge by the carrier's reach (the dragon's tail, head and fire; the title it carries
   in). Once only page widths, a wide window saw the dragon vanish in mid air. Anything new
-  drawn with a carrier must stay within its reach. The dragon goes it slower
+  drawn with a carrier must stay within its reach.
+- **Shapes that turn must not fold flat.** egui pushes a filled shape's soft edge out along each
+  corner, the further the sharper, without limit, and joins a line's turns the same way: a tooth
+  seen edge on, a hull of points nearly in a line, or a line doubling back drew spikes right
+  across the window, flickering as the dragon flew. So every filled shape of the dragon goes
+  through `solid` (points on top of each other merged, sharp corners cut by a hair, slivers left
+  out), and its lines are drawn as separate segments, never one `Shape::line` with turns. Anything
+  drawn from moving, turning geometry needs the same. The dragon goes it slower
   (`Carrier::pace`, through `pose_of`): `Pose::t` stays the seconds as they are, so its wings,
   fire and tail keep their own time; anything that times a lift (`update_lift`, `lifting`, the
   tests' frames) goes through `pose_of` or the pace. The dragon holds the title
@@ -1119,6 +1126,7 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   `the_dragon_beats_its_wings_and_breathes_fire_from_its_mouth`,
   `the_dragon_looks_at_the_city_then_at_the_writer_then_at_the_page`,
   `what_brings_a_title_comes_from_beyond_the_desk_and_leaves_until_none_of_it_shows`,
+  `nothing_of_the_dragon_or_the_balloon_streaks_across_the_screen_as_it_flies`,
   `the_dragon_takes_its_time_and_flies_by_its_wings_carrying_the_title_up_and_down_with_them`,
   `the_title_is_set_down_at_once_when_the_writer_goes_on`,
   `a_plant_is_the_same_for_the_same_story_and_grows_only_at_its_top`,
