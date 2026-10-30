@@ -1076,7 +1076,12 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   on its page, so either hangs only as high as there is room for below the top of the page, and is
   smaller there (`TALL`, `DRAGON_TALL`: their heights above the title, wings up). Both follow one
   course in time (`pose`: come, carry over the place, lower, settle, let go, leave), each along its
-  own way (`rig`, the same path for both, differing in size and rope). The dragon goes it slower
+  own way (`rig`, the same path for both, differing in size and rope). It comes in from beyond
+  the desk's edge and leaves past the other, far enough that none of it shows when it appears or
+  is gone: `rig` takes the desk (`Eggs::desk`, set each frame from the window's area) and goes
+  past its edge by the carrier's reach (the dragon's tail, head and fire; the title it carries
+  in). Once only page widths, a wide window saw the dragon vanish in mid air. Anything new
+  drawn with a carrier must stay within its reach. The dragon goes it slower
   (`Carrier::pace`, through `pose_of`): `Pose::t` stays the seconds as they are, so its wings,
   fire and tail keep their own time; anything that times a lift (`update_lift`, `lifting`, the
   tests' frames) goes through `pose_of` or the pace. The dragon holds the title
@@ -1088,9 +1093,13 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   profile the far eye and horn go behind it, and turning from the city to the page it turns
   through facing the writer. Its body is one tapering spine from the head to the tail (`ribbon`),
   with belly plates, spikes and a spade; its wings have an arm and four fingers, spread fuller on
-  the down beat, beating twice and then gliding (`wingbeat`). Its body lifts on each down beat and
-  a slow wave runs down it from the neck to the tail (`wave`, `GLIDE`), the head riding it a
-  little behind; the feet stay on the title, the legs giving. Its jaw opens with its breath of fire. Looking back over itself, its fire is only
+  the down beat, beating twice and then gliding (`wingbeat`). It flies by its wings, not the
+  balloon's smooth way: each down beat pushes it along its course and it slows as they come up
+  (`surge`, in `pose_of`), and it rises on each down beat and sinks as they come up, the title
+  in its feet with it (`heave`, in `rig`), less and less as it lowers the title, so the title
+  still lands exactly in its place. `surge`, `heave` and `wingbeat` must keep the same beat. A
+  slow wave runs down it from the neck to the tail (`wave`, `GLIDE`), the head riding it a
+  little behind. Its jaw opens with its breath of fire. Looking back over itself, its fire is only
   a puff, so it does not cross its own back. The beat, the fire, the smoke and the tail come from
   `Pose::t`, so a test can look at any moment. Typing, clicking or scrolling sets the title down at once
   and the carrier hurries away (`update_lift`); a page turned ends it. A new carrier is a `Carrier`
@@ -1109,7 +1118,8 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   `the_balloon_and_the_dragon_bring_the_title_in_from_the_side_and_go_away_past_the_other`,
   `the_dragon_beats_its_wings_and_breathes_fire_from_its_mouth`,
   `the_dragon_looks_at_the_city_then_at_the_writer_then_at_the_page`,
-  `the_dragon_takes_its_time_and_its_body_moves_in_a_slow_wave_while_the_title_stays_still`,
+  `what_brings_a_title_comes_from_beyond_the_desk_and_leaves_until_none_of_it_shows`,
+  `the_dragon_takes_its_time_and_flies_by_its_wings_carrying_the_title_up_and_down_with_them`,
   `the_title_is_set_down_at_once_when_the_writer_goes_on`,
   `a_plant_is_the_same_for_the_same_story_and_grows_only_at_its_top`,
   `a_new_floor_is_a_light_that_flows_out_of_a_window_and_spreads_into_the_floor`,
@@ -1128,6 +1138,7 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   `the_garden_grows_only_in_its_theme_the_houses_only_in_the_city_and_nothing_brings_a_title_elsewhere`,
   `now_and_then_in_the_magic_city_a_dragon_flies_in_a_new_chapter_title_from_either_side`,
   `the_dragon_holds_the_title_in_its_claws_breathing_fire`,
+  `the_dragon_flies_right_out_of_the_window_before_it_is_gone`,
   `in_the_magic_city_the_dragon_brings_every_new_chapter_title`,
   `now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title_from_either_side`,
   `the_title_hangs_from_the_balloon_by_ropes_tied_to_its_ends`,
@@ -1329,5 +1340,7 @@ when the writer goes on; nothing moved in the layout, nothing in print or the fi
   city's dragon is its show, so each carrier has its own odds (`Carrier::odds`). Then: it flew
   too fast, and its body should move elegantly. It got its own pace rather than slowing the
   balloon too, and its wings, fire and tail kept real time, so it does not move in slow motion.
+  Then: its flight was too like the balloon's; it should go with its wings. So its course is
+  pushed on by each down beat, and it rises and sinks with the beats, carrying the title.
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

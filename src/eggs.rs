@@ -109,9 +109,9 @@ pub const FIRE: [Color32; 4] = [
     Color32::from_rgb(252, 182, 58),
     Color32::from_rgb(255, 238, 160),
 ];
-/// How tall the dragon is from the title it holds to the tips of its wings, in its sizes; and
+/// How tall the dragon is from the title it holds to the tips of its wings, risen on a beat, in its sizes; and
 /// the seconds one beat of its wings takes, and one breath of fire.
-const DRAGON_TALL: f32 = 3.6;
+const DRAGON_TALL: f32 = 3.8;
 pub const FLAP: f32 = 0.8;
 const BREATH: f32 = 0.9;
 /// Seconds a slow wave takes to run down the dragon from its neck to its tail.
@@ -153,12 +153,18 @@ pub const FLOW: f32 = 0.45;
 /// Seconds the dragon or the balloon takes to come in from the side, carry the title over its
 /// place, lower it, settle it, let go and go away; and to go away when the writer goes on
 /// meanwhile.
-const ENTER: f32 = 0.5;
+const ENTER: f32 = 0.8;
 const RUN: f32 = 0.7;
 const LOWER: f32 = 0.9;
 const SETTLE: f32 = 0.25;
 const UNHOOK: f32 = 0.25;
-const LEAVE: f32 = 0.5;
+const LEAVE: f32 = 0.9;
+/// Seconds at the balloon's pace until it is over the title's place, and until it is gone; for
+/// tests, to wait as long.
+#[cfg(test)]
+pub const OVER: f32 = ENTER + RUN;
+#[cfg(test)]
+pub const COURSE: f32 = ENTER + RUN + LOWER + SETTLE + UNHOOK + LEAVE;
 const HURRY: f32 = 0.4;
 
 /// What is hidden, and how it is doing.
@@ -172,8 +178,10 @@ pub struct Eggs {
     measured: Option<(String, u64, usize)>,
     /// The dragon or the balloon at work, if one is.
     pub lift: Option<Lift>,
-    /// Where the title being lifted lies on the screen, from the last page drawn.
+    /// Where the title being lifted lies on the screen, from the last page drawn; and the desk
+    /// the pages lie on, which what brings it comes in from beyond and leaves past.
     pub place: Option<Rect>,
+    pub desk: Rect,
     /// The chance that making a chapter title calls the dragon or the balloon, if not theirs
     /// (`Carrier::odds`); tests set it to 0 or 1.
     pub odds: Option<f64>,
@@ -207,7 +215,7 @@ pub struct Lift {
 impl Default for Eggs {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64);
-        Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, measured: None, lift: None, place: None, odds: None, from_right: false, rng: seed | 1, plants: Vec::new(),
+        Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, measured: None, lift: None, place: None, desk: Rect::NOTHING, odds: None, from_right: false, rng: seed | 1, plants: Vec::new(),
             built_for: None, built: 0.0, built_at: 0.0, houses: Vec::new(), light: None }
     }
 }
@@ -332,10 +340,15 @@ pub struct Pose {
 }
 
 /// Where carrier `by` is at `t` seconds: along the course at its own pace, its wings, fire and
-/// tail at the seconds as they are.
+/// tail at the seconds as they are. The dragon goes on by its wings: each down beat pushes it
+/// along, it slows while they come up, and glides on evenly.
 pub fn pose_of(by: Carrier, t: f32, duck: Option<f32>) -> Pose {
     let k = by.pace();
-    Pose { t, ..pose(t / k, duck.map(|d| d / k)) }
+    let along = |t: f32| match by {
+        Carrier::Dragon { .. } => (t + 0.8 * surge(t)) / k,
+        Carrier::Balloon { .. } => t / k,
+    };
+    Pose { t, ..pose(along(t), duck.map(along)) }
 }
 
 pub fn pose(t: f32, duck: Option<f32>) -> Pose {
@@ -392,34 +405,54 @@ struct Rig {
     offset: Vec2,
 }
 
-fn rig(by: Carrier, p: Pose, place: Rect, page: Rect) -> Rig {
+fn rig(by: Carrier, p: Pose, place: Rect, page: Rect, desk: Rect) -> Rig {
     // In from the side at the title's height, a little above it; let go, it goes on and away past
     // the other side. A title is often high on its page, so the carrier hangs only as high as
     // there is room for below the top of the page, and is smaller there.
-    let (right, tall, rope, sizes) = match by {
-        Carrier::Balloon { right } => (right, TALL, page.height() * 0.02, (0.035, 0.06)),
-        Carrier::Dragon { right } => (right, DRAGON_TALL, 0.0, (0.05, 0.1)),
+    // It comes in from beyond the desk's edge and leaves past the other, far enough that none of
+    // it shows there: its reach, in its sizes, from where it holds the title to its furthest
+    // part (the balloon's silk; the dragon's tail behind, its head and fire ahead), and coming,
+    // the title it carries.
+    let (right, tall, rope, sizes, reach) = match by {
+        Carrier::Balloon { right } => (right, TALL, page.height() * 0.02, (0.035, 0.06), 1.5),
+        Carrier::Dragon { right } => (right, DRAGON_TALL, 0.0, (0.045, 0.1), 5.0),
     };
     let side = if right { 1.0 } else { -1.0 };
     let away = 1.0 - p.enter;
     let room = place.top() - (page.top() - page.height() * 0.03) - rope;
     let size = (room / tall).clamp(page.width() * sizes.0, page.width() * sizes.1);
     let hang = (room - size * tall).clamp(0.0, page.height() * 0.08);
+    // The balloon bobs as it floats over; the dragon rises and sinks with its wings, the title
+    // with it, less and less as it lowers the title into place.
+    let heave = match by {
+        Carrier::Balloon { .. } => 0.0,
+        Carrier::Dragon { .. } => heave(p.t) * size,
+    };
+    // How far beyond the title's middle the desk's edge is on the side it comes from, and on the
+    // side it leaves by; the page's edges when there is no desk (in tests).
+    let desk = if desk.is_positive() { desk } else { page };
+    let edge = |side: f32| if side > 0.0 { desk.right() - place.center().x } else { place.center().x - desk.left() };
+    let come = (edge(side) + reach * size + place.width() / 2.0 - page.width() * 0.35).max(page.width() * 0.6);
+    let go = (edge(-side) + reach * size).max(page.width() * 0.7);
     let (hook, offset) = if p.hooked {
-        let x = place.center().x + side * ((1.0 - p.run) * page.width() * 0.35 + away * page.width() * 0.6);
-        let bob = (p.run * PI).sin() * page.height() * 0.015;
+        let x = place.center().x + side * ((1.0 - p.run) * page.width() * 0.35 + away * come);
+        let bob = match by {
+            Carrier::Balloon { .. } => (p.run * PI).sin() * page.height() * 0.015,
+            Carrier::Dragon { .. } => heave * (1.0 - p.lower),
+        };
         let load = pos2(x, place.center().y - hang * (1.0 - p.lower) - bob);
         (load - vec2(0.0, place.height() / 2.0 + rope), load - place.center())
     } else {
         let up = rope + page.height() * 0.04 * p.hook;
-        (place.center_top() - vec2(0.0, up) + vec2(-side * 0.7 * page.width(), -0.1 * page.height()) * away, Vec2::ZERO)
+        let up = up + heave * p.hook;
+        (place.center_top() - vec2(0.0, up) + vec2(-side * go, -0.1 * page.height()) * away, Vec2::ZERO)
     };
     Rig { hook, size, offset }
 }
 
 /// How far the title is from its place at `p`, brought `by` that.
-pub fn offset(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec2 {
-    rig(by, p, place, page).offset
+pub fn offset(by: Carrier, p: Pose, place: Rect, page: Rect, desk: Rect) -> Vec2 {
+    rig(by, p, place, page, desk).offset
 }
 
 /// An oval around `c`, `a` long along `along` and `b` across it: convex.
@@ -566,6 +599,22 @@ fn gaze(look: f32, ahead: f32) -> Turn {
     Turn::new(ya + (yb - ya) * s, pa + (pb - pa) * s)
 }
 
+/// How far ahead of an even pace the dragon's wings have pushed it at `t`, in seconds: the
+/// push is strongest in the middle of each down beat, and nothing while it glides. Over a beat
+/// it comes to nothing, so it keeps its pace; less than a second's worth, so it never goes back.
+fn surge(t: f32) -> f32 {
+    let beat = (t / FLAP).rem_euclid(3.0);
+    if beat < 2.0 { -FLAP / (2.0 * PI) * (2.0 * PI * beat).sin() } else { 0.0 }
+}
+
+/// How high the dragon's wings have lifted it at `t`, in its sizes: lowest with its wings up,
+/// highest with them down, half way while it glides.
+fn heave(t: f32) -> f32 {
+    let beat = (t / FLAP).rem_euclid(3.0);
+    let up = if beat < 2.0 { 0.5 - 0.5 * (2.0 * PI * beat).sin() } else { 0.5 };
+    0.2 * up
+}
+
 /// Its wings at `t`, from -0.5 down to 1 up, and how far spread: two beats, spread fuller on the
 /// down beat, then a glide on wings spread wide; and again.
 fn wingbeat(t: f32) -> (f32, f32) {
@@ -593,14 +642,12 @@ fn wave(u: f32, t: f32) -> f32 {
 /// The head's size, in the dragon's.
 const HEAD: f32 = 0.36;
 
-pub fn dragon_at(by: Carrier, p: Pose, place: Rect, page: Rect) -> Dragon {
-    let r = rig(by, p, place, page);
+pub fn dragon_at(by: Carrier, p: Pose, place: Rect, page: Rect, desk: Rect) -> Dragon {
+    let r = rig(by, p, place, page, desk);
     let s = r.size;
     // It flies away from the side it came from.
     let ahead = if matches!(by, Carrier::Dragon { right: true }) { -1.0 } else { 1.0 };
-    // The body lifts on each down beat; the legs give, so the title stays where it is carried.
-    let (lift, _) = wingbeat(p.t);
-    let body = r.hook - vec2(0.0, 0.85 * s) + vec2(0.0, 0.1 * (lift - 0.25)) * s;
+    let body = r.hook - vec2(0.0, 0.85 * s);
     let turn = gaze(p.look, ahead);
     let (aim, _) = turn.aim();
     // The head rides the slow wave, a little behind the neck.
@@ -721,8 +768,8 @@ fn wing(out: &mut Vec<Shape>, shoulder: Pos2, root: Pos2, f: f32, k: f32, lift: 
 /// The dragon at `p`, the title's place at `place`: its wings beating, its tail swaying, the title
 /// in its claws while it holds it, its head turned where it looks, fire from its jaws and smoke
 /// from its nostrils.
-pub fn dragon(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
-    let d = dragon_at(by, p, place, page);
+pub fn dragon(by: Carrier, p: Pose, place: Rect, page: Rect, desk: Rect) -> Vec<Shape> {
+    let d = dragon_at(by, p, place, page, desk);
     let (b, s, f, t) = (d.body, d.size, d.ahead, p.t);
     let mut out = Vec::new();
     let (lift, spread) = wingbeat(t);
@@ -845,8 +892,8 @@ pub fn dragon(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
 
 /// The balloon at `p`, the title's place at `place`: its silk in stripes, the basket below, and
 /// while it carries the title, ropes down to it.
-pub fn balloon(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
-    let r = rig(by, p, place, page);
+pub fn balloon(by: Carrier, p: Pose, place: Rect, page: Rect, desk: Rect) -> Vec<Shape> {
+    let r = rig(by, p, place, page, desk);
     let size = r.size;
     let line = (page.width() * 0.003).max(1.0);
     let basket = Rect::from_min_max(r.hook - vec2(size * 0.32, size * 0.42), r.hook + vec2(size * 0.32, 0.0));
@@ -1489,8 +1536,8 @@ impl App {
     pub fn draw_carrier(&self, ui: &egui::Ui, page: Rect, i: usize) {
         let (Some((by, p, _)), Some(place)) = (self.lifting(ui.ctx(), i), self.eggs.place) else { return };
         ui.painter().extend(match by {
-            Carrier::Dragon { .. } => dragon(by, p, place, page),
-            Carrier::Balloon { .. } => balloon(by, p, place, page),
+            Carrier::Dragon { .. } => dragon(by, p, place, page, self.eggs.desk),
+            Carrier::Balloon { .. } => balloon(by, p, place, page, self.eggs.desk),
         });
     }
 }
@@ -1498,6 +1545,11 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The desk the tests' pages lie on: a wide window.
+    fn desk() -> Rect {
+        Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))
+    }
 
     #[test]
     fn the_title_is_brought_in_carried_over_its_place_lowered_and_let_go() {
@@ -1522,31 +1574,31 @@ mod tests {
         for by in [true, false].into_iter().flat_map(|right| [Carrier::Balloon { right }, Carrier::Dragon { right }]) {
             let (Carrier::Balloon { right } | Carrier::Dragon { right }) = by;
             let side = if right { 1.0 } else { -1.0 };
-            let at = |t: f32| offset(by, pose(t, None), place, page);
+            let at = |t: f32| offset(by, pose(t, None), place, page, desk());
             let start = at(0.0);
             assert!(start.x * side > 400.0 && start.y.abs() < 100.0, "{right}: from the side, near the title's height: {start:?}");
             let over = at(ENTER + RUN);
             assert!(over.x.abs() < 0.01 && over.y < -20.0, "{right}: a little above its place: {over:?}");
             assert_eq!(at(ENTER + RUN + LOWER + SETTLE + UNHOOK), Vec2::ZERO, "{right}: let go in its place");
             let p = pose(ENTER + RUN + LOWER + SETTLE + UNHOOK + LEAVE / 2.0, None);
-            let going = rig(by, p, place, page).hook;
+            let going = rig(by, p, place, page, desk()).hook;
             assert!((going.x - place.center().x) * side < -100.0, "{right}: away past the other side: {going:?}");
         }
         // A title high on its page: the carrier hangs lower and is smaller, its top still near the page.
         let high = Rect::from_min_size(pos2(500.0, 120.0), vec2(200.0, 30.0));
         for (by, tall) in [(Carrier::Balloon { right: true }, TALL), (Carrier::Dragon { right: true }, DRAGON_TALL)] {
-            let r = rig(by, pose(ENTER + RUN, None), high, page);
+            let r = rig(by, pose(ENTER + RUN, None), high, page, desk());
             assert!(r.hook.y - r.size * tall >= page.top() - page.height() * 0.05, "{by:?}: {:?} {}", r.hook, r.size);
         }
         let p = pose(ENTER + RUN, None);
-        let top = dragon(Carrier::Dragon { right: true }, p, high, page).iter().fold(Rect::NOTHING, |r, s| r | s.visual_bounding_rect()).top();
+        let top = dragon(Carrier::Dragon { right: true }, p, high, page, desk()).iter().fold(Rect::NOTHING, |r, s| r | s.visual_bounding_rect()).top();
         assert!(top >= page.top() - page.height() * 0.05, "the dragon's wings stay near the page: {top}");
     }
 
     /// The shapes of the dragon at `t` seconds bringing a title at `place`, in `colors`.
     fn dragon_in(t: f32, place: Rect, page: Rect, colors: &[Color32]) -> Vec<Shape> {
         let by = Carrier::Dragon { right: true };
-        dragon(by, pose(t, None), place, page).into_iter().filter(|s| match s {
+        dragon(by, pose(t, None), place, page, desk()).into_iter().filter(|s| match s {
             Shape::Path(path) => colors.contains(&path.fill),
             Shape::Circle(c) => colors.contains(&c.fill),
             _ => false,
@@ -1562,11 +1614,11 @@ mod tests {
         let at = |t: f32| Pose { t, ..pose(over, None) };
         let by = Carrier::Dragon { right: true };
         let tip = |t: f32| {
-            let skin = dragon(by, at(t), place, page).into_iter().filter(|s| matches!(s, Shape::Path(p) if [WING, WING_SHADE].contains(&p.fill)));
+            let skin = dragon(by, at(t), place, page, desk()).into_iter().filter(|s| matches!(s, Shape::Path(p) if [WING, WING_SHADE].contains(&p.fill)));
             skin.map(|s| s.visual_bounding_rect().top()).fold(f32::MAX, f32::min)
         };
         let (up, down) = (tip(FLAP / 4.0), tip(FLAP * 3.0 / 4.0));
-        let d = dragon_at(by, at(0.0), place, page);
+        let d = dragon_at(by, at(0.0), place, page, desk());
         assert!(down - up > d.size, "up and down: {up} {down}");
         // Two beats, then a glide: the wings hardly move for a while, spread.
         let swing = |from: f32, to: f32| {
@@ -1576,7 +1628,7 @@ mod tests {
         assert!(swing(2.35 * FLAP, 2.65 * FLAP) < 0.05 * swing(0.0, FLAP), "a glide after two beats");
         for k in 0..8 {
             let t = k as f32 * 0.37;
-            let d = dragon_at(Carrier::Dragon { right: true }, pose(t, None), place, page);
+            let d = dragon_at(Carrier::Dragon { right: true }, pose(t, None), place, page, desk());
             let fire = dragon_in(t, place, page, &FIRE);
             assert!(fire.len() >= 3, "{t}: fire");
             let near = fire.iter().map(|s| s.visual_bounding_rect().distance_to_pos(d.mouth)).fold(f32::MAX, f32::min);
@@ -1590,34 +1642,68 @@ mod tests {
     }
 
     #[test]
-    fn the_dragon_takes_its_time_and_its_body_moves_in_a_slow_wave_while_the_title_stays_still() {
+    fn the_dragon_takes_its_time_and_flies_by_its_wings_carrying_the_title_up_and_down_with_them() {
         let by = Carrier::Dragon { right: true };
         let balloon = Carrier::Balloon { right: true };
         let over = ENTER + RUN;
         assert!(pose_of(balloon, over, None).run == 1.0 && pose_of(by, over, None).run < 0.6, "slower than the balloon");
         let course = (ENTER + RUN + LOWER + SETTLE + UNHOOK + LEAVE) * by.pace();
-        assert!(course > 5.0 && !pose_of(by, course - 0.1, None).done && pose_of(by, course, None).done, "{course}");
-        // Over its place, through a few seconds of its own time.
+        assert!(course > 5.0 && !pose_of(by, course - 0.3, None).done && pose_of(by, course + 0.3, None).done, "{course}");
+        // It goes on fastest in the middle of a down beat, slowest as its wings come up, and
+        // evenly while it glides.
+        let speed = |beat: f32| (surge((beat + 0.01) * FLAP) - surge((beat - 0.01) * FLAP)) / (0.02 * FLAP);
+        assert!(speed(0.5) > 0.5 && speed(1.0) < -0.5 && speed(2.5) == 0.0, "{} {} {}", speed(0.5), speed(1.0), speed(2.5));
+        assert!(0.8 * speed(1.0) > -1.0, "never back");
+
+        // Over its place, through a few seconds of the wings' own time.
         let page = Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0));
         let place = Rect::from_min_size(pos2(500.0, 400.0), vec2(200.0, 30.0));
-        let at = |t: f32| dragon_at(by, Pose { t, ..pose(over, None) }, place, page);
+        let at = |t: f32| dragon_at(by, Pose { t, ..pose(over, None) }, place, page, desk());
+        let title = |t: f32| offset(by, Pose { t, ..pose(over, None) }, place, page, desk()).y;
+        let s = at(0.0).size;
+        // Its wings up at a quarter beat, down at three quarters: the title rises with the down beat.
+        assert!(title(FLAP * 0.75) < title(FLAP * 0.25) - 0.15 * s, "{} {}", title(FLAP * 0.25), title(FLAP * 0.75));
+        let wings = |t: f32| wingbeat(t).0;
+        assert!(wings(FLAP * 0.25) > wings(FLAP * 0.75));
+        for k in 0..30 {
+            let (t, d) = (k as f32 * 0.1, at(k as f32 * 0.1));
+            assert!((d.feet[0].y - (place.top() + title(t))).abs() < 0.01 && (d.body.y - d.feet[0].y + 0.85 * s).abs() < 0.01, "{t}: held");
+            // Set down, it lies in its place whatever the wings do.
+            let down = Pose { t, ..pose(ENTER + RUN + LOWER, None) };
+            assert!(offset(by, down, place, page, desk()).y.abs() < 0.01, "{t}: in its place");
+        }
+        // The head rides a slow wave, a little behind the neck; the tail swings most.
         let seen: Vec<Dragon> = (0..30).map(|k| at(k as f32 * 0.1)).collect();
-        let span = |f: &dyn Fn(&Dragon) -> f32| {
-            let v: Vec<f32> = seen.iter().map(f).collect();
-            v.iter().fold(f32::MIN, |a, &b| a.max(b)) - v.iter().fold(f32::MAX, |a, &b| a.min(b))
-        };
-        let s = seen[0].size;
-        assert!(span(&|d| d.body.y) > 0.08 * s && span(&|d| d.body.y) < 0.3 * s, "the body rises and falls, gently");
-        assert!(span(&|d| d.head.y) > 0.05 * s, "and the head");
-        assert!(span(&|d| d.feet[0].y) == 0.0 && span(&|d| d.feet[1].x) == 0.0, "the title held still");
-        // The tail swings most.
+        let span = |v: Vec<f32>| v.iter().fold(f32::MIN, |a, &b| a.max(b)) - v.iter().fold(f32::MAX, |a, &b| a.min(b));
+        let rise = span(seen.iter().map(|d| d.body.y).collect());
+        assert!(rise > 0.15 * s && rise < 0.3 * s, "it rises and sinks, gently: {rise}");
+        assert!(span(seen.iter().map(|d| d.head.y - d.body.y).collect()) > 0.05 * s, "the head on its own");
         let tail = |t: f32| {
-            let shapes = dragon(by, Pose { t, ..pose(over, None) }, place, page);
-            shapes.iter().filter_map(|s| match s { Shape::Path(p) if p.fill == SCALES_DARK && p.points.len() == 4 => Some(p.points[0].y), _ => None }).next_back().unwrap()
+            let shapes = dragon(by, Pose { t, ..pose(over, None) }, place, page, desk());
+            let mut spade = shapes.iter().filter_map(|s| match s { Shape::Path(p) if p.fill == SCALES_DARK && p.points.len() == 4 => Some(p.points[0].y), _ => None });
+            spade.next_back().unwrap() - at(t).body.y
         };
-        let tips: Vec<f32> = (0..30).map(|k| tail(k as f32 * 0.1)).collect();
-        let swing = tips.iter().fold(f32::MIN, |a, &b| a.max(b)) - tips.iter().fold(f32::MAX, |a, &b| a.min(b));
-        assert!(swing > 2.0 * span(&|d| d.body.y), "the tail sways: {swing}");
+        let swing = span((0..30).map(|k| tail(k as f32 * 0.1)).collect());
+        assert!(swing > 0.3 * s, "the tail sways: {swing}");
+    }
+
+    #[test]
+    fn what_brings_a_title_comes_from_beyond_the_desk_and_leaves_until_none_of_it_shows() {
+        let page = Rect::from_min_size(pos2(400.0, 50.0), vec2(600.0, 800.0));
+        let place = Rect::from_min_size(pos2(600.0, 300.0), vec2(200.0, 30.0));
+        for right in [true, false] {
+            for by in [Carrier::Balloon { right }, Carrier::Dragon { right }] {
+                for t in [0.0, COURSE - 0.001] {
+                    let p = pose(t, None);
+                    let shapes = match by {
+                        Carrier::Dragon { .. } => dragon(by, p, place, page, desk()),
+                        Carrier::Balloon { .. } => balloon(by, p, place, page, desk()),
+                    };
+                    let seen = shapes.iter().fold(Rect::NOTHING, |r, s| r | s.visual_bounding_rect());
+                    assert!(!seen.intersects(desk()), "{by:?} at {t}: {seen:?}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -1625,7 +1711,7 @@ mod tests {
         let page = Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0));
         let place = Rect::from_min_size(pos2(500.0, 400.0), vec2(200.0, 30.0));
         let by = Carrier::Dragon { right: true };
-        let at = |t: f32| dragon_at(by, pose(t, None), place, page);
+        let at = |t: f32| dragon_at(by, pose(t, None), place, page, desk());
         let eyes = |t: f32| dragon_in(t, place, page, &[EYE]).len();
         // In from the right, flying left: the houses it passed are behind it, to the right.
         let coming = at(ENTER * 0.8);
@@ -1639,7 +1725,7 @@ mod tests {
         // And it held the title by its feet all the while, at its top, either side of its middle.
         for t in [0.0, ENTER, over, lowering] {
             let d = at(t);
-            let load = place.translate(offset(by, pose(t, None), place, page));
+            let load = place.translate(offset(by, pose(t, None), place, page, desk()));
             for foot in d.feet {
                 assert!((foot.y - load.top()).abs() < 0.01 && load.x_range().contains(foot.x), "{t}: {foot:?} on {load:?}");
             }
@@ -1655,8 +1741,8 @@ mod tests {
         let place = Rect::from_min_size(pos2(500.0, 400.0), vec2(200.0, 30.0));
         let by = Carrier::Balloon { right: true };
         let p = pose(ENTER + RUN, None);
-        let r = rig(by, p, place, page);
-        let silk: Vec<_> = balloon(by, p, place, page).into_iter().filter_map(|s| match s {
+        let r = rig(by, p, place, page, desk());
+        let silk: Vec<_> = balloon(by, p, place, page, desk()).into_iter().filter_map(|s| match s {
             Shape::Path(path) if SILK.contains(&path.fill) => Some(path),
             _ => None,
         }).collect();

@@ -520,6 +520,7 @@ impl App {
     fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let area = ui.max_rect();
+        self.eggs.desk = area;
         self.themes.show(&ctx);
         theme::paint_desk(ui.painter(), area);
 
@@ -5633,9 +5634,9 @@ mod tests {
         assert!(h.app.eggs.lift.is_some(), "it came");
         let coming = h.painted_at("Chapter One").expect("the title is drawn");
         let pace = h.app.eggs.lift.unwrap().by.pace();
-        h.frames((70.0 * pace) as usize, vec![], Modifiers::NONE);
+        h.frames((eggs::OVER * pace * 60.0) as usize + 10, vec![], Modifiers::NONE);
         let over = h.painted_at("Chapter One").unwrap();
-        h.frames((240.0 * pace) as usize, vec![], Modifiers::NONE);
+        h.frames(((eggs::COURSE - eggs::OVER) * pace * 60.0) as usize + 30, vec![], Modifiers::NONE);
         assert!(h.app.eggs.lift.is_none(), "and went");
         let rest = h.painted_at("Chapter One").unwrap();
         assert!((over.x - rest.x).abs() < 5.0 && over.y <= rest.y, "it is carried over its place: {over:?}, {rest:?}");
@@ -5667,10 +5668,32 @@ mod tests {
             h.type_text(&format!("Chapter {n}"));
             h.click_widget("Chapter");
             assert!(h.app.eggs.lift.is_some_and(|l| matches!(l.by, eggs::Carrier::Dragon { .. })), "Chapter {n}");
-            h.frames(420, vec![], Modifiers::NONE);
+            h.frames((eggs::COURSE * eggs::Carrier::Dragon { right: true }.pace() * 60.0) as usize + 60, vec![], Modifiers::NONE);
             assert!(h.app.eggs.lift.is_none(), "and went");
             h.key(Key::Enter, Modifiers::NONE);
         }
+    }
+
+    #[test]
+    fn the_dragon_flies_right_out_of_the_window_before_it_is_gone() {
+        let mut h = Harness::new();
+        in_the_theme(&mut h, theme::Theme::City, 1.0);
+        chapter_one(&mut h);
+        let claws = |h: &Harness| -> Vec<egui::Pos2> {
+            h.painted.iter().filter_map(|cs| match &cs.shape {
+                egui::Shape::LineSegment { points, stroke } if stroke.color == eggs::CLAW => Some(points[0]),
+                _ => None,
+            }).collect()
+        };
+        let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(h.width, 900.0));
+        let mut last = Vec::new();
+        while h.app.eggs.lift.is_some() {
+            last = claws(&h);
+            h.frames(1, vec![], Modifiers::NONE);
+        }
+        assert!(!last.is_empty() && last.iter().all(|c| !window.expand(-40.0).contains(*c)), "out of sight: {last:?}");
+        let x = last[0].x;
+        assert!(x < -100.0 || x > h.width + 100.0, "well past the edge, its tail too: {x}");
     }
 
     #[test]

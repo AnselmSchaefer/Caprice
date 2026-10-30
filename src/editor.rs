@@ -789,7 +789,7 @@ impl App {
             let place = layout.paras.iter().filter(|p| title(p)).map(|p| p.galley.rect.translate(content.min.to_vec2() + vec2(p.x, p.y)));
             self.eggs.place = place.reduce(|a, b| a.union(b));
             if let Some(place) = self.eggs.place {
-                let by = crate::eggs::offset(by, pose, place, page_rect);
+                let by = crate::eggs::offset(by, pose, place, page_rect, self.eggs.desk);
                 layout.paras.iter_mut().filter(|p| title(p)).for_each(|p| (p.x, p.y) = (p.x + by.x, p.y + by.y));
                 lifted = Some((range, by));
             }
