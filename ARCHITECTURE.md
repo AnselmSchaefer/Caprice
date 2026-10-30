@@ -94,7 +94,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `ideas.rs` | The What next window (lower left): ways the story could go on from the caret, kept in the scratchpad |
 | `fonts.rs` | Installed fonts loaded on demand, a missing one drawn with a twin of the same widths |
 | `theme.rs` | The themes (`Theme`, `Palette`): colours and egui visuals around the page, the palette in use (`pal`), fading from one to the next, the choice kept in the data folder; the page's own `PAPER` and `INK` |
-| `eggs.rs` | What is hidden in the magic themes: in the Magic Garden a plant a chapter growing on the desk and a balloon flying in a new chapter title now and then; in the Magic City a street of houses a chapter, a floor a page, and a crane lifting a new title into place |
+| `eggs.rs` | What is hidden in the magic themes: in the Magic Garden a plant a chapter growing on the desk and a balloon flying in a new chapter title now and then; in the Magic City a street of houses a chapter, a floor a page, and a dragon flying a new title in held in its feet |
 
 ---
 
@@ -1025,7 +1025,7 @@ same in every theme, so what is printed (R20) and exported (R10) never depends o
 ### R30 — Hidden gems: on the desk, or over the page on the screen only; never moving anything
 
 The magic themes hide things for the writer to find (`eggs.rs`): the Magic Garden (`Theme::Garden`)
-a garden and a hot-air balloon, the Magic City (`Theme::City`) houses and a crane. Their blurbs give nothing
+a garden and a hot-air balloon, the Magic City (`Theme::City`) houses and a dragon. Their blurbs give nothing
 away. What a theme hides is its own: picking another theme is how to stop it.
 
 - **The garden lies on the desk, behind every page**, in the Magic Garden only. `draw_garden` is
@@ -1070,11 +1070,17 @@ away. What a theme hides is its own: picking another theme is how to stop it.
 - **A new chapter title is brought in now and then** (`ODDS`), when the writer makes a paragraph
   with words in it a chapter title with the Chapter button (`maybe_lift_title`, from
   `apply_tools`): not on opening a file, undo, or a title made any other way. Which theme brings it
-  how is `Carrier::of`: the balloon floats in from the side at the title's height, each from the
-  other side than the last, and away past the other; the crane drives in from the right. A title
-  is often high on its page, so the balloon hangs only as high as there is room for below the top
-  of the page, and is smaller there. Both follow one course in time (`pose`: come, carry over the place, lower, settle, let go,
-  leave), each along its own way (`rig`). Typing, clicking or scrolling sets the title down at once
+  how is `Carrier::of`: the balloon floats, and the dragon flies, in from the side at the title's
+  height, each from the other side than the last, and away past the other. A title is often high
+  on its page, so either hangs only as high as there is room for below the top of the page, and is
+  smaller there (`TALL`, `DRAGON_TALL`: their heights above the title, wings up). Both follow one
+  course in time (`pose`: come, carry over the place, lower, settle, let go, leave), each along its
+  own way (`rig`, the same path for both, differing in size and rope). The dragon holds the title
+  by its top in its feet (`dragon_at`), beats its wings (`FLAP`) and breathes fire (`BREATH`), and
+  turns its head as `Pose::look` says: back at the city while it comes, at the writer over the
+  title's place, down at the page while it lowers it, ahead once it lets go or hurries away.
+  Looking back over itself, its fire is only a puff, so it does not cross its own back. The beat,
+  the fire and the tail come from `Pose::t`, so a test can look at any moment. Typing, clicking or scrolling sets the title down at once
   and the carrier hurries away (`update_lift`); a page turned ends it. A new carrier is a `Carrier`
   variant, its way in `rig` and its drawing in `draw_carrier`.
 - **The title being brought is only drawn elsewhere.** `editor_surface` moves the title's pieces of
@@ -1085,11 +1091,13 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   (R3, R20). The
   carrier is drawn in the settled branch in front of the page, after the peek's hand.
 - **None of it is printed or saved**: it is in none of `underlay`, `ink` or `furniture` (R20), and
-  nothing of it is in `Doc`. Its colours are the garden's, the houses', the balloon's and the crane's own, like the emblem's,
+  nothing of it is in `Doc`. Its colours are the garden's, the houses', the balloon's and the dragon's own, like the emblem's,
   not the palette's: they are pictures, not chrome.
-- Tests: in `eggs.rs` `the_crane_drives_in_runs_the_title_out_lowers_it_and_drives_away`,
-  `the_balloon_floats_the_title_in_from_the_side_and_away_past_the_other`,
-  `the_crane_sets_the_title_down_at_once_when_the_writer_goes_on`,
+- Tests: in `eggs.rs` `the_title_is_brought_in_carried_over_its_place_lowered_and_let_go`,
+  `the_balloon_and_the_dragon_bring_the_title_in_from_the_side_and_go_away_past_the_other`,
+  `the_dragon_beats_its_wings_and_breathes_fire_from_its_mouth`,
+  `the_dragon_looks_at_the_city_then_at_the_writer_then_at_the_page`,
+  `the_title_is_set_down_at_once_when_the_writer_goes_on`,
   `a_plant_is_the_same_for_the_same_story_and_grows_only_at_its_top`,
   `a_new_floor_is_a_light_that_flows_out_of_a_window_and_spreads_into_the_floor`,
   `the_houses_take_turns_on_either_side_of_the_page_as_many_as_there_is_room_for`,
@@ -1105,7 +1113,8 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   `dropping_the_changes_since_saving_keeps_the_garden_grown_since`,
   `a_story_begun_is_not_unsaved_for_its_garden`,
   `the_garden_grows_only_in_its_theme_the_houses_only_in_the_city_and_nothing_brings_a_title_elsewhere`,
-  `now_and_then_in_the_magic_city_a_crane_lifts_a_new_chapter_title_into_place`,
+  `now_and_then_in_the_magic_city_a_dragon_flies_in_a_new_chapter_title_from_either_side`,
+  `the_dragon_holds_the_title_in_its_claws_breathing_fire`,
   `now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title_from_either_side`,
   `the_title_hangs_from_the_balloon_by_ropes_tied_to_its_ends`,
   `going_on_writing_while_a_title_is_brought_sets_it_down_at_once`,
@@ -1298,5 +1307,9 @@ when the writer goes on; nothing moved in the layout, nothing in print or the fi
   houses fill the desk on both sides first, a few floors each; once there is no room for another,
   they grow higher rather than crowding closer (asked for: squeezed-in houses overlapped, and a
   story without chapters built only on the left).
+- **2026-10-30 — A dragon brings the Magic City's new chapters.** Asked for: no more crane, but a
+  dragon flying in like the balloon, wings beating, breathing fire, turning its head to the city,
+  the writer and the page, the title in its feet. It takes the balloon's path and course in time,
+  so the two carriers differ only in their picture and where the dragon looks (R30).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

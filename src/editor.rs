@@ -780,7 +780,7 @@ impl App {
                 ui.painter().rect_filled(r.translate(content.min.to_vec2()), 1.0, color);
             }
         }
-        // A chapter title on the crane's hook, or below the balloon, is drawn where it hangs; it lies in its place all the
+        // A chapter title in the dragon's feet, or below the balloon, is drawn where it hangs; it lies in its place all the
         // while, for the caret and the page breaks (`eggs.rs`).
         // The galley's own rect, not its size from `x`: a centered title is placed by its middle.
         let mut lifted = None;

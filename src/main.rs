@@ -640,7 +640,7 @@ impl App {
                 self.text_boxes(ui, page_rect, i);
                 self.draw_notes(ui, page_rect, i);
                 self.draw_peek(ui, page_rect, i, false);
-                self.draw_carrier(ui, page_rect, i, area);
+                self.draw_carrier(ui, page_rect, i);
                 self.pen_surface(ui, page_rect, i);
             }
         } else if self.slides_in(base) && self.appearance == Appearance::Book {
@@ -5643,13 +5643,40 @@ mod tests {
     }
 
     #[test]
-    fn now_and_then_in_the_magic_city_a_crane_lifts_a_new_chapter_title_into_place() {
+    fn now_and_then_in_the_magic_city_a_dragon_flies_in_a_new_chapter_title_from_either_side() {
         let mut h = Harness::new();
         in_the_theme(&mut h, theme::Theme::City, 1.0);
-        let (coming, over, rest) = title_brought_in(&mut h);
-        assert!(over.y < rest.y - 50.0, "it hangs high over its place: {over:?}");
-        assert!(coming.x > h.app.last_page_rect.right() && (coming.y - rest.y).abs() < 200.0, "from beside the page, on the hook: {coming:?}");
+        let (coming, _, rest) = title_brought_in(&mut h);
+        assert!(coming.x > rest.x + 100.0 && (coming.y - rest.y).abs() < 150.0, "in from the right, near its height: {coming:?}");
         assert!(h.app.eggs.plants.is_empty());
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("Chapter Two");
+        h.click_widget("Chapter");
+        let from = h.painted_at("Chapter Two").unwrap();
+        h.frames(300, vec![], Modifiers::NONE);
+        assert!(from.x < h.painted_at("Chapter Two").unwrap().x - 100.0, "the next from the left: {from:?}");
+    }
+
+    #[test]
+    fn the_dragon_holds_the_title_in_its_claws_breathing_fire() {
+        let mut h = Harness::new();
+        in_the_theme(&mut h, theme::Theme::City, 1.0);
+        chapter_one(&mut h);
+        h.frames(50, vec![], Modifiers::NONE);
+        let title = h.painted.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.job.text == "Chapter One" => Some(t.galley.rect.translate(t.pos.to_vec2())),
+            _ => None,
+        });
+        let title = title.expect("the title is drawn");
+        let claws: Vec<egui::Pos2> = h.painted.iter().filter_map(|cs| match &cs.shape {
+            egui::Shape::LineSegment { points, stroke } if stroke.color == eggs::CLAW => Some(points[0]),
+            _ => None,
+        }).collect();
+        assert_eq!(claws.len(), 6, "two feet of three claws: {claws:?}");
+        assert!(claws.iter().all(|c| (c.y - title.top()).abs() < 1.0 && title.x_range().contains(c.x)), "on the title's top: {claws:?} {title:?}");
+        assert!(claws.iter().any(|c| c.x < title.center().x) && claws.iter().any(|c| c.x > title.center().x), "either side of its middle");
+        let fire = h.painted.iter().any(|cs| matches!(&cs.shape, egui::Shape::Path(p) if eggs::FIRE.contains(&p.fill)));
+        assert!(fire, "and fire");
     }
 
     #[test]

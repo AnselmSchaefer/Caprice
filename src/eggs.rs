@@ -5,9 +5,10 @@
 //! windows are lit, a few of them flickering slightly; some houses have a little tower with a
 //! pennant, a statue on the roof, balconies or arched windows. Now and then, when the writer makes a paragraph a chapter title, it is
 //! brought in: in the garden a hot-air balloon floats down with it hanging below its basket, sets it
-//! in place and rises away; in the Magic City a crane drives in from the side, carries it over the
-//! page on its hook, lowers it into place and drives away. Both follow one course in time (`pose`),
-//! each along its own way (`rig`).
+//! in place and rises away; in the Magic City a dragon flies in with it held in its feet, flapping
+//! its wings and breathing fire, looks round at the city, at the writer and at the page, sets the
+//! title in place and flies away. Both follow one course in time (`pose`), each along its own way
+//! (`rig`).
 //!
 //! None of it is on the page: the garden and the city lie on the desk behind the pages, and what brings a title
 //! is drawn
@@ -26,16 +27,16 @@ use crate::theme::Theme;
 /// What brings a new chapter title in, in which theme.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Carrier {
-    /// In the Magic City.
-    Crane,
-    /// In the Magic Garden, from the right side or the left: each comes from the other side.
+    /// In the Magic City, and in the Magic Garden; each from the right side or the left, the next
+    /// from the other side.
+    Dragon { right: bool },
     Balloon { right: bool },
 }
 
 impl Carrier {
     pub fn of(theme: Theme) -> Option<Carrier> {
         match theme {
-            Theme::City => Some(Carrier::Crane),
+            Theme::City => Some(Carrier::Dragon { right: true }),
             Theme::Garden => Some(Carrier::Balloon { right: true }),
             _ => None,
         }
@@ -48,7 +49,7 @@ const TALLEST: f32 = 0.55;
 const PAGES: f32 = 8.0;
 /// How fast a plant grows to its height, in shares of its tallest a second.
 const GROW: f32 = 0.5;
-/// The chance that making a chapter title calls the crane.
+/// The chance that making a chapter title calls the dragon or the balloon.
 pub const ODDS: f64 = 1.0 / 3.0;
 
 const STEM: Color32 = Color32::from_rgb(86, 142, 66);
@@ -65,10 +66,23 @@ const PETALS: [Color32; 5] = [
 ];
 const HEART: Color32 = Color32::from_rgb(232, 168, 40);
 
-const STEEL: Color32 = Color32::from_rgb(242, 186, 36);
-const STEEL_DARK: Color32 = Color32::from_rgb(196, 146, 28);
-const WEIGHT: Color32 = Color32::from_rgb(118, 120, 132);
-const CABLE: Color32 = Color32::from_rgb(70, 70, 82);
+/// The dragon: its scales, belly and wings, its claws and horns, its eyes, and its fire from
+/// the outside in.
+const SCALES: Color32 = Color32::from_rgb(58, 146, 92);
+const SCALES_DARK: Color32 = Color32::from_rgb(36, 102, 66);
+const BELLY: Color32 = Color32::from_rgb(236, 204, 116);
+const WING: Color32 = Color32::from_rgb(104, 186, 120);
+const WING_FAR: Color32 = Color32::from_rgb(46, 118, 78);
+pub const CLAW: Color32 = Color32::from_rgb(246, 236, 210);
+const HORN: Color32 = Color32::from_rgb(214, 184, 120);
+pub const EYE: Color32 = Color32::from_rgb(255, 222, 70);
+const PUPIL: Color32 = Color32::from_rgb(30, 24, 20);
+pub const FIRE: [Color32; 3] = [Color32::from_rgb(228, 70, 38), Color32::from_rgb(250, 146, 40), Color32::from_rgb(255, 228, 120)];
+/// How tall the dragon is from the title it holds to the tips of its wings, in its sizes; and
+/// the seconds one beat of its wings takes, and one breath of fire.
+const DRAGON_TALL: f32 = 3.4;
+pub const FLAP: f32 = 0.55;
+const BREATH: f32 = 0.9;
 
 const SILK: [Color32; 2] = [Color32::from_rgb(232, 76, 84), Color32::from_rgb(252, 206, 74)];
 const WICKER: Color32 = Color32::from_rgb(160, 110, 62);
@@ -93,18 +107,19 @@ const GLOW: Color32 = Color32::from_rgb(255, 216, 124);
 const GLOW_DIM: Color32 = Color32::from_rgb(224, 146, 58);
 pub const LIGHT: Color32 = Color32::from_rgb(255, 238, 178);
 const STAR: Color32 = Color32::from_rgb(255, 222, 112);
-/// The statues on the roofs, of stone or gilded, and the pennants on the towers.
+/// The statues on the roofs, of stone or gilded, and the pennants on the towers and their poles.
 const STONE: Color32 = Color32::from_rgb(198, 192, 216);
 const GILT: Color32 = Color32::from_rgb(234, 190, 90);
 const PENNANT: Color32 = Color32::from_rgb(232, 76, 84);
+const POLE: Color32 = Color32::from_rgb(70, 70, 82);
 /// Seconds a new floor takes: its light flows out of a window for the first `FLOW` of it, and
 /// spreads into the floor for the rest.
 pub const BUILD: f32 = 1.6;
 pub const FLOW: f32 = 0.45;
 
-/// Seconds the crane takes to drive in, run the title out over the page, lower it, settle it,
-/// lift its hook off, and drive away; and to drive away when the writer goes on meanwhile. The
-/// balloon takes as long to come, float over, come down, let go and rise away.
+/// Seconds the dragon or the balloon takes to come in from the side, carry the title over its
+/// place, lower it, settle it, let go and go away; and to go away when the writer goes on
+/// meanwhile.
 const ENTER: f32 = 0.5;
 const RUN: f32 = 0.7;
 const LOWER: f32 = 0.9;
@@ -122,14 +137,14 @@ pub struct Eggs {
     grown_at: f64,
     /// The story, its version and its number of pages when the garden was last measured.
     measured: Option<(String, u64, usize)>,
-    /// The crane or the balloon at work, if one is.
+    /// The dragon or the balloon at work, if one is.
     pub lift: Option<Lift>,
     /// Where the title being lifted lies on the screen, from the last page drawn.
     pub place: Option<Rect>,
-    /// The chance that making a chapter title calls the crane (`ODDS`; tests set it to 0 or 1).
+    /// The chance that making a chapter title calls the dragon or the balloon (`ODDS`; tests set it to 0 or 1).
     pub odds: f64,
-    /// The side the last balloon came from: the next comes from the other.
-    balloon_right: bool,
+    /// The side the last dragon or balloon came from: the next comes from the other.
+    from_right: bool,
     rng: u64,
     /// Each plant drawn last frame: from its root to its tip, and whether it flowered; for tests.
     pub plants: Vec<(Rect, bool)>,
@@ -144,7 +159,7 @@ pub struct Eggs {
     pub light: Option<Rect>,
 }
 
-/// The crane or the balloon bringing the chapter title that begins at `at` into place on page `page`.
+/// The dragon or the balloon bringing the chapter title that begins at `at` into place on page `page`.
 #[derive(Clone, Copy, Debug)]
 pub struct Lift {
     pub by: Carrier,
@@ -158,7 +173,7 @@ pub struct Lift {
 impl Default for Eggs {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64);
-        Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, measured: None, lift: None, place: None, odds: ODDS, balloon_right: false, rng: seed | 1, plants: Vec::new(),
+        Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, measured: None, lift: None, place: None, odds: ODDS, from_right: false, rng: seed | 1, plants: Vec::new(),
             built_for: None, built: 0.0, built_at: 0.0, houses: Vec::new(), light: None }
     }
 }
@@ -261,20 +276,25 @@ fn grass(story: &str, area: Rect, unit: f32) -> Vec<Shape> {
     out
 }
 
-/// Where the crane (or the balloon) is in its work at `t` seconds, the writer having gone on at `duck`.
+/// Where the dragon (or the balloon) is in its work at `t` seconds, the writer having gone on at `duck`.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Pose {
-    /// 0: away beyond the side of the window, 1: standing beside the page.
+    /// 0: away beyond the side of the window, 1: beside the page.
     pub enter: f32,
-    /// 0: the hook by the crane's tower, 1: over the title's place.
+    /// 0: beside the page, 1: over the title's place.
     pub run: f32,
     /// 0: the title hanging high, 1: in its place.
     pub lower: f32,
-    /// Is the title still on the hook?
+    /// Is the title still held?
     pub hooked: bool,
-    /// 0: the hook at the title, 1: lifted clear of it.
+    /// 0: just let go of the title, 1: risen clear of it.
     pub hook: f32,
     pub done: bool,
+    /// Where the dragon looks: 0 at the city, 1 at the writer, 2 at the page, 3 ahead on its way
+    /// out, and between while it turns its head.
+    pub look: f32,
+    /// The seconds since it was called, for the beat of its wings and its fire.
+    pub t: f32,
 }
 
 pub fn pose(t: f32, duck: Option<f32>) -> Pose {
@@ -286,11 +306,23 @@ pub fn pose(t: f32, duck: Option<f32>) -> Pose {
     let (settle_at, unhook_at) = (lower_at + LOWER, lower_at + LOWER + SETTLE);
     let leave_at = unhook_at + UNHOOK;
     if let Some(d) = duck.filter(|&d| d < leave_at) {
-        // The title is set down at once, and the crane hurries away from wherever it was.
+        // The title is set down at once, and the carrier hurries away from wherever it was.
         let was = pose(d, None).enter;
         let enter = was * (1.0 - ((t - d) / HURRY).clamp(0.0, 1.0));
-        return Pose { enter, run: 1.0, lower: 1.0, hooked: false, hook: 1.0, done: t - d >= HURRY };
+        return Pose { enter, run: 1.0, lower: 1.0, hooked: false, hook: 1.0, done: t - d >= HURRY, look: 3.0, t };
     }
+    // At the city while it comes, at the writer while it is over the title's place, at the page
+    // while it lowers the title, and ahead once it lets go.
+    let keys = [
+        (0.0, 0.0),
+        (run_at + RUN * 0.2, 0.0),
+        (run_at + RUN * 0.55, 1.0),
+        (lower_at + LOWER * 0.45, 1.0),
+        (lower_at + LOWER * 0.75, 2.0),
+        (unhook_at, 2.0),
+        (leave_at, 3.0),
+    ];
+    let look = keys.windows(2).find(|w| t < w[1].0).map_or(3.0, |w| w[0].1 + (w[1].1 - w[0].1) * ease((t - w[0].0) / (w[1].0 - w[0].0)));
     let mut lower = ease((t - lower_at) / LOWER);
     if (settle_at..unhook_at).contains(&t) {
         // It touches down, and bounces a little.
@@ -303,62 +335,45 @@ pub fn pose(t: f32, duck: Option<f32>) -> Pose {
         hooked: t < unhook_at,
         hook: ease((t - unhook_at) / UNHOOK),
         done: t >= leave_at + LEAVE,
+        look,
+        t,
     }
 }
 
-/// Where the crane's parts are, or the balloon's, for a title lying at `place`, on a page lying at
-/// `page`.
+/// Where the balloon's basket is, or the dragon's grip, for a title lying at `place`, on a page
+/// lying at `page`.
 struct Rig {
-    /// The crane's tower's middle, and the height of its arm.
-    mast_x: f32,
-    jib_y: f32,
-    /// The arm's two ends.
-    jib: (f32, f32),
-    /// The crane's hook, or the bottom of the balloon's basket.
+    /// The bottom of the balloon's basket, or the middle of the title's top, where the dragon holds it.
     hook: Pos2,
-    /// The balloon's size: the radius of its silk.
+    /// The balloon's size, the radius of its silk; or the dragon's, the height of its body.
     size: f32,
     /// How far the title is from its place.
     offset: Vec2,
 }
 
 fn rig(by: Carrier, p: Pose, place: Rect, page: Rect) -> Rig {
-    let hang = page.height() * 0.16;
-    match by {
-        Carrier::Crane => {
-            let away = (1.0 - p.enter) * page.width() * 0.9;
-            let mast_x = page.right() + page.width() * 0.12 + away;
-            let jib_y = place.top() - hang - page.height() * 0.08;
-            let start = mast_x - page.width() * 0.1;
-            let hook_x = start + (place.center().x + away - start) * p.run;
-            let load = pos2(hook_x, place.center().y - hang * (1.0 - p.lower));
-            let offset = if p.hooked { load - place.center() } else { Vec2::ZERO };
-            let hook_y = if p.hooked { load.y - place.height() / 2.0 - 10.0 } else { place.top() - 10.0 - hang * 0.5 * p.hook };
-            let jib = (place.left().min(start) + away - 20.0, mast_x + page.width() * 0.14);
-            Rig { mast_x, jib_y, jib, hook: pos2(hook_x, hook_y), size: 0.0, offset }
-        }
-        Carrier::Balloon { right } => {
-            // In from the side at the title's height, a little above it; let go, it floats on and
-            // away past the other side. A title is often high on its page, so the balloon hangs
-            // only as high as there is room for below the top of the page, and is smaller there.
-            let side = if right { 1.0 } else { -1.0 };
-            let away = 1.0 - p.enter;
-            let rope = page.height() * 0.02;
-            let room = place.top() - (page.top() - page.height() * 0.03) - rope;
-            let size = (room / TALL).clamp(page.width() * 0.035, page.width() * 0.06);
-            let hang = (room - size * TALL).clamp(0.0, page.height() * 0.08);
-            let (basket, offset) = if p.hooked {
-                let x = place.center().x + side * ((1.0 - p.run) * page.width() * 0.35 + away * page.width() * 0.6);
-                let bob = (p.run * PI).sin() * page.height() * 0.015;
-                let load = pos2(x, place.center().y - hang * (1.0 - p.lower) - bob);
-                (load - vec2(0.0, place.height() / 2.0 + rope), load - place.center())
-            } else {
-                let up = rope + page.height() * 0.04 * p.hook;
-                (place.center_top() - vec2(0.0, up) + vec2(-side * 0.7 * page.width(), -0.1 * page.height()) * away, Vec2::ZERO)
-            };
-            Rig { mast_x: 0.0, jib_y: 0.0, jib: (0.0, 0.0), hook: basket, size, offset }
-        }
-    }
+    // In from the side at the title's height, a little above it; let go, it goes on and away past
+    // the other side. A title is often high on its page, so the carrier hangs only as high as
+    // there is room for below the top of the page, and is smaller there.
+    let (right, tall, rope, sizes) = match by {
+        Carrier::Balloon { right } => (right, TALL, page.height() * 0.02, (0.035, 0.06)),
+        Carrier::Dragon { right } => (right, DRAGON_TALL, 0.0, (0.05, 0.1)),
+    };
+    let side = if right { 1.0 } else { -1.0 };
+    let away = 1.0 - p.enter;
+    let room = place.top() - (page.top() - page.height() * 0.03) - rope;
+    let size = (room / tall).clamp(page.width() * sizes.0, page.width() * sizes.1);
+    let hang = (room - size * tall).clamp(0.0, page.height() * 0.08);
+    let (hook, offset) = if p.hooked {
+        let x = place.center().x + side * ((1.0 - p.run) * page.width() * 0.35 + away * page.width() * 0.6);
+        let bob = (p.run * PI).sin() * page.height() * 0.015;
+        let load = pos2(x, place.center().y - hang * (1.0 - p.lower) - bob);
+        (load - vec2(0.0, place.height() / 2.0 + rope), load - place.center())
+    } else {
+        let up = rope + page.height() * 0.04 * p.hook;
+        (place.center_top() - vec2(0.0, up) + vec2(-side * 0.7 * page.width(), -0.1 * page.height()) * away, Vec2::ZERO)
+    };
+    Rig { hook, size, offset }
 }
 
 /// How far the title is from its place at `p`, brought `by` that.
@@ -366,49 +381,181 @@ pub fn offset(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec2 {
     rig(by, p, place, page).offset
 }
 
-/// A beam of the crane between `a` and `b`, `w` thick: two rails and the lattice between them.
-fn beam(a: Pos2, b: Pos2, w: f32, line: f32) -> Vec<Shape> {
-    let along = b - a;
-    let side = vec2(-along.y, along.x).normalized() * w / 2.0;
-    let stroke = Stroke::new(line, STEEL);
-    let mut out = vec![Shape::line_segment([a + side, b + side], stroke), Shape::line_segment([a - side, b - side], stroke)];
-    let n = (along.length() / w).ceil().max(1.0) as usize;
-    let thin = Stroke::new(line * 0.6, STEEL_DARK);
-    for k in 0..n {
-        let (s, e) = (a + along * (k as f32 / n as f32), a + along * ((k + 1) as f32 / n as f32));
-        let flip = if k % 2 == 0 { 1.0 } else { -1.0 };
-        out.push(Shape::line_segment([s + side * flip, e - side * flip], thin));
-    }
-    out
+/// An oval around `c`, `a` long along `along` and `b` across it: convex.
+fn oval(c: Pos2, along: Vec2, a: f32, b: f32, color: Color32) -> Shape {
+    let across = vec2(-along.y, along.x);
+    let points = (0..20).map(|k| {
+        let r = k as f32 / 20.0 * 2.0 * PI;
+        c + along * a * r.cos() + across * b * r.sin()
+    });
+    Shape::convex_polygon(points.collect(), color, Stroke::NONE)
 }
 
-/// The crane at `p`, standing on the desk's bottom `ground`, the title's place at `place`.
-pub fn crane(p: Pose, place: Rect, page: Rect, ground: f32) -> Vec<Shape> {
-    let r = rig(Carrier::Crane, p, place, page);
-    let w = page.width() * 0.035;
-    let line = (page.width() * 0.004).max(1.0);
-    let mut out = beam(pos2(r.mast_x, ground), pos2(r.mast_x, r.jib_y), w, line);
-    out.extend(beam(pos2(r.jib.0, r.jib_y), pos2(r.jib.1, r.jib_y), w * 0.8, line));
-    // The peak above the tower, tied to both ends of the arm.
-    let peak = pos2(r.mast_x, r.jib_y - w * 2.2);
-    out.push(Shape::convex_polygon(vec![peak, pos2(r.mast_x + w / 2.0, r.jib_y), pos2(r.mast_x - w / 2.0, r.jib_y)], STEEL, Stroke::NONE));
-    for end in [r.jib.0 + w, r.jib.1] {
-        out.push(Shape::line_segment([peak, pos2(end, r.jib_y - w * 0.4)], Stroke::new(line * 0.6, CABLE)));
-    }
-    let weight = Rect::from_min_size(pos2(r.jib.1 - w * 1.6, r.jib_y + w * 0.4), vec2(w * 1.4, w * 1.2));
-    out.push(Shape::rect_filled(weight, 1.0, WEIGHT));
-    let cab = Rect::from_min_size(pos2(r.mast_x - w * 0.9, r.jib_y + w * 0.4), vec2(w * 0.9, w * 0.8));
-    out.push(Shape::rect_filled(cab, 2.0, STEEL_DARK));
-    // The trolley on the arm, its cable down to the hook, and the slings to the title.
-    let trolley = Rect::from_center_size(pos2(r.hook.x, r.jib_y + w * 0.5), vec2(w * 0.8, w * 0.35));
-    out.push(Shape::rect_filled(trolley, 1.0, WEIGHT));
-    out.push(Shape::line_segment([trolley.center_bottom(), r.hook], Stroke::new(line * 0.7, CABLE)));
-    out.push(Shape::circle_stroke(r.hook + vec2(0.0, w * 0.2), w * 0.2, Stroke::new(line, CABLE)));
-    if p.hooked {
+/// A tongue of fire from `at` along `dir`, `len` long: a lens, which is convex.
+fn flame(at: Pos2, dir: Vec2, len: f32, width: f32, color: Color32) -> Shape {
+    let side = vec2(-dir.y, dir.x) * width;
+    let points = (0..=16).map(|k| {
+        let (s, w) = if k <= 8 { (k as f32 / 8.0, 1.0) } else { (2.0 - k as f32 / 8.0, -1.0) };
+        at + dir * len * s + side * w * (s * PI).sin()
+    });
+    Shape::convex_polygon(points.collect(), color, Stroke::NONE)
+}
+
+/// Where the dragon is, and where it looks, at `p`.
+pub struct Dragon {
+    /// The middle of its body, and its size: the height of its body.
+    pub body: Pos2,
+    pub size: f32,
+    /// 1 when it flies to the right, -1 to the left.
+    pub ahead: f32,
+    pub head: Pos2,
+    /// Where its snout points, and how far it is turned away from the writer: 0 looking at them, 1
+    /// in profile.
+    pub aim: Vec2,
+    pub turned: f32,
+    pub mouth: Pos2,
+    /// Its feet, at the title's top while it holds it.
+    pub feet: [Pos2; 2],
+}
+
+/// Where it looks at `look` (`Pose::look`) flying `ahead`: back down at the houses on the side
+/// it came from, out at the writer, down ahead at the page, and ahead on its way.
+fn gaze(look: f32, ahead: f32) -> (Vec2, f32) {
+    let keys = [(vec2(-ahead * 0.8, 0.6), 1.0), (vec2(0.0, 1.0), 0.0), (vec2(ahead * 0.45, 0.9), 1.0), (vec2(ahead, -0.15), 1.0)];
+    let k = (look.max(0.0) as usize).min(2);
+    let s = (look - k as f32).clamp(0.0, 1.0);
+    let ((a, ta), (b, tb)) = (keys[k], keys[k + 1]);
+    ((a + (b - a) * s).normalized(), ta + (tb - ta) * s)
+}
+
+pub fn dragon_at(by: Carrier, p: Pose, place: Rect, page: Rect) -> Dragon {
+    let r = rig(by, p, place, page);
+    let s = r.size;
+    // It flies away from the side it came from.
+    let ahead = if matches!(by, Carrier::Dragon { right: true }) { -1.0 } else { 1.0 };
+    let body = r.hook - vec2(0.0, 0.85 * s);
+    let (aim, turned) = gaze(p.look, ahead);
+    let head = body + vec2(ahead * 1.15 * s, -0.7 * s) + aim * 0.12 * s;
+    let hr = 0.32 * s;
+    let snout = head + aim * hr * 0.75 * turned + vec2(0.0, hr * 0.35) * (1.0 - turned);
+    let mouth = snout + aim * hr * (0.5 + 0.35 * turned) * turned + vec2(0.0, hr * 0.3) * (1.0 - turned);
+    let feet = if p.hooked {
         let load = place.translate(r.offset);
-        for corner in [load.left_top() + vec2(load.width() * 0.1, 0.0), load.right_top() - vec2(load.width() * 0.1, 0.0)] {
-            out.push(Shape::line_segment([r.hook + vec2(0.0, w * 0.4), corner], Stroke::new(line * 0.6, CABLE)));
+        let grip = (load.width() * 0.4).min(0.55 * s);
+        [load.center_top() + vec2(ahead * grip, 0.0), load.center_top() - vec2(ahead * grip, 0.0)]
+    } else {
+        // Tucked in under it.
+        [body + vec2(ahead * 0.2 * s, 0.6 * s), body + vec2(-ahead * 0.55 * s, 0.6 * s)]
+    };
+    Dragon { body, size: s, ahead, head, aim, turned, mouth, feet }
+}
+
+/// The dragon at `p`, the title's place at `place`: its wings beating, its tail swaying, the title
+/// in its claws while it holds it, its head turned where it looks, and fire from its mouth.
+pub fn dragon(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
+    let d = dragon_at(by, p, place, page);
+    let (b, s, f, t) = (d.body, d.size, d.ahead, p.t);
+    let line = (page.width() * 0.003).max(1.0);
+    let mut out = Vec::new();
+    // A wing from its shoulder: a fan of convex pieces from the shoulder to its scalloped edge,
+    // up and down with the beat.
+    let lift = 0.32 + 0.68 * (2.0 * PI * t / FLAP).sin();
+    let wing = |out: &mut Vec<Shape>, shoulder: Pos2, scale: f32, color: Color32| {
+        let tip = shoulder + vec2(-f * 0.9 * s, -2.2 * s * lift) * scale;
+        let elbow = shoulder + (tip - shoulder) * 0.45 + vec2(f * 0.3 * s, 0.0) * scale;
+        let root = b + vec2(-f * 0.8 * s, -0.1 * s);
+        let edge: Vec<Pos2> = (1..4).map(|j| {
+            let q = tip + (root - tip) * (j as f32 / 4.0);
+            q + (q - shoulder).normalized() * 0.2 * s * scale
+        }).collect();
+        let points = [elbow, tip, edge[0], edge[1], edge[2], root];
+        for w in points.windows(2) {
+            out.push(Shape::convex_polygon(vec![shoulder, w[0], w[1]], color, Stroke::NONE));
         }
+        let bone = Stroke::new(line, SCALES_DARK);
+        out.push(Shape::line(vec![shoulder, elbow, tip], bone));
+        for q in &edge {
+            out.push(Shape::line_segment([elbow, *q], Stroke::new(line * 0.6, SCALES_DARK)));
+        }
+    };
+    let shoulder = b + vec2(f * 0.1 * s, -0.28 * s);
+    wing(&mut out, shoulder + vec2(f * 0.2 * s, -0.05 * s), 0.85, WING_FAR);
+    // The tail, swaying, thinner towards its spade.
+    let tail: Vec<Pos2> = (0..=6).map(|k| {
+        let k = k as f32;
+        b + vec2(-f * (0.8 + 0.24 * k) * s, (0.06 * k + 0.1 * (3.0 * t + k * 0.9).sin() * k / 6.0) * s)
+    }).collect();
+    for (k, w) in tail.windows(2).enumerate() {
+        let width = 0.38 * s * (1.0 - k as f32 / 7.5);
+        out.push(Shape::line_segment([w[0], w[1]], Stroke::new(width, SCALES)));
+        out.push(Shape::circle_filled(w[1], width / 2.0, SCALES));
+    }
+    let end = tail[6];
+    out.push(Shape::convex_polygon(vec![end + vec2(-f * 0.32 * s, 0.04 * s), end + vec2(0.0, 0.16 * s), end + vec2(0.0, -0.16 * s)], SCALES_DARK, Stroke::NONE));
+    // Its legs, down to the title's top, the claws curled over it.
+    for (hip, foot) in [(b + vec2(f * 0.4 * s, 0.2 * s), d.feet[0]), (b + vec2(-f * 0.35 * s, 0.2 * s), d.feet[1])] {
+        let knee = hip + (foot - hip) * 0.5 + vec2(-f * 0.12 * s, 0.0);
+        out.push(Shape::line_segment([hip, knee], Stroke::new(0.18 * s, SCALES)));
+        out.push(Shape::line_segment([knee, foot], Stroke::new(0.1 * s, SCALES)));
+        for dx in [-0.1, 0.0, 0.1] {
+            out.push(Shape::line_segment([foot, foot + vec2(dx * s, 0.12 * s)], Stroke::new(line, CLAW)));
+        }
+    }
+    let along = vec2(f, -0.15).normalized();
+    out.push(oval(b, along, 0.9 * s, 0.45 * s, SCALES));
+    out.push(oval(b + vec2(0.0, 0.14 * s), along, 0.7 * s, 0.2 * s, BELLY));
+    // Spikes along its back.
+    for k in 0..4 {
+        let at = b + along * (0.45 - 0.3 * k as f32) * s + vec2(-along.y, along.x) * -f * 0.36 * s;
+        let w = vec2(along.x, along.y) * 0.1 * s;
+        out.push(Shape::convex_polygon(vec![at - w, at + w, at - w * 0.4 - vec2(0.0, 0.2 * s)], SCALES_DARK, Stroke::NONE));
+    }
+    wing(&mut out, shoulder, 1.0, WING);
+    // The neck up to the head: wide at the body, narrower at the head.
+    let neck = b + along * 0.65 * s;
+    let n = (d.head - neck).normalized();
+    let (wn, wh) = (vec2(-n.y, n.x) * 0.24 * s, vec2(-n.y, n.x) * 0.15 * s);
+    out.push(Shape::convex_polygon(vec![neck + wn, d.head + wh, d.head - wh, neck - wn], SCALES, Stroke::NONE));
+    // Its head, turned where it looks: in profile one eye shows and the snout is long; looking at
+    // the writer, both eyes, and the snout short towards them.
+    let (h, hr, aim, turned) = (d.head, 0.32 * s, d.aim, d.turned);
+    let back = vec2(-aim.x.signum() * turned, 0.0);
+    for w in [-1.0, 1.0] {
+        let base = h + vec2(w * 0.3 * hr * (1.0 - turned), -0.75 * hr) + back * 0.2 * hr;
+        let tip = base + vec2(w * 0.3 * hr * (1.0 - turned), -0.8 * hr) + back * 0.6 * hr;
+        out.push(Shape::convex_polygon(vec![base - vec2(0.16 * hr, 0.0), tip, base + vec2(0.16 * hr, 0.0)], HORN, Stroke::NONE));
+    }
+    out.push(Shape::circle_filled(h, hr, SCALES));
+    let snout = h + aim * hr * 0.75 * turned + vec2(0.0, hr * 0.35) * (1.0 - turned);
+    let muzzle = if turned < 0.05 { vec2(1.0, 0.0) } else { aim };
+    out.push(oval(snout, muzzle, hr * (0.5 + 0.35 * turned), hr * 0.5, SCALES));
+    let across = vec2(1.0, 0.0) * (1.0 - turned);
+    for w in [-1.0, 1.0] {
+        let nostril = snout + aim * hr * 0.5 * turned + across * w * 0.2 * hr;
+        out.push(Shape::circle_filled(nostril, 0.06 * s, SCALES_DARK));
+    }
+    let eye = h + vec2(0.0, -0.25 * hr) - aim * 0.1 * hr * turned;
+    let eyes: &[f32] = if turned < 0.6 { &[-1.0, 1.0] } else { &[0.0] };
+    for w in eyes {
+        let at = eye + vec2(w * 0.42 * hr * (1.0 - turned), 0.0);
+        out.push(Shape::circle_filled(at, 0.16 * hr, EYE));
+        out.push(Shape::circle_filled(at + aim * 0.05 * hr, 0.07 * hr, PUPIL));
+    }
+    // Fire: always a little, and a great breath now and then; it flickers. Looking back over
+    // itself at the city it only puffs, so as not to breathe fire over its own back.
+    let back = (1.0 + aim.x * f).clamp(0.25, 1.0);
+    let breath = (0.35 + 0.65 * (2.0 * PI * t / BREATH).sin().max(0.0)) * back;
+    let dir = Vec2::angled(aim.angle() + 0.08 * (17.0 * t).sin());
+    let len = s * 1.6 * breath * (0.6 + 0.4 * turned);
+    let width = 0.18 * (1.0 + 0.6 * (1.0 - turned));
+    for (k, color) in FIRE.iter().enumerate() {
+        let share = 1.0 - 0.28 * k as f32;
+        let flicker = 1.0 + 0.12 * (31.0 * t + k as f32 * 2.1).sin();
+        out.push(flame(d.mouth, dir, len * share * flicker, len * share * width, *color));
+    }
+    for k in 0..3 {
+        let spark = d.mouth + dir * len * (1.05 + 0.15 * k as f32) + vec2(-dir.y, dir.x) * len * 0.12 * (9.0 * t + k as f32 * 2.0).sin();
+        out.push(Shape::circle_filled(spark, 0.035 * s * breath, FIRE[1]));
     }
     out
 }
@@ -731,7 +878,7 @@ impl House {
         out.push(Shape::convex_polygon(cap, color, Stroke::NONE));
         // The pennant flies away from the house, and flutters.
         let pole = tip - vec2(0.0, 7.0 * u);
-        out.push(Shape::line_segment([tip, pole], Stroke::new(1.0 * u, CABLE)));
+        out.push(Shape::line_segment([tip, pole], Stroke::new(1.0 * u, POLE)));
         let away = if left { -1.0 } else { 1.0 };
         let flutter = ((time % 1000.0) as f32 * 3.1 + self.seed as f32).sin() * 0.8 * u;
         let flag = vec![pole, pos2(pole.x + away * 6.0 * u, pole.y + 1.8 * u + flutter), pole + vec2(0.0, 3.6 * u)];
@@ -1008,7 +1155,7 @@ impl App {
     }
 
     /// The paragraph at the caret was just made a chapter title: now and then, in a magic theme,
-    /// the crane or the balloon comes to bring it into place.
+    /// the dragon or the balloon comes to bring it into place.
     pub fn maybe_lift_title(&mut self, ctx: &egui::Context) {
         let Some(mut by) = Carrier::of(self.themes.theme) else { return };
         let (at, _) = self.doc.para_start(self.selection().0);
@@ -1016,16 +1163,15 @@ impl App {
         if !self.doc.chapters(false).iter().any(|e| e.at == at) || self.eggs.roll() >= self.eggs.odds {
             return;
         }
-        if let Carrier::Balloon { right } = &mut by {
-            self.eggs.balloon_right = !self.eggs.balloon_right;
-            *right = self.eggs.balloon_right;
-        }
+        let (Carrier::Balloon { right } | Carrier::Dragon { right }) = &mut by;
+        self.eggs.from_right = !self.eggs.from_right;
+        *right = self.eggs.from_right;
         let started = ctx.input(|i| i.time);
         self.eggs.lift = Some(Lift { by, at, page: self.doc.page_of(at), started, duck: None });
         ctx.request_repaint();
     }
 
-    /// Once a frame: the crane or the balloon hurries away when the writer goes on, and is gone when it is done or
+    /// Once a frame: the dragon or the balloon hurries away when the writer goes on, and is gone when it is done or
     /// the page is turned.
     pub fn update_lift(&mut self, ctx: &egui::Context) {
         let Some(lift) = &mut self.eggs.lift else { return };
@@ -1056,12 +1202,12 @@ impl App {
         Some((lift.by, p, lift.at.saturating_sub(start)..end.saturating_sub(start)))
     }
 
-    /// The crane or the balloon over page `i` lying at `page`, if it is at work there.
-    pub fn draw_carrier(&self, ui: &egui::Ui, page: Rect, i: usize, area: Rect) {
+    /// The dragon or the balloon over page `i` lying at `page`, if it is at work there.
+    pub fn draw_carrier(&self, ui: &egui::Ui, page: Rect, i: usize) {
         let (Some((by, p, _)), Some(place)) = (self.lifting(ui.ctx(), i), self.eggs.place) else { return };
         ui.painter().extend(match by {
-            Carrier::Crane => crane(p, place, page, area.bottom()),
-            by @ Carrier::Balloon { .. } => balloon(by, p, place, page),
+            Carrier::Dragon { .. } => dragon(by, p, place, page),
+            Carrier::Balloon { .. } => balloon(by, p, place, page),
         });
     }
 }
@@ -1071,7 +1217,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_crane_drives_in_runs_the_title_out_lowers_it_and_drives_away() {
+    fn the_title_is_brought_in_carried_over_its_place_lowered_and_let_go() {
         let at = |t: f32| pose(t, None);
         assert!(at(0.0).enter == 0.0 && at(0.0).hooked && at(0.0).lower == 0.0, "away, the title on its hook, hanging high");
         assert!(at(ENTER).enter == 1.0 && at(ENTER).run == 0.0, "beside the page");
@@ -1081,23 +1227,17 @@ mod tests {
         assert!(at(down - 0.01).lower > 0.9 && at(down - 0.01).hooked, "lowered");
         assert!(at(down + SETTLE / 2.0).lower < 1.0, "it bounces as it touches down");
         let free = down + SETTLE + UNHOOK;
-        assert!(!at(free).hooked && at(free).hook == 1.0 && at(free).enter == 1.0, "the hook lifted off it");
-        assert!(at(free + LEAVE / 2.0).enter < 1.0 && at(free + LEAVE).enter == 0.0, "driven away");
+        assert!(!at(free).hooked && at(free).hook == 1.0 && at(free).enter == 1.0, "let go of it");
+        assert!(at(free + LEAVE / 2.0).enter < 1.0 && at(free + LEAVE).enter == 0.0, "gone away");
         assert!(at(free + LEAVE).done);
-
-        let page = Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0));
-        let place = Rect::from_min_size(pos2(500.0, 120.0), vec2(200.0, 30.0));
-        assert!(offset(Carrier::Crane, at(0.0), place, page).x > page.width(), "the title comes with the crane, from far to the side");
-        assert!(offset(Carrier::Crane, at(over), place, page).x.abs() < 0.01 && offset(Carrier::Crane, at(over), place, page).y < -50.0, "above its place");
-        assert_eq!(offset(Carrier::Crane, at(free), place, page), Vec2::ZERO, "in its place");
     }
 
     #[test]
-    fn the_balloon_floats_the_title_in_from_the_side_and_away_past_the_other() {
+    fn the_balloon_and_the_dragon_bring_the_title_in_from_the_side_and_go_away_past_the_other() {
         let page = Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0));
         let place = Rect::from_min_size(pos2(500.0, 400.0), vec2(200.0, 30.0));
-        for right in [true, false] {
-            let by = Carrier::Balloon { right };
+        for by in [true, false].into_iter().flat_map(|right| [Carrier::Balloon { right }, Carrier::Dragon { right }]) {
+            let (Carrier::Balloon { right } | Carrier::Dragon { right }) = by;
             let side = if right { 1.0 } else { -1.0 };
             let at = |t: f32| offset(by, pose(t, None), place, page);
             let start = at(0.0);
@@ -1109,10 +1249,78 @@ mod tests {
             let going = rig(by, p, place, page).hook;
             assert!((going.x - place.center().x) * side < -100.0, "{right}: away past the other side: {going:?}");
         }
-        // A title high on its page: the balloon hangs lower and is smaller, its top still near the page.
+        // A title high on its page: the carrier hangs lower and is smaller, its top still near the page.
         let high = Rect::from_min_size(pos2(500.0, 120.0), vec2(200.0, 30.0));
-        let r = rig(Carrier::Balloon { right: true }, pose(ENTER + RUN, None), high, page);
-        assert!(r.hook.y - r.size * TALL >= page.top() - page.height() * 0.05, "{:?} {}", r.hook, r.size);
+        for (by, tall) in [(Carrier::Balloon { right: true }, TALL), (Carrier::Dragon { right: true }, DRAGON_TALL)] {
+            let r = rig(by, pose(ENTER + RUN, None), high, page);
+            assert!(r.hook.y - r.size * tall >= page.top() - page.height() * 0.05, "{by:?}: {:?} {}", r.hook, r.size);
+        }
+        let p = pose(ENTER + RUN, None);
+        let top = dragon(Carrier::Dragon { right: true }, p, high, page).iter().fold(Rect::NOTHING, |r, s| r | s.visual_bounding_rect()).top();
+        assert!(top >= page.top() - page.height() * 0.05, "the dragon's wings stay near the page: {top}");
+    }
+
+    /// The shapes of the dragon at `t` seconds bringing a title at `place`, in `colors`.
+    fn dragon_in(t: f32, place: Rect, page: Rect, colors: &[Color32]) -> Vec<Shape> {
+        let by = Carrier::Dragon { right: true };
+        dragon(by, pose(t, None), place, page).into_iter().filter(|s| match s {
+            Shape::Path(path) => colors.contains(&path.fill),
+            Shape::Circle(c) => colors.contains(&c.fill),
+            _ => false,
+        }).collect()
+    }
+
+    #[test]
+    fn the_dragon_beats_its_wings_and_breathes_fire_from_its_mouth() {
+        let page = Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0));
+        let place = Rect::from_min_size(pos2(500.0, 400.0), vec2(200.0, 30.0));
+        let over = ENTER + RUN;
+        let tip = |t: f32| dragon_in(t, place, page, &[WING]).iter().map(|s| s.visual_bounding_rect().top()).fold(f32::MAX, f32::min);
+        let (up, down) = (tip(over + FLAP / 4.0), tip(over + FLAP * 3.0 / 4.0));
+        let d = dragon_at(Carrier::Dragon { right: true }, pose(over, None), place, page);
+        assert!(down - up > d.size, "up and down: {up} {down}");
+        for k in 0..8 {
+            let t = k as f32 * 0.37;
+            let d = dragon_at(Carrier::Dragon { right: true }, pose(t, None), place, page);
+            let fire = dragon_in(t, place, page, &FIRE);
+            assert!(fire.len() >= 3, "{t}: fire");
+            let near = fire.iter().map(|s| s.visual_bounding_rect().distance_to_pos(d.mouth)).fold(f32::MAX, f32::min);
+            assert!(near < 1.0, "{t}: from its mouth");
+            let reach = fire.iter().fold(Rect::NOTHING, |r, s| r | s.visual_bounding_rect()).center() - d.mouth;
+            assert!(reach.dot(d.aim) > 0.0, "{t}: the way it looks: {reach:?} {:?}", d.aim);
+        }
+        let big = |t: f32| dragon_in(t, place, page, &FIRE[..1]).iter().fold(Rect::NOTHING, |r, s| r | s.visual_bounding_rect()).area();
+        // Both while it looks at the writer.
+        assert!(big(BREATH * 1.25) > 2.0 * big(BREATH * 1.75), "a great breath now and then: {} {}", big(BREATH * 1.25), big(BREATH * 1.75));
+    }
+
+    #[test]
+    fn the_dragon_looks_at_the_city_then_at_the_writer_then_at_the_page() {
+        let page = Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0));
+        let place = Rect::from_min_size(pos2(500.0, 400.0), vec2(200.0, 30.0));
+        let by = Carrier::Dragon { right: true };
+        let at = |t: f32| dragon_at(by, pose(t, None), place, page);
+        let eyes = |t: f32| dragon_in(t, place, page, &[EYE]).len();
+        // In from the right, flying left: the houses it passed are behind it, to the right.
+        let coming = at(ENTER * 0.8);
+        assert!(coming.ahead < 0.0 && coming.aim.x > 0.5 && coming.aim.y > 0.0 && coming.turned == 1.0, "back down at the city: {:?}", coming.aim);
+        assert_eq!(eyes(ENTER * 0.8), 1, "in profile");
+        let over = ENTER + RUN + LOWER * 0.2;
+        assert!(at(over).turned == 0.0 && eyes(over) == 2, "at the writer, with both eyes");
+        let lowering = ENTER + RUN + LOWER;
+        let p = at(lowering);
+        assert!(p.aim.x < -0.3 && p.aim.y > 0.7 && p.turned == 1.0 && eyes(lowering) == 1, "down ahead at the page: {:?}", p.aim);
+        // And it held the title by its feet all the while, at its top, either side of its middle.
+        for t in [0.0, ENTER, over, lowering] {
+            let d = at(t);
+            let load = place.translate(offset(by, pose(t, None), place, page));
+            for foot in d.feet {
+                assert!((foot.y - load.top()).abs() < 0.01 && load.x_range().contains(foot.x), "{t}: {foot:?} on {load:?}");
+            }
+            assert!((d.feet[0].x - load.center().x) * (d.feet[1].x - load.center().x) < 0.0, "{t}: one foot each side");
+        }
+        let gone = ENTER + RUN + LOWER + SETTLE + UNHOOK + 0.1;
+        assert!(at(gone).feet.iter().all(|f| f.y < place.top() - 5.0), "let go");
     }
 
     #[test]
@@ -1152,10 +1360,10 @@ mod tests {
     }
 
     #[test]
-    fn the_crane_sets_the_title_down_at_once_when_the_writer_goes_on() {
+    fn the_title_is_set_down_at_once_when_the_writer_goes_on() {
         let p = pose(1.0, Some(0.9));
         assert!(!p.hooked && p.lower == 1.0, "the title in its place");
-        assert!(p.enter > 0.0 && !p.done, "the crane on its way out");
+        assert!(p.enter > 0.0 && !p.done && p.look == 3.0, "the carrier on its way out, looking ahead");
         assert!(pose(0.9 + HURRY + 0.01, Some(0.9)).done);
         // After it set the title down, going on changes nothing.
         let late = ENTER + RUN + LOWER + SETTLE + UNHOOK + 0.1;
