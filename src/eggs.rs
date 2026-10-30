@@ -43,6 +43,15 @@ impl Carrier {
         }
     }
 
+    /// How many times slower than the balloon it goes its course: the dragon is big and takes its
+    /// time, so it can be seen.
+    pub fn pace(self) -> f32 {
+        match self {
+            Carrier::Dragon { .. } => 1.7,
+            Carrier::Balloon { .. } => 1.0,
+        }
+    }
+
     /// The chance that making a chapter title calls it: the dragon comes for every new chapter,
     /// the balloon now and then.
     pub fn odds(self) -> f64 {
@@ -103,8 +112,10 @@ pub const FIRE: [Color32; 4] = [
 /// How tall the dragon is from the title it holds to the tips of its wings, in its sizes; and
 /// the seconds one beat of its wings takes, and one breath of fire.
 const DRAGON_TALL: f32 = 3.6;
-pub const FLAP: f32 = 0.55;
+pub const FLAP: f32 = 0.8;
 const BREATH: f32 = 0.9;
+/// Seconds a slow wave takes to run down the dragon from its neck to its tail.
+const GLIDE: f32 = 2.4;
 
 const SILK: [Color32; 2] = [Color32::from_rgb(232, 76, 84), Color32::from_rgb(252, 206, 74)];
 const WICKER: Color32 = Color32::from_rgb(160, 110, 62);
@@ -318,6 +329,13 @@ pub struct Pose {
     pub look: f32,
     /// The seconds since it was called, for the beat of its wings and its fire.
     pub t: f32,
+}
+
+/// Where carrier `by` is at `t` seconds: along the course at its own pace, its wings, fire and
+/// tail at the seconds as they are.
+pub fn pose_of(by: Carrier, t: f32, duck: Option<f32>) -> Pose {
+    let k = by.pace();
+    Pose { t, ..pose(t / k, duck.map(|d| d / k)) }
 }
 
 pub fn pose(t: f32, duck: Option<f32>) -> Pose {
@@ -548,6 +566,30 @@ fn gaze(look: f32, ahead: f32) -> Turn {
     Turn::new(ya + (yb - ya) * s, pa + (pb - pa) * s)
 }
 
+/// Its wings at `t`, from -0.5 down to 1 up, and how far spread: two beats, spread fuller on the
+/// down beat, then a glide on wings spread wide; and again.
+fn wingbeat(t: f32) -> (f32, f32) {
+    let beat = (t / FLAP).rem_euclid(3.0);
+    if beat < 2.0 {
+        let phase = 2.0 * PI * beat;
+        (0.25 + 0.75 * phase.sin(), 0.82 - 0.18 * phase.cos())
+    } else {
+        // They open, hold still a while, and fold back into the next beat.
+        let ease = |x: f32| {
+            let x = x.clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        };
+        let g = ease((beat - 2.0) / 0.3) * ease((3.0 - beat) / 0.3);
+        (0.25 + 0.2 * g, 0.64 + 0.36 * g)
+    }
+}
+
+/// How far the slow wave lifts the dragon at `u` along it, from 0 at its head to 1 at its tail's
+/// tip, at `t`, in its sizes.
+fn wave(u: f32, t: f32) -> f32 {
+    (0.05 + 0.22 * u * u) * (2.0 * PI * t / GLIDE - 3.2 * u).sin()
+}
+
 /// The head's size, in the dragon's.
 const HEAD: f32 = 0.36;
 
@@ -556,10 +598,13 @@ pub fn dragon_at(by: Carrier, p: Pose, place: Rect, page: Rect) -> Dragon {
     let s = r.size;
     // It flies away from the side it came from.
     let ahead = if matches!(by, Carrier::Dragon { right: true }) { -1.0 } else { 1.0 };
-    let body = r.hook - vec2(0.0, 0.85 * s);
+    // The body lifts on each down beat; the legs give, so the title stays where it is carried.
+    let (lift, _) = wingbeat(p.t);
+    let body = r.hook - vec2(0.0, 0.85 * s) + vec2(0.0, 0.1 * (lift - 0.25)) * s;
     let turn = gaze(p.look, ahead);
     let (aim, _) = turn.aim();
-    let head = body + vec2(ahead * 1.3 * s, -0.95 * s);
+    // The head rides the slow wave, a little behind the neck.
+    let head = body + vec2(ahead * 1.3 * s, -0.95 * s) + vec2(0.0, 0.8 * wave(0.0, p.t - 0.3)) * s;
     // Fire always a little, and a great breath now and then. Looking back over itself at the city
     // it only puffs, so as not to breathe fire over its own back.
     let back = (1.0 + aim.x * ahead).clamp(0.25, 1.0);
@@ -680,33 +725,33 @@ pub fn dragon(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
     let d = dragon_at(by, p, place, page);
     let (b, s, f, t) = (d.body, d.size, d.ahead, p.t);
     let mut out = Vec::new();
-    let phase = 2.0 * PI * t / FLAP;
-    let (lift, spread) = (0.25 + 0.75 * phase.sin(), 0.82 - 0.18 * phase.cos());
+    let (lift, spread) = wingbeat(t);
     let shoulder = b + vec2(f * 0.25 * s, -0.3 * s);
     let root = b + vec2(-f * 0.65 * s, -0.2 * s);
     wing(&mut out, shoulder + vec2(f * 0.22 * s, -0.08 * s), root, f, 0.9 * s, lift, spread, [WING_FAR, WING_FAR]);
 
     // One spine from the head down the neck, along the body and out to the tip of the tail; the
     // tail sways in a wave running down it.
-    let chest = b + vec2(f * 0.75 * s, -0.1 * s);
-    let hips = b + vec2(-f * 0.75 * s, 0.05 * s);
+    // The slow wave runs down it: the chest and hips rise and fall in turn, the tail most.
+    let chest = b + vec2(f * 0.75 * s, (-0.1 + wave(0.15, t)) * s);
+    let hips = b + vec2(-f * 0.75 * s, (0.05 + wave(0.4, t)) * s);
     let mut spine = Vec::new();
     let mut widths = Vec::new();
     for k in 0..8 {
         let u = k as f32 / 8.0;
-        spine.push(bend(d.head, b + vec2(f * 1.45 * s, -0.2 * s), chest, u));
+        spine.push(bend(d.head, b + vec2(f * 1.45 * s, (-0.2 + wave(0.05, t)) * s), chest, u));
         widths.push((0.3 + 0.2 * u) * s);
     }
     let neck = spine.len();
     for k in 0..10 {
         let u = k as f32 / 10.0;
-        spine.push(bend(chest, b + vec2(0.0, 0.14 * s), hips, u));
+        spine.push(bend(chest, b + vec2(0.0, (0.14 + wave(0.28, t)) * s), hips, u));
         widths.push((0.5 + 0.18 * (u * PI).sin() - 0.05 * u) * s);
     }
     let tail = spine.len();
     for k in 0..=14 {
         let u = k as f32 / 14.0;
-        let sway = 0.2 * (2.2 * t - 3.0 * u).sin() * u;
+        let sway = wave(0.4 + 0.6 * u, t) - wave(0.4, t);
         spine.push(hips + vec2(-f * 2.4 * u, 0.5 * u + sway) * s);
         widths.push((0.45 * (1.0 - u) + 0.04) * s);
     }
@@ -1422,7 +1467,7 @@ impl App {
         if busy && lift.duck.is_none() {
             lift.duck = Some(now);
         }
-        let p = pose((now - lift.started) as f32, lift.duck.map(|d| (d - lift.started) as f32));
+        let p = pose_of(lift.by, (now - lift.started) as f32, lift.duck.map(|d| (d - lift.started) as f32));
         if p.done || self.target != lift.page || lift.at > self.doc.total_chars() {
             self.eggs.lift = None;
         } else {
@@ -1434,7 +1479,7 @@ impl App {
     pub fn lifting(&self, ctx: &egui::Context, i: usize) -> Option<(Carrier, Pose, std::ops::Range<usize>)> {
         let lift = self.eggs.lift.filter(|l| l.page == i)?;
         let now = ctx.input(|inp| inp.time);
-        let p = pose((now - lift.started) as f32, lift.duck.map(|d| (d - lift.started) as f32));
+        let p = pose_of(lift.by, (now - lift.started) as f32, lift.duck.map(|d| (d - lift.started) as f32));
         let start = self.doc.spans[i].start;
         let (end, _) = self.doc.term_from(lift.at, self.doc.char_to_byte(lift.at));
         Some((lift.by, p, lift.at.saturating_sub(start)..end.saturating_sub(start)))
@@ -1512,11 +1557,23 @@ mod tests {
     fn the_dragon_beats_its_wings_and_breathes_fire_from_its_mouth() {
         let page = Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0));
         let place = Rect::from_min_size(pos2(500.0, 400.0), vec2(200.0, 30.0));
+        // Over the title's place, at moments of the wings' own time.
         let over = ENTER + RUN;
-        let tip = |t: f32| dragon_in(t, place, page, &[WING, WING_SHADE]).iter().map(|s| s.visual_bounding_rect().top()).fold(f32::MAX, f32::min);
-        let (up, down) = (tip(over + FLAP / 4.0), tip(over + FLAP * 3.0 / 4.0));
-        let d = dragon_at(Carrier::Dragon { right: true }, pose(over, None), place, page);
+        let at = |t: f32| Pose { t, ..pose(over, None) };
+        let by = Carrier::Dragon { right: true };
+        let tip = |t: f32| {
+            let skin = dragon(by, at(t), place, page).into_iter().filter(|s| matches!(s, Shape::Path(p) if [WING, WING_SHADE].contains(&p.fill)));
+            skin.map(|s| s.visual_bounding_rect().top()).fold(f32::MAX, f32::min)
+        };
+        let (up, down) = (tip(FLAP / 4.0), tip(FLAP * 3.0 / 4.0));
+        let d = dragon_at(by, at(0.0), place, page);
         assert!(down - up > d.size, "up and down: {up} {down}");
+        // Two beats, then a glide: the wings hardly move for a while, spread.
+        let swing = |from: f32, to: f32| {
+            let tips: Vec<f32> = (0..=10).map(|k| tip(from + (to - from) * k as f32 / 10.0)).collect();
+            tips.iter().fold(f32::MIN, |a, &b| a.max(b)) - tips.iter().fold(f32::MAX, |a, &b| a.min(b))
+        };
+        assert!(swing(2.35 * FLAP, 2.65 * FLAP) < 0.05 * swing(0.0, FLAP), "a glide after two beats");
         for k in 0..8 {
             let t = k as f32 * 0.37;
             let d = dragon_at(Carrier::Dragon { right: true }, pose(t, None), place, page);
@@ -1530,6 +1587,37 @@ mod tests {
         let big = |t: f32| dragon_in(t, place, page, &FIRE[..1]).iter().fold(Rect::NOTHING, |r, s| r | s.visual_bounding_rect()).area();
         // Both while it looks at the writer.
         assert!(big(BREATH * 1.25) > 2.0 * big(BREATH * 1.75), "a great breath now and then: {} {}", big(BREATH * 1.25), big(BREATH * 1.75));
+    }
+
+    #[test]
+    fn the_dragon_takes_its_time_and_its_body_moves_in_a_slow_wave_while_the_title_stays_still() {
+        let by = Carrier::Dragon { right: true };
+        let balloon = Carrier::Balloon { right: true };
+        let over = ENTER + RUN;
+        assert!(pose_of(balloon, over, None).run == 1.0 && pose_of(by, over, None).run < 0.6, "slower than the balloon");
+        let course = (ENTER + RUN + LOWER + SETTLE + UNHOOK + LEAVE) * by.pace();
+        assert!(course > 5.0 && !pose_of(by, course - 0.1, None).done && pose_of(by, course, None).done, "{course}");
+        // Over its place, through a few seconds of its own time.
+        let page = Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0));
+        let place = Rect::from_min_size(pos2(500.0, 400.0), vec2(200.0, 30.0));
+        let at = |t: f32| dragon_at(by, Pose { t, ..pose(over, None) }, place, page);
+        let seen: Vec<Dragon> = (0..30).map(|k| at(k as f32 * 0.1)).collect();
+        let span = |f: &dyn Fn(&Dragon) -> f32| {
+            let v: Vec<f32> = seen.iter().map(f).collect();
+            v.iter().fold(f32::MIN, |a, &b| a.max(b)) - v.iter().fold(f32::MAX, |a, &b| a.min(b))
+        };
+        let s = seen[0].size;
+        assert!(span(&|d| d.body.y) > 0.08 * s && span(&|d| d.body.y) < 0.3 * s, "the body rises and falls, gently");
+        assert!(span(&|d| d.head.y) > 0.05 * s, "and the head");
+        assert!(span(&|d| d.feet[0].y) == 0.0 && span(&|d| d.feet[1].x) == 0.0, "the title held still");
+        // The tail swings most.
+        let tail = |t: f32| {
+            let shapes = dragon(by, Pose { t, ..pose(over, None) }, place, page);
+            shapes.iter().filter_map(|s| match s { Shape::Path(p) if p.fill == SCALES_DARK && p.points.len() == 4 => Some(p.points[0].y), _ => None }).next_back().unwrap()
+        };
+        let tips: Vec<f32> = (0..30).map(|k| tail(k as f32 * 0.1)).collect();
+        let swing = tips.iter().fold(f32::MIN, |a, &b| a.max(b)) - tips.iter().fold(f32::MAX, |a, &b| a.min(b));
+        assert!(swing > 2.0 * span(&|d| d.body.y), "the tail sways: {swing}");
     }
 
     #[test]

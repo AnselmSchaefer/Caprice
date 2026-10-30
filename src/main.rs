@@ -5632,9 +5632,10 @@ mod tests {
         chapter_one(h);
         assert!(h.app.eggs.lift.is_some(), "it came");
         let coming = h.painted_at("Chapter One").expect("the title is drawn");
-        h.frames(70, vec![], Modifiers::NONE);
+        let pace = h.app.eggs.lift.unwrap().by.pace();
+        h.frames((70.0 * pace) as usize, vec![], Modifiers::NONE);
         let over = h.painted_at("Chapter One").unwrap();
-        h.frames(240, vec![], Modifiers::NONE);
+        h.frames((240.0 * pace) as usize, vec![], Modifiers::NONE);
         assert!(h.app.eggs.lift.is_none(), "and went");
         let rest = h.painted_at("Chapter One").unwrap();
         assert!((over.x - rest.x).abs() < 5.0 && over.y <= rest.y, "it is carried over its place: {over:?}, {rest:?}");
@@ -5666,7 +5667,7 @@ mod tests {
             h.type_text(&format!("Chapter {n}"));
             h.click_widget("Chapter");
             assert!(h.app.eggs.lift.is_some_and(|l| matches!(l.by, eggs::Carrier::Dragon { .. })), "Chapter {n}");
-            h.frames(300, vec![], Modifiers::NONE);
+            h.frames(420, vec![], Modifiers::NONE);
             assert!(h.app.eggs.lift.is_none(), "and went");
             h.key(Key::Enter, Modifiers::NONE);
         }
