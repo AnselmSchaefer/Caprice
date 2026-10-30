@@ -5505,7 +5505,7 @@ mod tests {
         h.frames(3, vec![], Modifiers::NONE);
         let ctx = h.ctx.clone();
         h.app.themes.choose(&ctx, theme);
-        h.app.eggs.odds = odds;
+        h.app.eggs.odds = Some(odds);
         h.wait(1.0);
     }
 
@@ -5575,7 +5575,7 @@ mod tests {
         assert!(h.app.eggs.houses.is_empty(), "no houses in the garden");
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
-        h.app.eggs.odds = 1.0;
+        h.app.eggs.odds = Some(1.0);
         chapter_one(&mut h);
         assert!(h.app.eggs.plants.is_empty() && h.app.eggs.houses.is_empty() && h.app.eggs.lift.is_none());
     }
@@ -5655,6 +5655,21 @@ mod tests {
         let from = h.painted_at("Chapter Two").unwrap();
         h.frames(300, vec![], Modifiers::NONE);
         assert!(from.x < h.painted_at("Chapter Two").unwrap().x - 100.0, "the next from the left: {from:?}");
+    }
+
+    #[test]
+    fn in_the_magic_city_the_dragon_brings_every_new_chapter_title() {
+        let mut h = Harness::new();
+        in_the_theme(&mut h, theme::Theme::City, 0.0);
+        h.app.eggs.odds = None;
+        for n in ["One", "Two", "Three", "Four", "Five"] {
+            h.type_text(&format!("Chapter {n}"));
+            h.click_widget("Chapter");
+            assert!(h.app.eggs.lift.is_some_and(|l| matches!(l.by, eggs::Carrier::Dragon { .. })), "Chapter {n}");
+            h.frames(300, vec![], Modifiers::NONE);
+            assert!(h.app.eggs.lift.is_none(), "and went");
+            h.key(Key::Enter, Modifiers::NONE);
+        }
     }
 
     #[test]

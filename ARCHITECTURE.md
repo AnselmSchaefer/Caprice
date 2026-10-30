@@ -1067,7 +1067,8 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   up, a tenth of a second's growth a frame at most; a story opened comes with its garden grown.
   Its shapes come from a seed of `story_id` (saved, R22) and the plant's number, and the stem's
   course at a height does not depend on how tall it is, so growing only adds at the top.
-- **A new chapter title is brought in now and then** (`ODDS`), when the writer makes a paragraph
+- **A new chapter title is brought in** (`Carrier::odds`: the dragon every time, the balloon now
+  and then, `ODDS`; `Eggs::odds` overrides both for tests), when the writer makes a paragraph
   with words in it a chapter title with the Chapter button (`maybe_lift_title`, from
   `apply_tools`): not on opening a file, undo, or a title made any other way. Which theme brings it
   how is `Carrier::of`: the balloon floats, and the dragon flies, in from the side at the title's
@@ -1079,8 +1080,14 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   by its top in its feet (`dragon_at`), beats its wings (`FLAP`) and breathes fire (`BREATH`), and
   turns its head as `Pose::look` says: back at the city while it comes, at the writer over the
   title's place, down at the page while it lowers it, ahead once it lets go or hurries away.
-  Looking back over itself, its fire is only a puff, so it does not cross its own back. The beat,
-  the fire and the tail come from `Pose::t`, so a test can look at any moment. Typing, clicking or scrolling sets the title down at once
+  Its head is drawn in three dimensions (`Turn`, `dragon_head`): each part is the convex hull of
+  points round it, turned by a yaw and a pitch and drawn from the furthest to the nearest, so in
+  profile the far eye and horn go behind it, and turning from the city to the page it turns
+  through facing the writer. Its body is one tapering spine from the head to the tail (`ribbon`),
+  with belly plates, spikes and a spade; its wings have an arm and four fingers, spread fuller on
+  the down beat. Its jaw opens with its breath of fire. Looking back over itself, its fire is only
+  a puff, so it does not cross its own back. The beat, the fire, the smoke and the tail come from
+  `Pose::t`, so a test can look at any moment. Typing, clicking or scrolling sets the title down at once
   and the carrier hurries away (`update_lift`); a page turned ends it. A new carrier is a `Carrier`
   variant, its way in `rig` and its drawing in `draw_carrier`.
 - **The title being brought is only drawn elsewhere.** `editor_surface` moves the title's pieces of
@@ -1115,6 +1122,7 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   `the_garden_grows_only_in_its_theme_the_houses_only_in_the_city_and_nothing_brings_a_title_elsewhere`,
   `now_and_then_in_the_magic_city_a_dragon_flies_in_a_new_chapter_title_from_either_side`,
   `the_dragon_holds_the_title_in_its_claws_breathing_fire`,
+  `in_the_magic_city_the_dragon_brings_every_new_chapter_title`,
   `now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title_from_either_side`,
   `the_title_hangs_from_the_balloon_by_ropes_tied_to_its_ends`,
   `going_on_writing_while_a_title_is_brought_sets_it_down_at_once`,
@@ -1310,6 +1318,8 @@ when the writer goes on; nothing moved in the layout, nothing in print or the fi
 - **2026-10-30 — A dragon brings the Magic City's new chapters.** Asked for: no more crane, but a
   dragon flying in like the balloon, wings beating, breathing fire, turning its head to the city,
   the writer and the page, the title in its feet. It takes the balloon's path and course in time,
-  so the two carriers differ only in their picture and where the dragon looks (R30).
+  so the two carriers differ only in their picture and where the dragon looks (R30). Then asked
+  for: the dragon at every new chapter, and more lifelike. The balloon stays a rare surprise; the
+  city's dragon is its show, so each carrier has its own odds (`Carrier::odds`).
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

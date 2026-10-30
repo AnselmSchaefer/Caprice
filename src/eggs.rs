@@ -3,9 +3,10 @@
 //! chapter has begun. In the Magic City a street of little houses stands there instead, a floor for
 //! each page: a new floor is a light that flows out of a window and spreads into the floor. Some
 //! windows are lit, a few of them flickering slightly; some houses have a little tower with a
-//! pennant, a statue on the roof, balconies or arched windows. Now and then, when the writer makes a paragraph a chapter title, it is
-//! brought in: in the garden a hot-air balloon floats down with it hanging below its basket, sets it
-//! in place and rises away; in the Magic City a dragon flies in with it held in its feet, flapping
+//! pennant, a statue on the roof, balconies or arched windows. When the writer makes a paragraph a
+//! chapter title, it is brought in: in the garden now and then a hot-air balloon floats down with
+//! it hanging below its basket, sets it in place and rises away; in the Magic City every time a
+//! dragon flies in with it held in its feet, flapping
 //! its wings and breathing fire, looks round at the city, at the writer and at the page, sets the
 //! title in place and flies away. Both follow one course in time (`pose`), each along its own way
 //! (`rig`).
@@ -41,6 +42,15 @@ impl Carrier {
             _ => None,
         }
     }
+
+    /// The chance that making a chapter title calls it: the dragon comes for every new chapter,
+    /// the balloon now and then.
+    pub fn odds(self) -> f64 {
+        match self {
+            Carrier::Dragon { .. } => 1.0,
+            Carrier::Balloon { .. } => ODDS,
+        }
+    }
 }
 
 /// How tall a plant grows at most, in shares of the desk's height, and how many pages it takes to
@@ -49,7 +59,7 @@ const TALLEST: f32 = 0.55;
 const PAGES: f32 = 8.0;
 /// How fast a plant grows to its height, in shares of its tallest a second.
 const GROW: f32 = 0.5;
-/// The chance that making a chapter title calls the dragon or the balloon.
+/// The chance that making a chapter title calls the balloon.
 pub const ODDS: f64 = 1.0 / 3.0;
 
 const STEM: Color32 = Color32::from_rgb(86, 142, 66);
@@ -66,21 +76,33 @@ const PETALS: [Color32; 5] = [
 ];
 const HEART: Color32 = Color32::from_rgb(232, 168, 40);
 
-/// The dragon: its scales, belly and wings, its claws and horns, its eyes, and its fire from
-/// the outside in.
+/// The dragon: its scales, lighter along its back and darker in its shadows, its belly and the
+/// plates across it, its wings' skin in two shades and their bones, its claws, horns and teeth,
+/// its eyes, the inside of its mouth, its fire from the outside in, and its smoke.
 const SCALES: Color32 = Color32::from_rgb(58, 146, 92);
-const SCALES_DARK: Color32 = Color32::from_rgb(36, 102, 66);
-const BELLY: Color32 = Color32::from_rgb(236, 204, 116);
-const WING: Color32 = Color32::from_rgb(104, 186, 120);
-const WING_FAR: Color32 = Color32::from_rgb(46, 118, 78);
+const SCALES_LIGHT: Color32 = Color32::from_rgb(96, 178, 116);
+const SCALES_SHADE: Color32 = Color32::from_rgb(46, 124, 78);
+const SCALES_DARK: Color32 = Color32::from_rgb(32, 92, 60);
+const BELLY: Color32 = Color32::from_rgb(232, 200, 118);
+const BELLY_DARK: Color32 = Color32::from_rgb(196, 160, 86);
+const WING: Color32 = Color32::from_rgb(112, 178, 120);
+const WING_SHADE: Color32 = Color32::from_rgb(92, 158, 104);
+const WING_FAR: Color32 = Color32::from_rgb(44, 108, 72);
+const BONE: Color32 = Color32::from_rgb(40, 100, 66);
 pub const CLAW: Color32 = Color32::from_rgb(246, 236, 210);
 const HORN: Color32 = Color32::from_rgb(214, 184, 120);
-pub const EYE: Color32 = Color32::from_rgb(255, 222, 70);
+pub const EYE: Color32 = Color32::from_rgb(255, 210, 60);
 const PUPIL: Color32 = Color32::from_rgb(30, 24, 20);
-pub const FIRE: [Color32; 3] = [Color32::from_rgb(228, 70, 38), Color32::from_rgb(250, 146, 40), Color32::from_rgb(255, 228, 120)];
+const MOUTH: Color32 = Color32::from_rgb(120, 30, 36);
+pub const FIRE: [Color32; 4] = [
+    Color32::from_rgb(214, 56, 32),
+    Color32::from_rgb(244, 118, 36),
+    Color32::from_rgb(252, 182, 58),
+    Color32::from_rgb(255, 238, 160),
+];
 /// How tall the dragon is from the title it holds to the tips of its wings, in its sizes; and
 /// the seconds one beat of its wings takes, and one breath of fire.
-const DRAGON_TALL: f32 = 3.4;
+const DRAGON_TALL: f32 = 3.6;
 pub const FLAP: f32 = 0.55;
 const BREATH: f32 = 0.9;
 
@@ -141,8 +163,9 @@ pub struct Eggs {
     pub lift: Option<Lift>,
     /// Where the title being lifted lies on the screen, from the last page drawn.
     pub place: Option<Rect>,
-    /// The chance that making a chapter title calls the dragon or the balloon (`ODDS`; tests set it to 0 or 1).
-    pub odds: f64,
+    /// The chance that making a chapter title calls the dragon or the balloon, if not theirs
+    /// (`Carrier::odds`); tests set it to 0 or 1.
+    pub odds: Option<f64>,
     /// The side the last dragon or balloon came from: the next comes from the other.
     from_right: bool,
     rng: u64,
@@ -173,7 +196,7 @@ pub struct Lift {
 impl Default for Eggs {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64);
-        Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, measured: None, lift: None, place: None, odds: ODDS, from_right: false, rng: seed | 1, plants: Vec::new(),
+        Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, measured: None, lift: None, place: None, odds: None, from_right: false, rng: seed | 1, plants: Vec::new(),
             built_for: None, built: 0.0, built_at: 0.0, houses: Vec::new(), light: None }
     }
 }
@@ -401,6 +424,98 @@ fn flame(at: Pos2, dir: Vec2, len: f32, width: f32, color: Color32) -> Shape {
     Shape::convex_polygon(points.collect(), color, Stroke::NONE)
 }
 
+/// The smallest convex shape around `points`, so that anything can be filled (R11).
+fn hull(mut points: Vec<Pos2>, color: Color32) -> Shape {
+    points.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    let turn = |o: Pos2, a: Pos2, b: Pos2| (a - o).x * (b - o).y - (a - o).y * (b - o).x;
+    let mut out: Vec<Pos2> = Vec::new();
+    for pass in 0..2 {
+        let start = out.len();
+        let mut walk = |q: Pos2| {
+            while out.len() >= start + 2 && turn(out[out.len() - 2], out[out.len() - 1], q) <= 0.0 {
+                out.pop();
+            }
+            out.push(q);
+        };
+        if pass == 0 { points.iter().for_each(|&q| walk(q)) } else { points.iter().rev().for_each(|&q| walk(q)) }
+        out.pop();
+    }
+    Shape::convex_polygon(out, color, Stroke::NONE)
+}
+
+/// A body tapering along `spine`, `widths` thick at its points: a convex piece for each stretch
+/// and a round at each joint, so it bends smoothly.
+fn ribbon(spine: &[Pos2], widths: &[f32], color: Color32) -> Vec<Shape> {
+    let mut out = Vec::new();
+    for (k, w) in spine.windows(2).enumerate() {
+        let n = (w[1] - w[0]).normalized().rot90();
+        let (a, b) = (widths[k] / 2.0, widths[k + 1] / 2.0);
+        out.push(Shape::convex_polygon(vec![w[0] + n * a, w[1] + n * b, w[1] - n * b, w[0] - n * a], color, Stroke::NONE));
+    }
+    out.extend(spine.iter().zip(widths).map(|(&p, &w)| Shape::circle_filled(p, w / 2.0, color)));
+    out
+}
+
+/// A point along the curve from `a` to `b` pulled towards `c`, at `s` from 0 to 1.
+fn bend(a: Pos2, c: Pos2, b: Pos2, s: f32) -> Pos2 {
+    let m = |p: Pos2, q: Pos2| p + (q - p) * s;
+    m(m(a, c), m(c, b))
+}
+
+/// The head turned `yaw` from facing the writer (a quarter turn is in profile, to the right when
+/// it is positive) and `pitch` down: a point `[forward, up, right]` of it, in head sizes, comes
+/// out on the screen at `x`, `y`, and `z` towards the writer.
+#[derive(Clone, Copy)]
+struct Turn {
+    forward: [f32; 3],
+    up: [f32; 3],
+    right: [f32; 3],
+}
+
+impl Turn {
+    fn new(yaw: f32, pitch: f32) -> Turn {
+        let forward = [yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos()];
+        // Up on the screen is -y, made square to where the head points.
+        let lean = -forward[1];
+        let up = [-lean * forward[0], -1.0 - lean * forward[1], -lean * forward[2]];
+        let len = (up[0] * up[0] + up[1] * up[1] + up[2] * up[2]).sqrt();
+        let up = up.map(|c| c / len);
+        let right = [
+            up[1] * forward[2] - up[2] * forward[1],
+            up[2] * forward[0] - up[0] * forward[2],
+            up[0] * forward[1] - up[1] * forward[0],
+        ];
+        Turn { forward, up, right }
+    }
+
+    fn at(&self, p: [f32; 3]) -> [f32; 3] {
+        let axes = [self.forward, self.up, self.right];
+        [0, 1, 2].map(|i| axes.iter().zip(p).map(|(a, c)| a[i] * c).sum())
+    }
+
+    /// Where the snout points on the screen, and how long it looks there: 0 pointing at the writer.
+    fn aim(&self) -> (Vec2, f32) {
+        let v = vec2(self.forward[0], self.forward[1]);
+        (v.normalized(), v.length())
+    }
+}
+
+/// Points round an egg of the head: around `c`, `r` across in each of its directions, its long
+/// axis tipped by `tilt` from forward to up.
+fn egg(c: [f32; 3], r: [f32; 3], tilt: f32) -> Vec<[f32; 3]> {
+    let mut out = Vec::new();
+    for i in 0..7 {
+        let lat = PI * (i as f32 / 6.0 - 0.5);
+        for j in 0..12 {
+            let lon = 2.0 * PI * j as f32 / 12.0;
+            let (a, b) = (r[0] * lat.cos() * lon.cos(), r[1] * lat.sin());
+            let (a, b) = (a * tilt.cos() - b * tilt.sin(), a * tilt.sin() + b * tilt.cos());
+            out.push([c[0] + a, c[1] + b, c[2] + r[2] * lat.cos() * lon.sin()]);
+        }
+    }
+    out
+}
+
 /// Where the dragon is, and where it looks, at `p`.
 pub struct Dragon {
     /// The middle of its body, and its size: the height of its body.
@@ -409,24 +524,32 @@ pub struct Dragon {
     /// 1 when it flies to the right, -1 to the left.
     pub ahead: f32,
     pub head: Pos2,
-    /// Where its snout points, and how far it is turned away from the writer: 0 looking at them, 1
-    /// in profile.
+    /// Where its snout points on the screen, and how far it is turned away from the writer: 0
+    /// looking at them, 1 in profile.
     pub aim: Vec2,
     pub turned: f32,
+    turn: Turn,
     pub mouth: Pos2,
+    /// How far its jaw is open, from 0 shut; and how great its breath of fire.
+    jaw: f32,
+    breath: f32,
     /// Its feet, at the title's top while it holds it.
     pub feet: [Pos2; 2],
 }
 
-/// Where it looks at `look` (`Pose::look`) flying `ahead`: back down at the houses on the side
-/// it came from, out at the writer, down ahead at the page, and ahead on its way.
-fn gaze(look: f32, ahead: f32) -> (Vec2, f32) {
-    let keys = [(vec2(-ahead * 0.8, 0.6), 1.0), (vec2(0.0, 1.0), 0.0), (vec2(ahead * 0.45, 0.9), 1.0), (vec2(ahead, -0.15), 1.0)];
+/// How its head is turned at `look` (`Pose::look`) flying `ahead`: back down at the houses on the
+/// side it came from, round at the writer, down ahead at the page, and ahead on its way. Turning
+/// from one to the next, it turns through facing the writer, as a head does.
+fn gaze(look: f32, ahead: f32) -> Turn {
+    let keys = [(-ahead * 0.42 * PI, 0.6), (0.0, 0.25), (ahead * 0.45 * PI, 0.85), (ahead * 0.5 * PI, -0.1)];
     let k = (look.max(0.0) as usize).min(2);
     let s = (look - k as f32).clamp(0.0, 1.0);
-    let ((a, ta), (b, tb)) = (keys[k], keys[k + 1]);
-    ((a + (b - a) * s).normalized(), ta + (tb - ta) * s)
+    let ((ya, pa), (yb, pb)) = (keys[k], keys[k + 1]);
+    Turn::new(ya + (yb - ya) * s, pa + (pb - pa) * s)
 }
+
+/// The head's size, in the dragon's.
+const HEAD: f32 = 0.36;
 
 pub fn dragon_at(by: Carrier, p: Pose, place: Rect, page: Rect) -> Dragon {
     let r = rig(by, p, place, page);
@@ -434,128 +557,243 @@ pub fn dragon_at(by: Carrier, p: Pose, place: Rect, page: Rect) -> Dragon {
     // It flies away from the side it came from.
     let ahead = if matches!(by, Carrier::Dragon { right: true }) { -1.0 } else { 1.0 };
     let body = r.hook - vec2(0.0, 0.85 * s);
-    let (aim, turned) = gaze(p.look, ahead);
-    let head = body + vec2(ahead * 1.15 * s, -0.7 * s) + aim * 0.12 * s;
-    let hr = 0.32 * s;
-    let snout = head + aim * hr * 0.75 * turned + vec2(0.0, hr * 0.35) * (1.0 - turned);
-    let mouth = snout + aim * hr * (0.5 + 0.35 * turned) * turned + vec2(0.0, hr * 0.3) * (1.0 - turned);
+    let turn = gaze(p.look, ahead);
+    let (aim, _) = turn.aim();
+    let head = body + vec2(ahead * 1.3 * s, -0.95 * s);
+    // Fire always a little, and a great breath now and then. Looking back over itself at the city
+    // it only puffs, so as not to breathe fire over its own back.
+    let back = (1.0 + aim.x * ahead).clamp(0.25, 1.0);
+    let breath = (0.35 + 0.65 * (2.0 * PI * p.t / BREATH).sin().max(0.0)) * back;
+    let jaw = 0.1 + 0.4 * breath;
+    let tip = turn.at([1.45, -0.2 - 0.6 * jaw, 0.0]);
+    let mouth = head + vec2(tip[0], tip[1]) * HEAD * s;
     let feet = if p.hooked {
         let load = place.translate(r.offset);
         let grip = (load.width() * 0.4).min(0.55 * s);
         [load.center_top() + vec2(ahead * grip, 0.0), load.center_top() - vec2(ahead * grip, 0.0)]
     } else {
         // Tucked in under it.
-        [body + vec2(ahead * 0.2 * s, 0.6 * s), body + vec2(-ahead * 0.55 * s, 0.6 * s)]
+        [body + vec2(ahead * 0.3 * s, 0.55 * s), body + vec2(-ahead * 0.5 * s, 0.6 * s)]
     };
-    Dragon { body, size: s, ahead, head, aim, turned, mouth, feet }
+    let turned = turn.forward[0].abs() / turn.forward[0].hypot(turn.forward[2]).max(1e-6);
+    Dragon { body, size: s, ahead, head, aim, turned, turn, mouth, jaw, breath, feet }
+}
+
+/// The dragon's head, its parts drawn from the furthest from the writer to the nearest, so it
+/// turns as a head does: the far eye and horn go behind it in profile.
+fn dragon_head(d: &Dragon) -> Vec<Shape> {
+    let (h, size, turn, jaw) = (d.head, HEAD * d.size, d.turn, d.jaw);
+    let mut parts: Vec<(f32, Shape)> = Vec::new();
+    let mut part = |points: Vec<[f32; 3]>, color: Color32, nearer: f32| {
+        let seen: Vec<[f32; 3]> = points.into_iter().map(|q| turn.at(q)).collect();
+        let depth = seen.iter().map(|q| q[2]).sum::<f32>() / seen.len() as f32 + nearer;
+        parts.push((depth, hull(seen.iter().map(|q| h + vec2(q[0], q[1]) * size).collect(), color)));
+    };
+    // The lower jaw opens about its hinge below the back of the head.
+    let open = |q: [f32; 3]| {
+        let (a, b) = (q[0], q[1] + 0.15);
+        [a * jaw.cos() + b * jaw.sin(), b * jaw.cos() - a * jaw.sin() - 0.15, q[2]]
+    };
+    part(vec![[0.0, -0.15, 0.2], [0.0, -0.15, -0.2], [1.45, -0.2, 0.0], open([1.35, -0.3, 0.0])], MOUTH, -0.3);
+    part(egg([0.1, -0.4, 0.0], [0.45, 0.25, 0.34], 0.0), BELLY, -0.05);
+    part(egg([0.7, -0.3, 0.0], [0.72, 0.13, 0.27], 0.0).into_iter().map(open).collect(), SCALES_SHADE, 0.0);
+    for c in [-0.22, 0.22] {
+        for k in 0..4 {
+            let a = 0.55 + 0.24 * k as f32;
+            part(vec![[a - 0.05, -0.24, c], [a + 0.05, -0.24, c], [a, -0.38, c]], CLAW, 0.05);
+        }
+    }
+    part(egg([0.0, 0.05, 0.0], [0.62, 0.55, 0.5], 0.0), SCALES, 0.0);
+    part(egg([0.85, -0.04, 0.0], [0.72, 0.28, 0.32], 0.08), SCALES, 0.02);
+    for side in [-1.0, 1.0] {
+        let c = 0.3 * side;
+        part(egg([0.35, 0.3, side * 0.27], [0.3, 0.09, 0.12], 0.15), SCALES_DARK, 0.05);
+        // Horns sweeping back, in two pieces, and spikes down the cheek.
+        let ring = |a: f32, b: f32, c: f32, r: f32| (0..8).map(move |k| {
+            let t = k as f32 * PI / 4.0;
+            [a + r * t.cos(), b + r * t.sin(), c]
+        });
+        part(ring(-0.25, 0.45, c, 0.12).chain(ring(-0.75, 0.78, c * 1.3, 0.07)).collect(), HORN, 0.0);
+        part(ring(-0.75, 0.78, c * 1.3, 0.07).chain([[-1.3, 0.85, c * 1.45]]).collect(), HORN, 0.0);
+        for k in 0..3 {
+            let b = -0.15 + 0.17 * k as f32;
+            part(vec![[-0.3, b, side * 0.4], [-0.3, b + 0.12, side * 0.4], [-0.78, b + 0.02, side * 0.5]], SCALES_DARK, 0.0);
+        }
+        part(egg([1.5, 0.08, side * 0.12], [0.05, 0.04, 0.03], 0.0), PUPIL, 0.06);
+    }
+    parts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<Shape> = parts.into_iter().map(|(_, s)| s).collect();
+    // The eyes, each only when it faces the writer: in profile only the near one shows. A slit of
+    // a pupil, and a glint.
+    for side in [-1.0, 1.0] {
+        let normal = turn.at([0.3, 0.3, side]);
+        if normal[2] <= 0.05 {
+            continue;
+        }
+        let c = turn.at([0.32, 0.15, side * 0.4]);
+        let at = h + vec2(c[0], c[1]) * size;
+        out.push(Shape::circle_filled(at, 0.14 * size, EYE));
+        out.push(oval(at, vec2(0.0, 1.0), 0.11 * size, 0.035 * size, PUPIL));
+        out.push(Shape::circle_filled(at + vec2(-0.05, -0.05) * size, 0.03 * size, CLAW));
+    }
+    out
+}
+
+/// A wing from `shoulder`: its arm up to the wrist, four long fingers fanning from there, and
+/// the skin between them, scalloped, down to the body at `root`. It beats with `lift` (from -0.5
+/// down to 1 up) and is spread fuller on the down beat (`spread`).
+#[allow(clippy::too_many_arguments)]
+fn wing(out: &mut Vec<Shape>, shoulder: Pos2, root: Pos2, f: f32, k: f32, lift: f32, spread: f32, skin: [Color32; 2]) {
+    let angle = (-0.45 + 1.95 * (lift + 0.5) / 1.5).min(1.5);
+    let dir = |a: f32| vec2(-f * a.cos(), -a.sin());
+    let wrist = shoulder + dir(angle) * 1.05 * k * spread + vec2(f * 0.15 * k, 0.0);
+    let elbow = shoulder + dir(angle + 0.5) * 0.5 * k + vec2(f * 0.22 * k, -0.05 * k);
+    let tips: Vec<Pos2> = [1.3, 1.25, 1.1, 0.85].iter().enumerate()
+        .map(|(i, len)| wrist + dir(angle - (0.15 + i as f32 * 0.42) * spread) * *len * k * spread.sqrt())
+        .collect();
+    let scallop = |a: Pos2, b: Pos2| a + (b - a) * 0.5 + (wrist - (a + (b - a) * 0.5)) * 0.16;
+    out.push(Shape::convex_polygon(vec![shoulder, elbow, wrist], skin[0], Stroke::NONE));
+    let mut edge = tips.clone();
+    edge.push(root);
+    for (i, w) in edge.windows(2).enumerate() {
+        let m = scallop(w[0], w[1]);
+        let color = skin[i % 2];
+        out.push(Shape::convex_polygon(vec![wrist, w[0], m], color, Stroke::NONE));
+        out.push(Shape::convex_polygon(vec![wrist, m, w[1]], color, Stroke::NONE));
+    }
+    out.push(Shape::convex_polygon(vec![wrist, root, shoulder], skin[0], Stroke::NONE));
+    // The bones: the arm thick, the fingers thinning, and a claw at the wrist.
+    out.push(Shape::line(vec![shoulder, elbow, wrist], Stroke::new(0.09 * k, BONE)));
+    for &tip in &tips {
+        let mid = wrist + (tip - wrist) * 0.5;
+        out.push(Shape::line_segment([wrist, mid], Stroke::new(0.05 * k, BONE)));
+        out.push(Shape::line_segment([mid, tip], Stroke::new(0.03 * k, BONE)));
+    }
+    let up = dir(angle + 0.9);
+    out.push(Shape::convex_polygon(vec![wrist - up.rot90() * 0.04 * k, wrist + up * 0.16 * k, wrist + up.rot90() * 0.04 * k], CLAW, Stroke::NONE));
 }
 
 /// The dragon at `p`, the title's place at `place`: its wings beating, its tail swaying, the title
-/// in its claws while it holds it, its head turned where it looks, and fire from its mouth.
+/// in its claws while it holds it, its head turned where it looks, fire from its jaws and smoke
+/// from its nostrils.
 pub fn dragon(by: Carrier, p: Pose, place: Rect, page: Rect) -> Vec<Shape> {
     let d = dragon_at(by, p, place, page);
     let (b, s, f, t) = (d.body, d.size, d.ahead, p.t);
-    let line = (page.width() * 0.003).max(1.0);
     let mut out = Vec::new();
-    // A wing from its shoulder: a fan of convex pieces from the shoulder to its scalloped edge,
-    // up and down with the beat.
-    let lift = 0.32 + 0.68 * (2.0 * PI * t / FLAP).sin();
-    let wing = |out: &mut Vec<Shape>, shoulder: Pos2, scale: f32, color: Color32| {
-        let tip = shoulder + vec2(-f * 0.9 * s, -2.2 * s * lift) * scale;
-        let elbow = shoulder + (tip - shoulder) * 0.45 + vec2(f * 0.3 * s, 0.0) * scale;
-        let root = b + vec2(-f * 0.8 * s, -0.1 * s);
-        let edge: Vec<Pos2> = (1..4).map(|j| {
-            let q = tip + (root - tip) * (j as f32 / 4.0);
-            q + (q - shoulder).normalized() * 0.2 * s * scale
-        }).collect();
-        let points = [elbow, tip, edge[0], edge[1], edge[2], root];
-        for w in points.windows(2) {
-            out.push(Shape::convex_polygon(vec![shoulder, w[0], w[1]], color, Stroke::NONE));
-        }
-        let bone = Stroke::new(line, SCALES_DARK);
-        out.push(Shape::line(vec![shoulder, elbow, tip], bone));
-        for q in &edge {
-            out.push(Shape::line_segment([elbow, *q], Stroke::new(line * 0.6, SCALES_DARK)));
-        }
-    };
-    let shoulder = b + vec2(f * 0.1 * s, -0.28 * s);
-    wing(&mut out, shoulder + vec2(f * 0.2 * s, -0.05 * s), 0.85, WING_FAR);
-    // The tail, swaying, thinner towards its spade.
-    let tail: Vec<Pos2> = (0..=6).map(|k| {
-        let k = k as f32;
-        b + vec2(-f * (0.8 + 0.24 * k) * s, (0.06 * k + 0.1 * (3.0 * t + k * 0.9).sin() * k / 6.0) * s)
+    let phase = 2.0 * PI * t / FLAP;
+    let (lift, spread) = (0.25 + 0.75 * phase.sin(), 0.82 - 0.18 * phase.cos());
+    let shoulder = b + vec2(f * 0.25 * s, -0.3 * s);
+    let root = b + vec2(-f * 0.65 * s, -0.2 * s);
+    wing(&mut out, shoulder + vec2(f * 0.22 * s, -0.08 * s), root, f, 0.9 * s, lift, spread, [WING_FAR, WING_FAR]);
+
+    // One spine from the head down the neck, along the body and out to the tip of the tail; the
+    // tail sways in a wave running down it.
+    let chest = b + vec2(f * 0.75 * s, -0.1 * s);
+    let hips = b + vec2(-f * 0.75 * s, 0.05 * s);
+    let mut spine = Vec::new();
+    let mut widths = Vec::new();
+    for k in 0..8 {
+        let u = k as f32 / 8.0;
+        spine.push(bend(d.head, b + vec2(f * 1.45 * s, -0.2 * s), chest, u));
+        widths.push((0.3 + 0.2 * u) * s);
+    }
+    let neck = spine.len();
+    for k in 0..10 {
+        let u = k as f32 / 10.0;
+        spine.push(bend(chest, b + vec2(0.0, 0.14 * s), hips, u));
+        widths.push((0.5 + 0.18 * (u * PI).sin() - 0.05 * u) * s);
+    }
+    let tail = spine.len();
+    for k in 0..=14 {
+        let u = k as f32 / 14.0;
+        let sway = 0.2 * (2.2 * t - 3.0 * u).sin() * u;
+        spine.push(hips + vec2(-f * 2.4 * u, 0.5 * u + sway) * s);
+        widths.push((0.45 * (1.0 - u) + 0.04) * s);
+    }
+    // Which way is its back at each point.
+    let top: Vec<Vec2> = (0..spine.len()).map(|k| {
+        let (a, c) = (spine[k.saturating_sub(1)], spine[(k + 1).min(spine.len() - 1)]);
+        (c - a).normalized().rot90() * -f
     }).collect();
-    for (k, w) in tail.windows(2).enumerate() {
-        let width = 0.38 * s * (1.0 - k as f32 / 7.5);
-        out.push(Shape::line_segment([w[0], w[1]], Stroke::new(width, SCALES)));
-        out.push(Shape::circle_filled(w[1], width / 2.0, SCALES));
-    }
-    let end = tail[6];
-    out.push(Shape::convex_polygon(vec![end + vec2(-f * 0.32 * s, 0.04 * s), end + vec2(0.0, 0.16 * s), end + vec2(0.0, -0.16 * s)], SCALES_DARK, Stroke::NONE));
-    // Its legs, down to the title's top, the claws curled over it.
-    for (hip, foot) in [(b + vec2(f * 0.4 * s, 0.2 * s), d.feet[0]), (b + vec2(-f * 0.35 * s, 0.2 * s), d.feet[1])] {
-        let knee = hip + (foot - hip) * 0.5 + vec2(-f * 0.12 * s, 0.0);
-        out.push(Shape::line_segment([hip, knee], Stroke::new(0.18 * s, SCALES)));
-        out.push(Shape::line_segment([knee, foot], Stroke::new(0.1 * s, SCALES)));
-        for dx in [-0.1, 0.0, 0.1] {
-            out.push(Shape::line_segment([foot, foot + vec2(dx * s, 0.12 * s)], Stroke::new(line, CLAW)));
+
+    // Its legs: the far ones behind, in shadow; the near ones hold the title.
+    let leg = |out: &mut Vec<Shape>, hip: Pos2, foot: Pos2, hind: bool, color: Color32| {
+        let bend_to = if hind { f * 0.22 } else { -f * 0.16 };
+        let knee = hip + (foot - hip) * 0.45 + vec2(bend_to * s, 0.0);
+        let ankle = foot + vec2(-f * if hind { 0.16 } else { 0.06 } * s, -0.16 * s);
+        if hind {
+            out.push(oval(hip + (knee - hip) * 0.4, (knee - hip).normalized(), 0.34 * s, 0.2 * s, color));
+        }
+        out.extend(ribbon(&[hip, knee, ankle, foot], &[0.24 * s, 0.14 * s, 0.1 * s, 0.08 * s], color));
+    };
+    let (front_hip, hind_hip) = (chest + vec2(-f * 0.05 * s, 0.2 * s), hips + vec2(f * 0.2 * s, 0.15 * s));
+    leg(&mut out, front_hip + vec2(f * 0.12 * s, -0.05 * s), front_hip + vec2(f * 0.35 * s, 0.4 * s), false, SCALES_DARK);
+    leg(&mut out, hind_hip + vec2(f * 0.12 * s, -0.05 * s), hind_hip + vec2(-f * 0.1 * s, 0.45 * s), true, SCALES_DARK);
+
+    out.extend(ribbon(&spine, &widths, SCALES));
+    // Its back catches the light, the scales show along its flank, plates cross its belly.
+    out.push(Shape::line(spine[..tail + 4].iter().zip(&top).zip(&widths).map(|((&q, &n), &w)| q + n * w * 0.3).collect(), Stroke::new(0.06 * s, SCALES_LIGHT)));
+    for k in neck..tail + 6 {
+        for row in [-0.05, 0.12] {
+            let at = spine[k] + top[k] * widths[k] * row + (spine[k + 1] - spine[k]) * 0.5 * (row * 4.0);
+            out.push(Shape::circle_filled(at, 0.035 * s, SCALES_SHADE));
         }
     }
-    let along = vec2(f, -0.15).normalized();
-    out.push(oval(b, along, 0.9 * s, 0.45 * s, SCALES));
-    out.push(oval(b + vec2(0.0, 0.14 * s), along, 0.7 * s, 0.2 * s, BELLY));
-    // Spikes along its back.
-    for k in 0..4 {
-        let at = b + along * (0.45 - 0.3 * k as f32) * s + vec2(-along.y, along.x) * -f * 0.36 * s;
-        let w = vec2(along.x, along.y) * 0.1 * s;
-        out.push(Shape::convex_polygon(vec![at - w, at + w, at - w * 0.4 - vec2(0.0, 0.2 * s)], SCALES_DARK, Stroke::NONE));
+    let belly: Vec<Pos2> = (2..tail + 5).map(|k| spine[k] - top[k] * widths[k] * 0.24).collect();
+    let thick: Vec<f32> = (2..tail + 5).map(|k| widths[k] * 0.48).collect();
+    out.extend(ribbon(&belly, &thick, BELLY));
+    for (k, (&c, &w)) in belly.iter().zip(&thick).enumerate().skip(1) {
+        let n = (c - belly[k - 1]).normalized().rot90();
+        out.push(Shape::line_segment([c + n * w * 0.45, c - n * w * 0.45], Stroke::new(0.02 * s, BELLY_DARK)));
     }
-    wing(&mut out, shoulder, 1.0, WING);
-    // The neck up to the head: wide at the body, narrower at the head.
-    let neck = b + along * 0.65 * s;
-    let n = (d.head - neck).normalized();
-    let (wn, wh) = (vec2(-n.y, n.x) * 0.24 * s, vec2(-n.y, n.x) * 0.15 * s);
-    out.push(Shape::convex_polygon(vec![neck + wn, d.head + wh, d.head - wh, neck - wn], SCALES, Stroke::NONE));
-    // Its head, turned where it looks: in profile one eye shows and the snout is long; looking at
-    // the writer, both eyes, and the snout short towards them.
-    let (h, hr, aim, turned) = (d.head, 0.32 * s, d.aim, d.turned);
-    let back = vec2(-aim.x.signum() * turned, 0.0);
-    for w in [-1.0, 1.0] {
-        let base = h + vec2(w * 0.3 * hr * (1.0 - turned), -0.75 * hr) + back * 0.2 * hr;
-        let tip = base + vec2(w * 0.3 * hr * (1.0 - turned), -0.8 * hr) + back * 0.6 * hr;
-        out.push(Shape::convex_polygon(vec![base - vec2(0.16 * hr, 0.0), tip, base + vec2(0.16 * hr, 0.0)], HORN, Stroke::NONE));
+    // Spikes down its back, smaller towards the tail, leaning back; a spade at the tail's tip.
+    for k in (3..spine.len() - 1).step_by(2) {
+        let (n, w) = (top[k], widths[k]);
+        let along = (spine[k + 1] - spine[k]).normalized();
+        let base = spine[k] + n * w * 0.42;
+        let h = 0.1 * s + 0.22 * w;
+        out.push(Shape::convex_polygon(vec![base - along * 0.25 * h, base + n * h + along * 0.35 * h, base + along * 0.45 * h], SCALES_DARK, Stroke::NONE));
     }
-    out.push(Shape::circle_filled(h, hr, SCALES));
-    let snout = h + aim * hr * 0.75 * turned + vec2(0.0, hr * 0.35) * (1.0 - turned);
-    let muzzle = if turned < 0.05 { vec2(1.0, 0.0) } else { aim };
-    out.push(oval(snout, muzzle, hr * (0.5 + 0.35 * turned), hr * 0.5, SCALES));
-    let across = vec2(1.0, 0.0) * (1.0 - turned);
-    for w in [-1.0, 1.0] {
-        let nostril = snout + aim * hr * 0.5 * turned + across * w * 0.2 * hr;
-        out.push(Shape::circle_filled(nostril, 0.06 * s, SCALES_DARK));
+    let (end, before) = (spine[spine.len() - 1], spine[spine.len() - 2]);
+    let (on, across) = ((end - before).normalized(), (end - before).normalized().rot90());
+    out.push(Shape::convex_polygon(vec![end + on * 0.45 * s, end + across * 0.2 * s, end - on * 0.08 * s, end - across * 0.2 * s], SCALES_DARK, Stroke::NONE));
+
+    // The near legs, down to the title's top, three claws of each foot curled over it.
+    leg(&mut out, front_hip, d.feet[0], false, SCALES);
+    leg(&mut out, hind_hip, d.feet[1], true, SCALES);
+    for foot in d.feet {
+        for dx in [-0.1, 0.0, 0.1] {
+            out.push(Shape::line_segment([foot, foot + vec2(dx * s, 0.13 * s)], Stroke::new(0.04 * s, CLAW)));
+        }
     }
-    let eye = h + vec2(0.0, -0.25 * hr) - aim * 0.1 * hr * turned;
-    let eyes: &[f32] = if turned < 0.6 { &[-1.0, 1.0] } else { &[0.0] };
-    for w in eyes {
-        let at = eye + vec2(w * 0.42 * hr * (1.0 - turned), 0.0);
-        out.push(Shape::circle_filled(at, 0.16 * hr, EYE));
-        out.push(Shape::circle_filled(at + aim * 0.05 * hr, 0.07 * hr, PUPIL));
-    }
-    // Fire: always a little, and a great breath now and then; it flickers. Looking back over
-    // itself at the city it only puffs, so as not to breathe fire over its own back.
-    let back = (1.0 + aim.x * f).clamp(0.25, 1.0);
-    let breath = (0.35 + 0.65 * (2.0 * PI * t / BREATH).sin().max(0.0)) * back;
-    let dir = Vec2::angled(aim.angle() + 0.08 * (17.0 * t).sin());
-    let len = s * 1.6 * breath * (0.6 + 0.4 * turned);
-    let width = 0.18 * (1.0 + 0.6 * (1.0 - turned));
+    wing(&mut out, shoulder, root, f, s, lift, spread, [WING, WING_SHADE]);
+    out.extend(dragon_head(&d));
+
+    // Fire: tongues from its jaws, each flickering on its own, the hottest in the middle; sparks
+    // flying off, and smoke curling up from its nostrils.
+    let long = d.turn.aim().1;
+    let dir = (d.aim * long + vec2(0.0, 0.3) * (1.0 - long)).normalized();
+    let len = s * 1.7 * d.breath * (0.45 + 0.55 * long);
     for (k, color) in FIRE.iter().enumerate() {
-        let share = 1.0 - 0.28 * k as f32;
-        let flicker = 1.0 + 0.12 * (31.0 * t + k as f32 * 2.1).sin();
-        out.push(flame(d.mouth, dir, len * share * flicker, len * share * width, *color));
+        for tongue in 0..3 - k.min(2) {
+            let wobble = 0.12 * (13.0 * t + tongue as f32 * 2.4 + k as f32).sin() * (tongue as f32 - 1.0);
+            let share = (1.0 - 0.22 * k as f32) * (1.0 + 0.12 * (29.0 * t + k as f32 * 2.1 + tongue as f32).sin());
+            let width = 0.22 * (1.0 + 0.25 * (1.0 - d.turned)) * (1.0 - 0.15 * k as f32);
+            out.push(flame(d.mouth, Vec2::angled(dir.angle() + wobble), len * share, len * share * width, *color));
+        }
     }
-    for k in 0..3 {
-        let spark = d.mouth + dir * len * (1.05 + 0.15 * k as f32) + vec2(-dir.y, dir.x) * len * 0.12 * (9.0 * t + k as f32 * 2.0).sin();
-        out.push(Shape::circle_filled(spark, 0.035 * s * breath, FIRE[1]));
+    for k in 0..5 {
+        let age = (1.7 * t + k as f32 * 0.2).fract();
+        let drift = dir.rot90() * (0.25 * (7.0 * t + k as f32 * 1.7).sin()) - vec2(0.0, 0.3 * age);
+        let spark = d.mouth + (dir * (0.7 + 0.6 * age) + drift) * len;
+        out.push(Shape::circle_filled(spark, 0.04 * s * d.breath * (1.0 - age), FIRE[2]));
+    }
+    for k in 0..4 {
+        let age = (0.9 * t + k as f32 * 0.25).fract();
+        let nostril = d.turn.at([1.5, 0.1, 0.0]);
+        let at = d.head + vec2(nostril[0], nostril[1]) * HEAD * s + vec2(0.12 * (3.0 * t + k as f32).sin(), -0.9 * age) * s;
+        let grey = (90.0 * (1.0 - age)) as u8;
+        out.push(Shape::circle_filled(at, (0.05 + 0.14 * age) * s, Color32::from_rgba_unmultiplied(130, 128, 136, grey)));
     }
     out
 }
@@ -1154,13 +1392,13 @@ impl App {
         }
     }
 
-    /// The paragraph at the caret was just made a chapter title: now and then, in a magic theme,
-    /// the dragon or the balloon comes to bring it into place.
+    /// The paragraph at the caret was just made a chapter title: in the Magic City the dragon comes
+    /// to bring it into place, in the Magic Garden now and then the balloon.
     pub fn maybe_lift_title(&mut self, ctx: &egui::Context) {
         let Some(mut by) = Carrier::of(self.themes.theme) else { return };
         let (at, _) = self.doc.para_start(self.selection().0);
         // Only a title with words in it: an empty one is no load.
-        if !self.doc.chapters(false).iter().any(|e| e.at == at) || self.eggs.roll() >= self.eggs.odds {
+        if !self.doc.chapters(false).iter().any(|e| e.at == at) || self.eggs.roll() >= self.eggs.odds.unwrap_or(by.odds()) {
             return;
         }
         let (Carrier::Balloon { right } | Carrier::Dragon { right }) = &mut by;
@@ -1275,7 +1513,7 @@ mod tests {
         let page = Rect::from_min_size(pos2(300.0, 50.0), vec2(600.0, 800.0));
         let place = Rect::from_min_size(pos2(500.0, 400.0), vec2(200.0, 30.0));
         let over = ENTER + RUN;
-        let tip = |t: f32| dragon_in(t, place, page, &[WING]).iter().map(|s| s.visual_bounding_rect().top()).fold(f32::MAX, f32::min);
+        let tip = |t: f32| dragon_in(t, place, page, &[WING, WING_SHADE]).iter().map(|s| s.visual_bounding_rect().top()).fold(f32::MAX, f32::min);
         let (up, down) = (tip(over + FLAP / 4.0), tip(over + FLAP * 3.0 / 4.0));
         let d = dragon_at(Carrier::Dragon { right: true }, pose(over, None), place, page);
         assert!(down - up > d.size, "up and down: {up} {down}");
@@ -1303,13 +1541,13 @@ mod tests {
         let eyes = |t: f32| dragon_in(t, place, page, &[EYE]).len();
         // In from the right, flying left: the houses it passed are behind it, to the right.
         let coming = at(ENTER * 0.8);
-        assert!(coming.ahead < 0.0 && coming.aim.x > 0.5 && coming.aim.y > 0.0 && coming.turned == 1.0, "back down at the city: {:?}", coming.aim);
+        assert!(coming.ahead < 0.0 && coming.aim.x > 0.5 && coming.aim.y > 0.0 && coming.turned > 0.9, "back down at the city: {:?}", coming.aim);
         assert_eq!(eyes(ENTER * 0.8), 1, "in profile");
         let over = ENTER + RUN + LOWER * 0.2;
         assert!(at(over).turned == 0.0 && eyes(over) == 2, "at the writer, with both eyes");
         let lowering = ENTER + RUN + LOWER;
         let p = at(lowering);
-        assert!(p.aim.x < -0.3 && p.aim.y > 0.7 && p.turned == 1.0 && eyes(lowering) == 1, "down ahead at the page: {:?}", p.aim);
+        assert!(p.aim.x < -0.3 && p.aim.y > 0.7 && p.turned > 0.9 && eyes(lowering) == 1, "down ahead at the page: {:?}", p.aim);
         // And it held the title by its feet all the while, at its top, either side of its middle.
         for t in [0.0, ENTER, over, lowering] {
             let d = at(t);
@@ -1491,4 +1729,5 @@ mod tests {
         assert!(height_of(1) < height_of(4) && height_of(40) < 1.0, "taller with more pages, never past its tallest");
     }
 }
+
 
