@@ -94,7 +94,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `ideas.rs` | The What next window (lower left): ways the story could go on from the caret, kept in the scratchpad |
 | `fonts.rs` | Installed fonts loaded on demand, a missing one drawn with a twin of the same widths |
 | `theme.rs` | The themes (`Theme`, `Palette`): colours and egui visuals around the page, the palette in use (`pal`), fading from one to the next, the choice kept in the data folder; the page's own `PAPER` and `INK` |
-| `eggs.rs` | What is hidden in the magic themes: in the Magic Garden a plant a chapter growing on the desk and a balloon flying in a new chapter title now and then; in the Magic City a street of houses a chapter, a floor a page, and a dragon flying a new title in held in its feet |
+| `eggs.rs` | What is hidden in the magic themes: in the Magic Garden a plant a chapter growing on the desk and a balloon flying in each new chapter title; in the Magic City a street of houses a chapter, a floor a page, and a dragon flying a new title in held in its feet |
 
 ---
 
@@ -1067,9 +1067,8 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   up, a tenth of a second's growth a frame at most; a story opened comes with its garden grown.
   Its shapes come from a seed of `story_id` (saved, R22) and the plant's number, and the stem's
   course at a height does not depend on how tall it is, so growing only adds at the top.
-- **A new chapter title is brought in** (`Carrier::odds`: the dragon every time, the balloon now
-  and then, `ODDS`; `Eggs::odds` overrides both for tests), when the writer makes a paragraph
-  with words in it a chapter title with the Chapter button (`maybe_lift_title`, from
+- **A new chapter title is brought in**, every time (`Eggs::odds` keeps it away for tests), when
+  the writer makes a paragraph with words in it a chapter title with the Chapter button (`maybe_lift_title`, from
   `apply_tools`): not on opening a file, undo, or a title made any other way. Which theme brings it
   how is `Carrier::of`: the balloon floats, and the dragon flies, in from the side at the title's
   height, each from the other side than the last, and away past the other. A title is often high
@@ -1147,7 +1146,7 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   `now_and_then_in_the_magic_city_a_dragon_flies_in_a_new_chapter_title_from_either_side`,
   `the_dragon_holds_the_title_in_its_claws_breathing_fire`,
   `the_dragon_flies_right_out_of_the_window_before_it_is_gone`,
-  `in_the_magic_city_the_dragon_brings_every_new_chapter_title`,
+  `the_dragon_and_the_balloon_bring_every_new_chapter_title`,
   `now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title_from_either_side`,
   `the_title_hangs_from_the_balloon_by_ropes_tied_to_its_ends`,
   `going_on_writing_while_a_title_is_brought_sets_it_down_at_once`,
@@ -1344,8 +1343,8 @@ when the writer goes on; nothing moved in the layout, nothing in print or the fi
   dragon flying in like the balloon, wings beating, breathing fire, turning its head to the city,
   the writer and the page, the title in its feet. It takes the balloon's path and course in time,
   so the two carriers differ only in their picture and where the dragon looks (R30). Then asked
-  for: the dragon at every new chapter, and more lifelike. The balloon stays a rare surprise; the
-  city's dragon is its show, so each carrier has its own odds (`Carrier::odds`). Then: it flew
+  for: the dragon at every new chapter, and more lifelike. The balloon stayed a rare surprise for a
+  day, then was asked for at every new chapter too (2026-10-31), so neither has odds of its own. Then: it flew
   too fast, and its body should move elegantly. It got its own pace rather than slowing the
   balloon too, and its wings, fire and tail kept real time, so it does not move in slow motion.
   Then: its flight was too like the balloon's; it should go with its wings. So its course is

@@ -5563,7 +5563,7 @@ mod tests {
         assert!(plants[0].0.height() > plants[1].0.height(), "the longer chapter is the taller plant");
         let page = h.app.last_page_rect;
         assert!(plants[0].0.right() < page.left() && plants[1].0.left() > page.right(), "one on either side of the page");
-        assert!(h.app.eggs.lift.is_none(), "the balloon did not come: it comes only now and then");
+        assert!(h.app.eggs.lift.is_none(), "the balloon was kept away");
     }
 
     #[test]
@@ -5660,17 +5660,20 @@ mod tests {
     }
 
     #[test]
-    fn in_the_magic_city_the_dragon_brings_every_new_chapter_title() {
-        let mut h = Harness::new();
-        in_the_theme(&mut h, theme::Theme::City, 0.0);
-        h.app.eggs.odds = None;
-        for n in ["One", "Two", "Three", "Four", "Five"] {
-            h.type_text(&format!("Chapter {n}"));
-            h.click_widget("Chapter");
-            assert!(h.app.eggs.lift.is_some_and(|l| matches!(l.by, eggs::Carrier::Dragon { .. })), "Chapter {n}");
-            h.frames((eggs::COURSE * eggs::Carrier::Dragon { right: true }.pace() * 60.0) as usize + 60, vec![], Modifiers::NONE);
-            assert!(h.app.eggs.lift.is_none(), "and went");
-            h.key(Key::Enter, Modifiers::NONE);
+    fn the_dragon_and_the_balloon_bring_every_new_chapter_title() {
+        for (theme, dragon) in [(theme::Theme::City, true), (theme::Theme::Garden, false)] {
+            let mut h = Harness::new();
+            in_the_theme(&mut h, theme, 0.0);
+            h.app.eggs.odds = None;
+            for n in ["One", "Two", "Three", "Four", "Five"] {
+                h.type_text(&format!("Chapter {n}"));
+                h.click_widget("Chapter");
+                let by = h.app.eggs.lift.map(|l| l.by);
+                assert!(by.is_some_and(|by| matches!(by, eggs::Carrier::Dragon { .. }) == dragon), "Chapter {n} in {theme:?}");
+                h.frames((eggs::COURSE * by.unwrap().pace() * 60.0) as usize + 60, vec![], Modifiers::NONE);
+                assert!(h.app.eggs.lift.is_none(), "and went");
+                h.key(Key::Enter, Modifiers::NONE);
+            }
         }
     }
 

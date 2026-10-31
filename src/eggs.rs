@@ -4,7 +4,7 @@
 //! each page: a new floor is a light that flows out of a window and spreads into the floor. Some
 //! windows are lit, a few of them flickering slightly; some houses have a little tower with a
 //! pennant, a statue on the roof, balconies or arched windows. When the writer makes a paragraph a
-//! chapter title, it is brought in: in the garden now and then a hot-air balloon floats down with
+//! chapter title, it is brought in: in the garden a hot-air balloon floats down with
 //! it hanging below its basket, sets it in place and rises away; in the Magic City every time a
 //! dragon flies in with it held in its feet, flapping
 //! its wings and breathing fire, looks round at the city, at the writer and at the page, sets the
@@ -51,15 +51,6 @@ impl Carrier {
             Carrier::Balloon { .. } => 1.0,
         }
     }
-
-    /// The chance that making a chapter title calls it: the dragon comes for every new chapter,
-    /// the balloon now and then.
-    pub fn odds(self) -> f64 {
-        match self {
-            Carrier::Dragon { .. } => 1.0,
-            Carrier::Balloon { .. } => ODDS,
-        }
-    }
 }
 
 /// How tall a plant grows at most, in shares of the desk's height, and how many pages it takes to
@@ -68,8 +59,6 @@ const TALLEST: f32 = 0.55;
 const PAGES: f32 = 8.0;
 /// How fast a plant grows to its height, in shares of its tallest a second.
 const GROW: f32 = 0.5;
-/// The chance that making a chapter title calls the balloon.
-pub const ODDS: f64 = 1.0 / 3.0;
 
 const STEM: Color32 = Color32::from_rgb(86, 142, 66);
 const LEAF: Color32 = Color32::from_rgb(112, 172, 82);
@@ -182,8 +171,8 @@ pub struct Eggs {
     /// the pages lie on, which what brings it comes in from beyond and leaves past.
     pub place: Option<Rect>,
     pub desk: Rect,
-    /// The chance that making a chapter title calls the dragon or the balloon, if not theirs
-    /// (`Carrier::odds`); tests set it to 0 or 1.
+    /// The chance that making a chapter title calls the dragon or the balloon, if not every time;
+    /// tests set it to 0 to keep them away.
     pub odds: Option<f64>,
     /// The side the last dragon or balloon came from: the next comes from the other.
     from_right: bool,
@@ -1530,12 +1519,12 @@ impl App {
     }
 
     /// The paragraph at the caret was just made a chapter title: in the Magic City the dragon comes
-    /// to bring it into place, in the Magic Garden now and then the balloon.
+    /// to bring it into place, in the Magic Garden the balloon.
     pub fn maybe_lift_title(&mut self, ctx: &egui::Context) {
         let Some(mut by) = Carrier::of(self.themes.theme) else { return };
         let (at, _) = self.doc.para_start(self.selection().0);
         // Only a title with words in it: an empty one is no load.
-        if !self.doc.chapters(false).iter().any(|e| e.at == at) || self.eggs.roll() >= self.eggs.odds.unwrap_or(by.odds()) {
+        if !self.doc.chapters(false).iter().any(|e| e.at == at) || self.eggs.roll() >= self.eggs.odds.unwrap_or(1.0) {
             return;
         }
         let (Carrier::Balloon { right } | Carrier::Dragon { right }) = &mut by;
