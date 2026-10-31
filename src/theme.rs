@@ -69,10 +69,11 @@ pub enum Theme {
     Typewriter,
     Garden,
     City,
+    Sea,
 }
 
 impl Theme {
-    pub const ALL: [Theme; 9] = [
+    pub const ALL: [Theme; 10] = [
         Theme::Midnight,
         Theme::Lagoon,
         Theme::Marmalade,
@@ -82,6 +83,7 @@ impl Theme {
         Theme::Typewriter,
         Theme::Garden,
         Theme::City,
+        Theme::Sea,
     ];
 
     pub fn name(self) -> &'static str {
@@ -95,6 +97,7 @@ impl Theme {
             Theme::Typewriter => "Typewriter",
             Theme::Garden => "Magic Garden",
             Theme::City => "Magic City",
+            Theme::Sea => "Magic Sea",
         }
     }
 
@@ -110,6 +113,7 @@ impl Theme {
             // What is hidden in these (`eggs.rs`) is for the writer to find.
             Theme::Garden => "Plant a story and see what comes up",
             Theme::City => "Lights on in a city that builds itself",
+            Theme::Sea => "Salt air, and a story that sets sail",
         }
     }
 
@@ -269,6 +273,24 @@ impl Theme {
                 caret: rgb(240, 170, 40),
                 thumb: rgb(140, 124, 190),
                 light: false,
+            },
+            // A summer sky over the harbour; the sea itself is drawn with the ships (`eggs.rs`).
+            Theme::Sea => Palette {
+                desk: rgb(178, 214, 232),
+                desk_top: rgb(222, 238, 248),
+                dock: rgb(246, 251, 253),
+                dock_edge: rgb(170, 202, 222),
+                btn: rgb(226, 240, 248),
+                btn_hover: rgb(204, 228, 242),
+                text: rgb(26, 54, 82),
+                text_hot: rgb(10, 32, 56),
+                text_dim: rgb(90, 122, 150),
+                accent: rgb(232, 96, 72),
+                on_accent: Color32::WHITE,
+                field: rgb(252, 254, 255),
+                caret: rgb(206, 70, 48),
+                thumb: rgb(120, 170, 206),
+                light: true,
             },
         }
     }

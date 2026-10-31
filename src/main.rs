@@ -595,6 +595,7 @@ impl App {
         self.grow_garden();
         self.draw_garden(ui, area, page_rect);
         self.draw_city(ui, area, page_rect);
+        self.draw_sea(ui, area, page_rect);
         let base = self.pos.floor() as usize;
         let t = self.pos - base as f32;
         self.animate_held(ui);
@@ -5573,12 +5574,17 @@ mod tests {
         assert!(h.app.eggs.plants.is_empty(), "no garden in the city");
         let mut h = Harness::new();
         in_the_garden(&mut h, 0.0);
-        assert!(h.app.eggs.houses.is_empty(), "no houses in the garden");
+        assert!(h.app.eggs.houses.is_empty() && h.app.eggs.ships.is_empty(), "no houses or ships in the garden");
+        let mut h = Harness::new();
+        in_the_theme(&mut h, theme::Theme::Sea, 1.0);
+        chapter_one(&mut h);
+        assert!(h.app.eggs.plants.is_empty() && h.app.eggs.houses.is_empty() && !h.app.eggs.ships.is_empty());
+        assert!(h.app.eggs.lift.is_none(), "no one brings a title to the sea");
         let mut h = Harness::new();
         h.frames(3, vec![], Modifiers::NONE);
         h.app.eggs.odds = Some(1.0);
         chapter_one(&mut h);
-        assert!(h.app.eggs.plants.is_empty() && h.app.eggs.houses.is_empty() && h.app.eggs.lift.is_none());
+        assert!(h.app.eggs.plants.is_empty() && h.app.eggs.houses.is_empty() && h.app.eggs.ships.is_empty() && h.app.eggs.lift.is_none());
     }
 
     #[test]
@@ -5626,6 +5632,42 @@ mod tests {
         h.key(Key::Backspace, Modifiers::NONE);
         h.frames(60, vec![], Modifiers::NONE);
         assert_eq!(floors(&h), pages);
+    }
+
+    #[test]
+    fn in_the_magic_sea_a_ship_is_built_a_part_a_page_and_sails_out_whole_when_the_next_chapter_begins() {
+        let mut h = Harness::new();
+        in_the_theme(&mut h, theme::Theme::Sea, 0.0);
+        // By chapter.
+        let ships = |h: &Harness| {
+            let mut ships: Vec<_> = h.app.eggs.ships.iter().map(|s| (s.0, s.2, s.3)).collect();
+            ships.sort();
+            ships
+        };
+        assert_eq!(ships(&h), [(0, 1, false)], "a keel in the yard for a story of one page");
+        let yard = h.app.eggs.ships[0].1;
+        assert!(beside_the_page(&h, yard), "on the desk, not on the page: {yard:?}");
+        chapter_one(&mut h);
+        h.key(Key::Enter, Modifiers::NONE);
+        while h.app.doc.pages() < 3 {
+            h.type_text(&"It was nearly midnight and the Prime Minister sat alone in his office. ".repeat(5));
+        }
+        h.frames(10, vec![], Modifiers::NONE);
+        assert!(h.app.eggs.ships[0].2 < 3, "built in sight: {:?}", ships(&h));
+        h.frames(300, vec![], Modifiers::NONE);
+        assert_eq!(ships(&h), [(0, 3, false)], "a part for each page");
+        assert_eq!(h.app.eggs.ships[0].1, yard, "still in the yard");
+
+        h.key(Key::Enter, Modifiers::NONE);
+        h.type_text("Chapter Two");
+        h.click_widget("Chapter");
+        h.frames(20, vec![], Modifiers::NONE);
+        assert_eq!(ships(&h), [(0, eggs::PARTS, false)], "finished at once, in the yard");
+        h.frames((eggs::LAUNCH * 60.0) as usize + 30, vec![], Modifiers::NONE);
+        assert_eq!(ships(&h), [(0, eggs::PARTS, true), (1, 1, false)], "launched, and the next ship begun");
+        let at = |k: usize| h.app.eggs.ships.iter().find(|s| s.0 == k).unwrap().1;
+        assert!(at(0).center().distance(yard.center()) > 100.0 && beside_the_page(&h, at(0)), "lying in the bay: {:?}", at(0));
+        assert_eq!(at(1), yard);
     }
 
     /// The title "Chapter One" as painted: as it is brought, over its place, and at rest.
@@ -5776,17 +5818,18 @@ mod tests {
     }
 
     #[test]
-    fn print_shows_neither_the_garden_the_houses_nor_what_brings_a_title() {
+    fn print_shows_neither_the_garden_the_houses_the_ships_nor_what_brings_a_title() {
         let mut h = Harness::new();
         chapter_one(&mut h);
         let ctx = h.ctx.clone();
         let plain = h.app.pdf(&ctx, 0..=0).unwrap();
-        for t in [theme::Theme::City, theme::Theme::Garden] {
+        for t in [theme::Theme::City, theme::Theme::Garden, theme::Theme::Sea] {
             let mut g = Harness::new();
             in_the_theme(&mut g, t, 1.0);
             chapter_one(&mut g);
             g.frames(70, vec![], Modifiers::NONE);
-            assert!(g.app.eggs.lift.is_some() && !(g.app.eggs.plants.is_empty() && g.app.eggs.houses.is_empty()), "{t:?}");
+            let drawn = !(g.app.eggs.plants.is_empty() && g.app.eggs.houses.is_empty() && g.app.eggs.ships.is_empty());
+            assert!(drawn && (g.app.eggs.lift.is_some() || eggs::Carrier::of(t).is_none()), "{t:?}");
             let ctx = g.ctx.clone();
             assert!(g.app.pdf(&ctx, 0..=0).unwrap() == plain, "{t:?}");
         }

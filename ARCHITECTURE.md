@@ -94,7 +94,7 @@ cast (names, looks, sheets)  ──named_in(what is painted, or just before)─�
 | `ideas.rs` | The What next window (lower left): ways the story could go on from the caret, kept in the scratchpad |
 | `fonts.rs` | Installed fonts loaded on demand, a missing one drawn with a twin of the same widths |
 | `theme.rs` | The themes (`Theme`, `Palette`): colours and egui visuals around the page, the palette in use (`pal`), fading from one to the next, the choice kept in the data folder; the page's own `PAPER` and `INK` |
-| `eggs.rs` | What is hidden in the magic themes: in the Magic Garden a plant a chapter growing on the desk and a balloon flying in each new chapter title; in the Magic City a street of houses a chapter, a floor a page, and a dragon flying a new title in held in its feet |
+| `eggs.rs` | What is hidden in the magic themes: in the Magic Garden a plant a chapter growing on the desk and a balloon flying in each new chapter title; in the Magic City a street of houses a chapter, a floor a page, and a dragon flying a new title in held in its feet; in the Magic Sea a ship a chapter, built in a yard a part a page and launched into the bay when the next chapter begins |
 
 ---
 
@@ -1025,8 +1025,8 @@ same in every theme, so what is printed (R20) and exported (R10) never depends o
 ### R30 — Hidden gems: on the desk, or over the page on the screen only; never moving anything
 
 The magic themes hide things for the writer to find (`eggs.rs`): the Magic Garden (`Theme::Garden`)
-a garden and a hot-air balloon, the Magic City (`Theme::City`) houses and a dragon. Their blurbs give nothing
-away. What a theme hides is its own: picking another theme is how to stop it.
+a garden and a hot-air balloon, the Magic City (`Theme::City`) houses and a dragon, the Magic Sea
+(`Theme::Sea`) ships. Their blurbs give nothing away. What a theme hides is its own: picking another theme is how to stop it.
 
 - **The garden lies on the desk, behind every page**, in the Magic Garden only. `draw_garden` is
   called in `frame` right after `page_rect` and before any page is drawn, so the pages hide what is
@@ -1062,7 +1062,26 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   arched windows) comes from its seed too, drawn after where it stands and how high it gets, so a
   new look never moves a floor. Whatever is added to a house stays within 4 of its walls: houses
   stand 8 apart, so nothing reaches the next one. Flickering needs frames: in the
-  Magic City the app asks for one every 80 ms even when idle; nothing else in the app does.
+  Magic City the app asks for one every 80 ms even when idle, and in the Magic Sea every 50 ms, for
+  the ships rocking and the waves drifting; nothing else in the app does.
+- **The sea lies on the desk the same way**, in the Magic Sea only: `draw_sea` is called right after
+  `draw_city`. A ship for each chapter, from the same `Doc::garden`, so it needs nothing kept of its
+  own either. The chapter being written (the last of `Doc::chapters`, or the only one) has its ship
+  in the yard on the left of the page, a part for each page its chapter has had, up to `PARTS`
+  (keel and ribs, planks below, planks above, rail and castle, stripe and portholes, main mast,
+  its sail, foremast, its sail, bowsprit and jib, topsails, flags); each part comes in sight out of
+  a little light (`Eggs::rigged`, `BUILD` seconds a part like a floor). Every other chapter's ship
+  is whole and lies in the bay (`Bay::places`: on the right of the page and on the left beyond the
+  yard, from the page outwards, taking turns; once a row is full, the next lies further out,
+  smaller and nearer the horizon). When the chapter in the yard changes to a later one, its ship is
+  launched (`Eggs::launch`, `Bay::launching`, `LAUNCH` seconds): the parts it lacks come in at
+  once, it slides down the slipway into the water and sails out to its place, turning about if it
+  lies the other way, and only then is the next keel laid. Ships are matched to chapters by order,
+  like plants. A story opened comes with its fleet in the bay and its ship built. What each ship
+  looks like (its stripe, sails and flags) and how it rocks come from `story_id` and its chapter.
+  The water in front of a hull below its waterline is drawn over it (`Bay::cover`), farther ships
+  first, so ships sit in the sea rather than on it. The Magic Sea has no `Carrier` yet: nothing
+  brings a title there.
 - **It grows in sight.** How far each plant is drawn grown (`Eggs::grown`, by `story_id`) only goes
   up, a tenth of a second's growth a frame at most; a story opened comes with its garden grown.
   Its shapes come from a seed of `story_id` (saved, R22) and the plant's number, and the stem's
@@ -1118,8 +1137,8 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   (R3, R20). The
   carrier is drawn in the settled branch in front of the page, after the peek's hand.
 - **None of it is printed or saved**: it is in none of `underlay`, `ink` or `furniture` (R20), and
-  nothing of it is in `Doc`. Its colours are the garden's, the houses', the balloon's and the dragon's own, like the emblem's,
-  not the palette's: they are pictures, not chrome.
+  nothing of it is in `Doc`. Its colours are the garden's, the houses', the ships', the sea's, the
+  balloon's and the dragon's own, like the emblem's, not the palette's: they are pictures, not chrome.
 - Tests: in `eggs.rs` `the_title_is_brought_in_carried_over_its_place_lowered_and_let_go`,
   `the_balloon_and_the_dragon_bring_the_title_in_from_the_side_and_go_away_past_the_other`,
   `the_dragon_beats_its_wings_and_breathes_fire_from_its_mouth`,
@@ -1133,7 +1152,11 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   `the_houses_take_turns_on_either_side_of_the_page_as_many_as_there_is_room_for`,
   `once_the_desk_is_full_the_houses_grow_higher_a_floor_each_in_turn`,
   `some_windows_are_lit_a_few_flickering_slightly_the_same_ones_for_the_same_story`,
-  `some_houses_have_a_little_tower_or_a_statue_and_none_reaches_the_next_house`; and
+  `some_houses_have_a_little_tower_or_a_statue_and_none_reaches_the_next_house`,
+  `a_ship_gets_a_part_for_each_page_until_it_is_whole`,
+  `the_ships_lie_in_the_bay_beside_the_page_each_in_a_place_of_its_own`,
+  `a_ship_launched_is_finished_at_once_slides_into_the_water_and_sails_to_its_place`; and
+  `in_the_magic_sea_a_ship_is_built_a_part_a_page_and_sails_out_whole_when_the_next_chapter_begins`,
   `in_the_magic_city_each_new_page_gives_a_house_a_floor_made_of_light_from_a_window`,
   `a_long_story_s_city_fills_the_desk_on_both_sides_and_grows_higher`,
   `in_the_magic_garden_a_plant_grows_beside_the_pages_as_the_story_grows`,
@@ -1150,7 +1173,7 @@ away. What a theme hides is its own: picking another theme is how to stop it.
   `now_and_then_in_the_magic_garden_a_balloon_flies_in_a_new_chapter_title_from_either_side`,
   `the_title_hangs_from_the_balloon_by_ropes_tied_to_its_ends`,
   `going_on_writing_while_a_title_is_brought_sets_it_down_at_once`,
-  `print_shows_neither_the_garden_the_houses_nor_what_brings_a_title`.
+  `print_shows_neither_the_garden_the_houses_the_ships_nor_what_brings_a_title`.
 
 ---
 
@@ -1344,10 +1367,16 @@ when the writer goes on; nothing moved in the layout, nothing in print or the fi
   the writer and the page, the title in its feet. It takes the balloon's path and course in time,
   so the two carriers differ only in their picture and where the dragon looks (R30). Then asked
   for: the dragon at every new chapter, and more lifelike. The balloon stayed a rare surprise for a
-  day, then was asked for at every new chapter too (2026-10-31), so neither has odds of its own. Then: it flew
-  too fast, and its body should move elegantly. It got its own pace rather than slowing the
+  day, then was asked for at every new chapter too (2026-10-31), so neither has odds of its own.
+  Then: it flew too fast, and its body should move elegantly. It got its own pace rather than slowing the
   balloon too, and its wings, fire and tail kept real time, so it does not move in slow motion.
   Then: its flight was too like the balloon's; it should go with its wings. So its course is
   pushed on by each down beat, and it rises and sinks with the beats, carrying the title.
+- **2026-10-31 — The Magic Sea builds a ship a chapter.** Asked for: a ship built up in the sea
+  theme, something added with each new page, and when a new chapter starts the ship before it
+  finished at once and released to the sea. The parts are counted from the garden's saved pages
+  per chapter, like the city's floors, so nothing new is saved (R9, R30); a ship has a fixed number
+  of parts, so a long chapter's ship is simply whole. Finished ships stay in the bay for good,
+  whatever happens to their chapters, as plants and floors do.
 - **No `.docx` import.** Export only.
 - **Contents heading is "Contents"** (English), in the app and in Word.

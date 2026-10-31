@@ -9,9 +9,11 @@
 //! dragon flies in with it held in its feet, flapping
 //! its wings and breathing fire, looks round at the city, at the writer and at the page, sets the
 //! title in place and flies away. Both follow one course in time (`pose`), each along its own way
-//! (`rig`).
+//! (`rig`). In the Magic Sea a ship is built in a yard for each chapter, a part for each page, each
+//! coming out of a little light; when the next chapter begins, the ship is finished at once, slides
+//! down the slipway and sails out to lie in the bay with the others, rocking on the water.
 //!
-//! None of it is on the page: the garden and the city lie on the desk behind the pages, and what brings a title
+//! None of it is on the page: the garden, the city and the sea lie on the desk behind the pages, and what brings a title
 //! is drawn
 //! over the page on the screen only, so nothing of it is printed or saved, and no page break moves
 //! for it. Like the emblem, it is drawn from shapes (egui fills only convex ones, R11), and what is
@@ -139,6 +141,38 @@ const POLE: Color32 = Color32::from_rgb(70, 70, 82);
 pub const BUILD: f32 = 1.6;
 pub const FLOW: f32 = 0.45;
 
+/// The Magic Sea: its water at the horizon and at the front, the crests of its waves, the posts of
+/// the quay and its courses of stone, the scaffold; a hull's wood above and below, and the seams between its planks;
+/// the keel and ribs it is begun with, its masts, its sails and their seams, the stripes painted
+/// along the hulls, the portholes, and the flags.
+const WATER: Color32 = Color32::from_rgb(86, 154, 196);
+const WATER_DEEP: Color32 = Color32::from_rgb(36, 92, 146);
+const CREST: Color32 = Color32::from_rgb(230, 244, 252);
+const QUAY: Color32 = Color32::from_rgb(176, 166, 150);
+const QUAY_DARK: Color32 = Color32::from_rgb(140, 130, 116);
+const SCAFFOLD: Color32 = Color32::from_rgb(186, 150, 104);
+const WOOD: Color32 = Color32::from_rgb(166, 110, 62);
+const WOOD_DARK: Color32 = Color32::from_rgb(116, 72, 40);
+const SEAM: Color32 = Color32::from_rgb(84, 52, 30);
+const KEEL: Color32 = Color32::from_rgb(98, 62, 36);
+const MAST: Color32 = Color32::from_rgb(96, 64, 40);
+const SAILS: [Color32; 3] = [Color32::from_rgb(252, 248, 236), Color32::from_rgb(246, 234, 206), Color32::from_rgb(252, 240, 238)];
+const SAIL_SHADE: Color32 = Color32::from_rgb(220, 208, 184);
+const STRIPES: [Color32; 3] = [Color32::from_rgb(204, 62, 58), Color32::from_rgb(40, 84, 130), Color32::from_rgb(232, 180, 52)];
+const FLAGS: [Color32; 3] = [Color32::from_rgb(232, 76, 84), Color32::from_rgb(252, 206, 74), Color32::from_rgb(60, 150, 90)];
+const PORT: Color32 = Color32::from_rgb(52, 34, 24);
+/// How many parts make a whole ship, one for each page of its chapter: its keel and ribs, its
+/// lower planks, its upper ones, its rail and stern castle, its stripe and portholes, the main mast,
+/// its sail, the foremast, its sail, the bowsprit and jib, the topsails, and its flags.
+pub const PARTS: usize = 12;
+/// Seconds a ship takes, once its chapter is done, to be finished at once, to slide down the
+/// slipway into the water, and to sail out to its place in the bay; and how steep the slipway is.
+const FINISH: f32 = 0.7;
+const SLIDE: f32 = 1.2;
+const SAIL: f32 = 2.6;
+pub const LAUNCH: f32 = FINISH + SLIDE + SAIL;
+const SLOPE: f32 = 0.14;
+
 /// Seconds the dragon or the balloon takes to come in from the side, carry the title over its
 /// place, lower it, settle it, let go and go away; and to go away when the writer goes on
 /// meanwhile.
@@ -188,6 +222,16 @@ pub struct Eggs {
     /// and how many; and the light of a floor being built, if one is; for tests.
     pub houses: Vec<(Rect, usize)>,
     pub light: Option<Rect>,
+    /// The story the Magic Sea was shown for and the chapter whose ship is in the yard, and how
+    /// many of its parts are built, the last perhaps in part; and the ship being launched, if one
+    /// is: its chapter, since when, and how many parts it had.
+    sailed_for: Option<(String, usize)>,
+    rigged: f32,
+    rigged_at: f64,
+    pub launch: Option<(usize, f64, f32)>,
+    /// Each ship drawn last frame: its chapter, around it, how many parts were shown, and whether
+    /// it was in the water; for tests.
+    pub ships: Vec<(usize, Rect, usize, bool)>,
 }
 
 /// The dragon or the balloon bringing the chapter title that begins at `at` into place on page `page`.
@@ -205,7 +249,8 @@ impl Default for Eggs {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64);
         Self { grown_for: None, grown: Vec::new(), grown_at: 0.0, measured: None, lift: None, place: None, desk: Rect::NOTHING, odds: None, from_right: false, rng: seed | 1, plants: Vec::new(),
-            built_for: None, built: 0.0, built_at: 0.0, houses: Vec::new(), light: None }
+            built_for: None, built: 0.0, built_at: 0.0, houses: Vec::new(), light: None, sailed_for: None, rigged: 0.0, rigged_at: 0.0,
+            launch: None, ships: Vec::new() }
     }
 }
 
@@ -1384,6 +1429,416 @@ fn balcony(r: Rect, color: Color32, u: f32) -> Vec<Shape> {
     out
 }
 
+/// `s` from 0 to 1 eased in and out.
+fn ease(s: f32) -> f32 {
+    let s = s.clamp(0.0, 1.0);
+    s * s * (3.0 - 2.0 * s)
+}
+
+/// The convex `poly` cut along the level `y`, keeping what lies above it or below.
+fn cut(poly: &[(f32, f32)], y: f32, above: bool) -> Vec<(f32, f32)> {
+    let keep = |p: (f32, f32)| (p.1 >= y) == above;
+    let mut out = Vec::new();
+    for (i, &a) in poly.iter().enumerate() {
+        let b = poly[(i + 1) % poly.len()];
+        if keep(a) {
+            out.push(a);
+        }
+        if keep(a) != keep(b) {
+            let s = (y - a.1) / (b.1 - a.1);
+            out.push((a.0 + (b.0 - a.0) * s, y));
+        }
+    }
+    out
+}
+
+/// Where the level `y` goes into and out of the convex `poly`, from left to right.
+fn across(poly: &[(f32, f32)], y: f32) -> (f32, f32) {
+    let xs = poly.iter().zip(poly.iter().cycle().skip(1)).filter(|(a, b)| (a.1 - y) * (b.1 - y) <= 0.0 && a.1 != b.1);
+    xs.map(|(a, b)| a.0 + (b.0 - a.0) * (y - a.1) / (b.1 - a.1)).fold((f32::MAX, f32::MIN), |(l, r), x| (l.min(x), r.max(x)))
+}
+
+/// A ship's hull, from the top of its stern round under its keel to the top of its bow, in its
+/// lengths: along it from the stern at -0.5, up from the waterline.
+const HULL: [(f32, f32); 6] = [(-0.46, 0.14), (-0.4, -0.04), (-0.3, -0.08), (0.25, -0.08), (0.4, -0.02), (0.52, 0.15)];
+/// Where its main mast and its foremast stand along it.
+const MAIN: f32 = -0.02;
+const FORE: f32 = 0.26;
+
+/// A ship of the Magic Sea as drawn at a moment: its chapter; the middle of its waterline and the
+/// level of the water there; its length; which way it faces (1 its bow to the right, -1 to the left,
+/// in between while it turns about); how far it leans bow down; how many of its parts are built,
+/// the last perhaps in part; how far the parts it lacks have come in at once, its chapter done;
+/// and whether it is in the water.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ship {
+    pub k: usize,
+    pub at: Pos2,
+    pub sea: f32,
+    pub len: f32,
+    pub face: f32,
+    pub lean: f32,
+    pub parts: f32,
+    pub finish: f32,
+    pub afloat: bool,
+}
+
+impl Ship {
+    /// A point of it, `x` along it and `y` up, in its lengths.
+    fn p(&self, x: f32, y: f32) -> Pos2 {
+        let (sin, cos) = (self.lean * self.face.signum()).sin_cos();
+        let (dx, dy) = (x * self.len * self.face, -y * self.len);
+        self.at + vec2(dx * cos - dy * sin, dx * sin + dy * cos)
+    }
+
+    fn fill(&self, points: &[(f32, f32)], color: Color32) -> Shape {
+        solid(points.iter().map(|&(x, y)| self.p(x, y)).collect(), color)
+    }
+
+    fn line(&self, points: &[(f32, f32)], width: f32, color: Color32) -> Shape {
+        Shape::line(points.iter().map(|&(x, y)| self.p(x, y)).collect(), Stroke::new(width * self.len, color))
+    }
+
+    /// How many of its parts are shown, some perhaps only coming.
+    pub fn shown(&self) -> usize {
+        if self.finish > 0.0 { PARTS } else { (self.parts.max(0.0).ceil() as usize).min(PARTS) }
+    }
+
+    /// Around its hull, its sails and its flags.
+    pub fn bounds(&self) -> Rect {
+        let corners = [(-0.65, -0.08), (0.72, -0.08), (-0.65, 1.02), (0.72, 1.02)].map(|(x, y)| self.p(x, y));
+        Rect::from_points(&corners)
+    }
+
+    /// The ship at `time`: each part built, and those coming in, out of a little light.
+    pub fn draw(&self, story: &str, time: f64) -> Vec<Shape> {
+        let mut out = Vec::new();
+        let built = self.parts.clamp(0.0, PARTS as f32);
+        for i in 0..PARTS {
+            let a = (built - i as f32).clamp(0.0, 1.0).max(self.finish);
+            if a <= 0.0 {
+                continue;
+            }
+            let (shapes, at) = self.part(i, story, time, a);
+            out.extend(shapes);
+            if a < 1.0 {
+                out.push(Shape::circle_filled(at, self.len * 0.08 * (1.5 - a), glow(LIGHT, 0.7 * (1.0 - a))));
+            }
+        }
+        out
+    }
+
+    /// Part `i`, see-through by `a` while it comes, and where it is, for the light it comes out of.
+    fn part(&self, i: usize, story: &str, time: f64, a: f32) -> (Vec<Shape>, Pos2) {
+        let c = |col: Color32| col.gamma_multiply(a);
+        let mut seeds = Seeds::of(story, (2 << 20) + self.k);
+        let pick = |seeds: &mut Seeds, n: usize| (seeds.next(0.0, n as f32) as usize).min(n - 1);
+        let (stripe, sail, flag) = (STRIPES[pick(&mut seeds, 3)], SAILS[pick(&mut seeds, 3)], FLAGS[pick(&mut seeds, 3)]);
+        let seams = |out: &mut Vec<Shape>, ys: &[f32]| {
+            for &y in ys {
+                let (l, r) = across(&HULL, y);
+                out.push(self.line(&[(l, y), (r, y)], 0.006, c(SEAM)));
+            }
+        };
+        // A sail hanging from its yard at `top` down to `foot`, `w` wide each side of its mast,
+        // filled by the wind below.
+        let sail_at = |x: f32, top: f32, foot: f32, w: f32| {
+            let belly = (foot - top) * 0.1;
+            vec![(x - w, top), (x + w, top), (x + w * 1.12, foot), (x + w * 0.6, foot + belly * 0.7), (x, foot + belly), (x - w * 0.6, foot + belly * 0.7), (x - w * 1.12, foot)]
+        };
+        let mut out = Vec::new();
+        let at = match i {
+            // The keel, the stem and the stern post, and the ribs.
+            0 => {
+                out.push(self.line(&[(-0.3, -0.08), (0.25, -0.08)], 0.022, c(KEEL)));
+                out.push(self.line(&[(0.25, -0.08), (0.4, -0.02), (0.52, 0.15)], 0.016, c(KEEL)));
+                out.push(self.line(&[(-0.3, -0.08), (-0.4, -0.04), (-0.46, 0.14)], 0.016, c(KEEL)));
+                for k in 0..7 {
+                    let x = -0.33 + k as f32 * 0.11;
+                    let low = HULL.windows(2).filter(|w| (w[0].0 - x) * (w[1].0 - x) <= 0.0 && w[0].0 != w[1].0)
+                        .map(|w| w[0].1 + (w[1].1 - w[0].1) * (x - w[0].0) / (w[1].0 - w[0].0)).fold(0.0f32, f32::min);
+                    out.push(self.line(&[(x, low), (x * 1.03, 0.05), (x * 1.06, 0.14)], 0.01, c(KEEL)));
+                }
+                (0.0, -0.06)
+            }
+            // The planks below, and above.
+            1 => {
+                out.push(self.fill(&cut(&HULL, 0.03, false), c(WOOD_DARK)));
+                seams(&mut out, &[-0.045, -0.008]);
+                (0.0, -0.02)
+            }
+            2 => {
+                out.push(self.fill(&cut(&HULL, 0.03, true), c(WOOD)));
+                seams(&mut out, &[0.03, 0.065, 0.1]);
+                (0.0, 0.08)
+            }
+            // The rail along the deck, and the castle at the stern.
+            3 => {
+                out.push(self.fill(&[(-0.47, 0.14), (-0.27, 0.142), (-0.28, 0.24), (-0.48, 0.25)], c(WOOD_DARK)));
+                out.push(self.line(&[(-0.49, 0.27), (-0.27, 0.26)], 0.008, c(WOOD)));
+                out.push(self.line(&[(-0.27, 0.18), (0.52, 0.19)], 0.008, c(WOOD)));
+                for k in 0..10 {
+                    let x = -0.24 + k as f32 * 0.08;
+                    out.push(self.line(&[(x, 0.14), (x, 0.18 + 0.001 * k as f32)], 0.005, c(WOOD)));
+                }
+                (-0.36, 0.2)
+            }
+            // A stripe of paint along the hull, with portholes, and lit windows in the castle.
+            4 => {
+                out.push(self.fill(&cut(&cut(&HULL, 0.072, true), 0.1, false), c(stripe)));
+                for k in 0..5 {
+                    out.push(Shape::circle_filled(self.p(-0.25 + k as f32 * 0.13, 0.0), 0.014 * self.len, c(PORT)));
+                }
+                for x in [-0.44, -0.36] {
+                    out.push(self.fill(&[(x, 0.175), (x + 0.05, 0.175), (x + 0.05, 0.215), (x, 0.215)], c(GLOW)));
+                }
+                (0.0, 0.05)
+            }
+            // The main mast and its yards, then its sail.
+            5 => {
+                out.push(self.line(&[(MAIN, 0.14), (MAIN, 0.98)], 0.018, c(MAST)));
+                for (y, w) in [(0.92, 0.11), (0.72, 0.17), (0.3, 0.19)] {
+                    out.push(self.line(&[(MAIN - w, y), (MAIN + w, y)], 0.01, c(MAST)));
+                }
+                (MAIN, 0.6)
+            }
+            6 => {
+                out.push(self.fill(&sail_at(MAIN, 0.715, 0.31, 0.16), c(sail)));
+                for x in [-0.07, 0.07] {
+                    out.push(self.line(&[(MAIN + x, 0.715), (MAIN + x * 1.1, 0.33)], 0.004, c(SAIL_SHADE)));
+                }
+                (MAIN, 0.5)
+            }
+            // The foremast, then its sail.
+            7 => {
+                out.push(self.line(&[(FORE, 0.14), (FORE, 0.8)], 0.016, c(MAST)));
+                for (y, w) in [(0.76, 0.08), (0.6, 0.12), (0.3, 0.14)] {
+                    out.push(self.line(&[(FORE - w, y), (FORE + w, y)], 0.009, c(MAST)));
+                }
+                (FORE, 0.5)
+            }
+            8 => {
+                out.push(self.fill(&sail_at(FORE, 0.595, 0.31, 0.11), c(sail)));
+                out.push(self.line(&[(FORE, 0.595), (FORE, 0.33)], 0.004, c(SAIL_SHADE)));
+                (FORE, 0.45)
+            }
+            // The bowsprit, and the jib from the top of the foremast down to it.
+            9 => {
+                out.push(self.line(&[(0.47, 0.15), (0.72, 0.25)], 0.014, c(MAST)));
+                out.push(self.fill(&[(FORE + 0.015, 0.77), (0.7, 0.25), (0.47, 0.19)], c(sail)));
+                (0.5, 0.35)
+            }
+            // The topsails.
+            10 => {
+                out.push(self.fill(&[(MAIN - 0.1, 0.915), (MAIN + 0.1, 0.915), (MAIN + 0.14, 0.735), (MAIN - 0.14, 0.735)], c(sail)));
+                out.push(self.fill(&[(FORE - 0.07, 0.755), (FORE + 0.07, 0.755), (FORE + 0.1, 0.615), (FORE - 0.1, 0.615)], c(sail)));
+                (MAIN, 0.82)
+            }
+            // A pennant at the top of the main mast and a flag at the stern, both in the wind, and
+            // a lantern.
+            _ => {
+                let wave = |k: f32| (time as f32 * 3.0 + k).sin() * 0.012;
+                out.push(self.fill(&[(MAIN, 1.0), (MAIN, 0.955), (MAIN - 0.18, 0.975 + wave(0.0))], c(flag)));
+                out.push(self.line(&[(-0.47, 0.25), (-0.53, 0.4)], 0.008, c(MAST)));
+                out.push(self.fill(&[(-0.53, 0.4), (-0.53, 0.33), (-0.64, 0.33 + wave(1.0)), (-0.64, 0.4 + wave(1.0))], c(flag)));
+                out.push(Shape::circle_filled(self.p(-0.49, 0.29), 0.03 * self.len, glow(GLOW, 0.35 * a)));
+                out.push(Shape::circle_filled(self.p(-0.49, 0.29), 0.013 * self.len, c(GLOW)));
+                (-0.3, 0.6)
+            }
+        };
+        (out, self.p(at.0, at.1))
+    }
+}
+
+/// The harbour of the Magic Sea on the desk `area` beside the page lying at `page`: the sea from
+/// its horizon down, the shipyard on the left of the page, and the places in the bay where the
+/// finished ships lie, taking turns on the right of the page and on the left beyond the yard, from
+/// the page outwards; once a row is full, the next lies further out to sea, smaller and nearer the
+/// horizon.
+pub struct Bay {
+    pub area: Rect,
+    pub horizon: f32,
+    /// The level of the water at the front, where the yard is.
+    pub front: f32,
+    pub len: f32,
+    /// The middle of the waterline of a ship on the slipway, and once it has slid into the water.
+    pub yard: Pos2,
+    pub launched: Pos2,
+    /// Each place in the bay: the middle of a ship's waterline there, its length, and whether its
+    /// bow is to the right, away from the page.
+    pub places: Vec<(Pos2, f32, bool)>,
+}
+
+impl Bay {
+    pub fn of(area: Rect, page: Rect, unit: f32) -> Bay {
+        // As big as there is room for on the left, for the yard, its slipway and the ship launched.
+        let len = (150.0 * unit).min((page.left() - area.left()) / 2.5).max(60.0 * unit);
+        let deep = 0.15 * area.height();
+        let horizon = area.bottom() - deep;
+        let (gap, front) = (12.0 * unit, horizon + deep * 0.78);
+        // The bowsprit of a ship just launched reaches to near the page; the slipway goes up from
+        // there to the yard, a length away.
+        let launched = pos2((page.left() - gap - 0.72 * len).max(area.left() + 1.7 * len), front);
+        let yard = launched - vec2(len, len * SLOPE);
+        let mut places = Vec::new();
+        for r in 0..6 {
+            let s = 0.72f32.powi(r);
+            let (l, y) = (len * s, horizon + deep * 0.78 * 0.5f32.powi(r));
+            let w = l * 1.45;
+            let mut right: Vec<f32> = Vec::new();
+            let mut x = page.right() + gap + w / 2.0;
+            while x + w / 2.0 <= area.right() {
+                right.push(x);
+                x += w;
+            }
+            let mut left: Vec<f32> = Vec::new();
+            x = if r == 0 { yard.x - 0.7 * len - gap } else { page.left() - gap } - w / 2.0;
+            while x - w / 2.0 >= area.left() {
+                left.push(x);
+                x -= w;
+            }
+            for j in 0..right.len().max(left.len()) {
+                places.extend(right.get(j).map(|&x| (pos2(x, y), l, true)));
+                places.extend(left.get(j).map(|&x| (pos2(x, y), l, false)));
+            }
+        }
+        if places.is_empty() {
+            places.push((pos2(page.right() + gap + len / 2.0, front), len, true));
+        }
+        Bay { area, horizon, front, len, yard, launched, places }
+    }
+
+    /// The colour of the water at the level `y`.
+    fn water_at(&self, y: f32) -> Color32 {
+        WATER.lerp_to_gamma(WATER_DEEP, (y - self.horizon) / (self.area.bottom() - self.horizon))
+    }
+
+    /// The water from `top` to `bottom` between `left` and `right`, darker the nearer.
+    fn water(&self, left: f32, right: f32, top: f32, bottom: f32) -> Shape {
+        let mut mesh = egui::Mesh::default();
+        for (y, x) in [(top, left), (top, right), (bottom, left), (bottom, right)] {
+            mesh.colored_vertex(pos2(x, y), self.water_at(y));
+        }
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(1, 3, 2);
+        Shape::mesh(mesh)
+    }
+
+    /// The sea, its waves drifting at `time`, and the slipway in the yard.
+    pub fn sea(&self, story: &str, time: f64) -> Vec<Shape> {
+        let (a, u) = (self.area, self.len / 110.0);
+        let mut out = vec![self.water(a.left(), a.right(), self.horizon, a.bottom())];
+        out.push(Shape::line_segment([pos2(a.left(), self.horizon), pos2(a.right(), self.horizon)], Stroke::new(1.5 * u, glow(CREST, 0.6))));
+        let mut seeds = Seeds::of(story, 3 << 20);
+        for row in 0..9 {
+            // Rows further apart and crests longer nearer the front.
+            let near = ((row + 1) as f32 / 9.0).powf(1.5);
+            let y = self.horizon + (a.bottom() - self.horizon) * near;
+            let drift = (time % 10_000.0) as f32 * 6.0 * u * (0.3 + near);
+            for _ in 0..(a.width() / (60.0 * u)) as usize {
+                let x = a.left() + (seeds.next(0.0, a.width()) + drift).rem_euclid(a.width());
+                let half = seeds.next(4.0, 11.0) * u * (0.4 + near);
+                out.push(Shape::line_segment([pos2(x - half, y), pos2(x + half, y)], Stroke::new(1.2 * u, glow(CREST, 0.35))));
+            }
+        }
+        // The yard's quay of stone under the ship, and the slipway from it down into the water, on
+        // posts.
+        let way = self.way();
+        let (a, b) = (way.p(-0.7, -0.1), way.p(0.3, -0.1));
+        let bottom = self.area.bottom();
+        out.push(solid(vec![a, b, pos2(b.x, bottom), pos2(a.x, bottom)], QUAY));
+        for k in 1..5 {
+            let y = b.y + (bottom - b.y) * k as f32 / 5.0;
+            out.push(Shape::line_segment([pos2(a.x, y), pos2(b.x, y)], Stroke::new(0.008 * self.len, QUAY_DARK)));
+        }
+        for x in [0.55, 0.85] {
+            let top = way.p(x, -0.1);
+            out.push(Shape::line_segment([top, pos2(top.x, self.front + 0.05 * self.len)], Stroke::new(0.022 * self.len, WOOD_DARK)));
+        }
+        out.push(way.line(&[(-0.7, -0.1), (1.35, -0.1)], 0.03, WOOD_DARK));
+        out
+    }
+
+    /// The slipway's lie: a ship on it.
+    fn way(&self) -> Ship {
+        Ship { k: 0, at: self.yard, sea: self.front, len: self.len, face: 1.0, lean: SLOPE.atan(), parts: 0.0, finish: 0.0, afloat: false }
+    }
+
+    /// The scaffold the ship in the yard is built in.
+    pub fn scaffold(&self) -> Vec<Shape> {
+        let way = self.way();
+        let pole = |x: f32| (way.p(x, -0.1), way.p(x, -0.1) - vec2(0.0, 0.62 * self.len));
+        let ((a, b), (c, d)) = (pole(-0.52), pole(0.6));
+        let s = Stroke::new(0.014 * self.len, SCAFFOLD);
+        let mut out = vec![Shape::line_segment([a, b], s), Shape::line_segment([c, d], s)];
+        for h in [0.3, 0.55] {
+            out.push(Shape::line_segment([a.lerp(b, h), c.lerp(d, h)], Stroke::new(0.01 * self.len, SCAFFOLD)));
+        }
+        out
+    }
+
+    /// The water in front of a ship's hull below its waterline, and a crest along it; none for a
+    /// ship still on the slipway.
+    pub fn cover(&self, s: &Ship) -> Vec<Shape> {
+        if !s.afloat {
+            return Vec::new();
+        }
+        let (l, r) = (s.at.x - 0.7 * s.len, s.at.x + 0.7 * s.len);
+        vec![
+            self.water(l, r, s.sea, (s.sea + 0.11 * s.len).min(self.area.bottom())),
+            Shape::line_segment([pos2(s.at.x - 0.5 * s.len, s.sea), pos2(s.at.x + 0.5 * s.len, s.sea)], Stroke::new(0.012 * s.len, glow(CREST, 0.7))),
+        ]
+    }
+
+    /// The ships at `time`: the chapters of `fleet` lying in the bay's places in turn, rocking on
+    /// the water, one of them perhaps being launched (`launch`: which, how many seconds ago, and how
+    /// many parts it had); and the one in the yard with how many parts it has. Farther ones first,
+    /// so nearer ones are drawn over them.
+    pub fn ships(&self, story: &str, fleet: &[usize], yard: Option<(usize, f32)>, launch: Option<(usize, f32, f32)>, time: f64) -> Vec<Ship> {
+        let mut out = Vec::new();
+        if let Some((k, parts)) = yard.filter(|y| y.1 > 0.0) {
+            out.push(Ship { k, at: self.yard, sea: self.front, len: self.len, face: 1.0, lean: SLOPE.atan(), parts, finish: 0.0, afloat: false });
+        }
+        for (j, &k) in fleet.iter().enumerate() {
+            let (place, len, right) = self.places[j.min(self.places.len() - 1)];
+            let mut seeds = Seeds::of(story, (4 << 20) + k);
+            let (phase, t) = (seeds.next(0.0, 2.0 * PI), (time % 10_000.0) as f32);
+            let (bob, roll) = ((t * 1.1 + phase).sin() * 0.012, (t * 0.8 + phase).sin() * 0.025);
+            let face = if right { 1.0 } else { -1.0 };
+            let lying = Ship { k, at: place + vec2(0.0, bob * len), sea: place.y, len, face, lean: roll, parts: PARTS as f32, finish: 0.0, afloat: true };
+            match launch.filter(|l| l.0 == k) {
+                Some((_, since, had)) => out.push(self.launching(lying, since, had)),
+                None => out.push(lying),
+            }
+        }
+        out.sort_by(|a, b| a.sea.total_cmp(&b.sea));
+        out
+    }
+
+    /// The ship that will lie as `lying`, `since` seconds after its chapter was done with `had`
+    /// parts: finished at once in the yard, sliding down the slipway into the water, and sailing
+    /// out to its place, turning about on the way if it lies the other way.
+    fn launching(&self, lying: Ship, since: f32, had: f32) -> Ship {
+        let lean = SLOPE.atan();
+        let yard = Ship { at: self.yard, sea: self.front, len: self.len, face: 1.0, lean, parts: had, finish: 0.0, afloat: false, ..lying };
+        if since < FINISH {
+            return Ship { finish: (since / FINISH).max(0.01), ..yard };
+        }
+        let whole = Ship { parts: PARTS as f32, ..yard };
+        if since < FINISH + SLIDE {
+            // Slower at first, then quicker down the slipway, and level once it is in the water.
+            let s = ((since - FINISH) / SLIDE).powi(2);
+            return Ship { at: self.yard.lerp(self.launched, s), lean: lean * (1.0 - ease(s * 1.2 - 0.2)), afloat: s > 0.8, ..whole };
+        }
+        let s = ((since - FINISH - SLIDE) / SAIL).clamp(0.0, 1.0);
+        let e = ease(s);
+        let face = if lying.face > 0.0 { 1.0 } else { (PI * (s / 0.35).min(1.0)).cos() };
+        let sea = self.front + (lying.sea - self.front) * e;
+        let at = self.launched.lerp(lying.at, e);
+        Ship { at, sea, len: self.len + (lying.len - self.len) * e, face, lean: lying.lean * e, afloat: true, ..whole }
+    }
+}
+
 impl App {
     /// The garden kept with the story (`Doc::garden`) grown to the pages each chapter has now, if
     /// it has more: in every theme, so the Magic Garden shows all the story's growth. It never
@@ -1515,6 +1970,66 @@ impl App {
             let top = h.floor(h.floors).bottom();
             e.houses.push((Rect::from_min_max(pos2(h.left, top), pos2(h.left + h.width, h.ground)), h.floors));
             e.light = e.light.or(light);
+        }
+    }
+
+    /// The harbour on the desk, behind the pages lying at `page`, in the Magic Sea only: a ship
+    /// for each chapter, built in the yard a part for each page it has had (`Doc::garden`), and
+    /// finished at once and launched when the next chapter begins, to lie in the bay.
+    pub fn draw_sea(&mut self, ui: &egui::Ui, area: Rect, page: Rect) {
+        self.eggs.ships.clear();
+        if self.themes.theme != Theme::Sea {
+            return;
+        }
+        let now = ui.ctx().input(|i| i.time);
+        let yard = self.doc.chapters(false).len().max(1) - 1;
+        let ships = self.doc.garden.len();
+        let target = self.doc.garden.get(yard).map_or(0, |&n| (n as usize).min(PARTS)) as f32;
+        let e = &mut self.eggs;
+        let was = e.sailed_for.as_ref().filter(|(id, _)| *id == self.story_id).map(|f| f.1);
+        match was {
+            // A story just opened comes with its ships built and lying in the bay.
+            None => (e.sailed_for, e.rigged, e.launch) = (Some((self.story_id.clone(), yard)), target, None),
+            Some(was) if was != yard => {
+                // A new chapter has begun: the ship of the one before is finished at once and
+                // launched, and the next is begun once it is away.
+                if was < yard && was < ships {
+                    e.launch = Some((was, now, e.rigged));
+                }
+                (e.sailed_for, e.rigged) = (Some((self.story_id.clone(), yard)), 0.0);
+            }
+            Some(_) => {}
+        }
+        if e.launch.is_some_and(|(_, at, _)| now - at >= LAUNCH as f64) {
+            e.launch = None;
+        }
+        let dt = (now - e.rigged_at).clamp(0.0, 0.1) as f32;
+        e.rigged_at = now;
+        if e.launch.is_none() && e.rigged < target {
+            // A part at a time, quicker when many are waiting, like the city's floors.
+            e.rigged = (e.rigged + (target - e.rigged).max(3.0) / 3.0 / BUILD * dt).min(target);
+        }
+        if e.launch.is_some() || e.rigged < target {
+            ui.ctx().request_repaint();
+        } else {
+            // The ships rock on the water and the waves drift.
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+        }
+
+        let unit = (area.height() / 900.0).clamp(0.6, 1.6);
+        let bay = Bay::of(area, page, unit);
+        let fleet: Vec<usize> = (0..ships).filter(|&k| k != yard).collect();
+        let launch = e.launch.map(|(k, at, had)| (k, (now - at) as f32, had));
+        let building = (yard < ships).then_some((yard, e.rigged));
+        let painter = ui.painter();
+        painter.extend(bay.sea(&self.story_id, now));
+        if launch.is_none() && building.is_some_and(|(_, parts)| parts > 0.0 && parts < PARTS as f32) {
+            painter.extend(bay.scaffold());
+        }
+        for s in bay.ships(&self.story_id, &fleet, building, launch, now) {
+            painter.extend(s.draw(&self.story_id, now));
+            painter.extend(bay.cover(&s));
+            e.ships.push((s.k, s.bounds(), s.shown(), s.afloat));
         }
     }
 
@@ -1965,6 +2480,68 @@ mod tests {
         assert_eq!(leaves(200.0), leaves(400.0));
         assert!(height_of(1) < height_of(4) && height_of(40) < 1.0, "taller with more pages, never past its tallest");
     }
+
+    fn bay() -> (Rect, Rect, Bay) {
+        let (area, page) = (Rect::from_min_size(Pos2::ZERO, vec2(1500.0, 900.0)), Rect::from_min_size(pos2(450.0, 40.0), vec2(600.0, 820.0)));
+        (area, page, Bay::of(area, page, 1.0))
+    }
+
+    #[test]
+    fn a_ship_gets_a_part_for_each_page_until_it_is_whole() {
+        let ship = |parts: f32| Ship { k: 0, at: pos2(200.0, 800.0), sea: 800.0, len: 150.0, face: 1.0, lean: 0.0, parts, finish: 0.0, afloat: true };
+        let drawn = |parts: f32| ship(parts).draw("a", 0.0);
+        assert!(drawn(0.0).is_empty(), "nothing before its first page");
+        for n in 0..PARTS {
+            let (was, now) = (drawn(n as f32), drawn(n as f32 + 1.0));
+            assert!(now.len() > was.len() && format!("{:?}", now).starts_with(&format!("{:?}", was)[..format!("{:?}", was).len() - 1]),
+                "{n}: a part is added, and the ones built stay as they were");
+            assert_eq!(ship(n as f32 + 0.5).shown(), n + 1);
+            let light = drawn(n as f32 + 0.5).into_iter().filter(|s| matches!(s, Shape::Circle(c) if c.fill.a() < 255 && c.radius > 10.0));
+            assert_eq!(light.count(), 1, "{n}: the part being added comes out of a light");
+        }
+        assert_eq!(format!("{:?}", drawn(PARTS as f32 + 5.0)), format!("{:?}", drawn(PARTS as f32)), "a whole ship gets nothing more");
+        let finishing = Ship { finish: 0.5, ..ship(3.0) };
+        assert_eq!(finishing.shown(), PARTS, "the parts it lacks come in at once");
+    }
+
+    #[test]
+    fn the_ships_lie_in_the_bay_beside_the_page_each_in_a_place_of_its_own() {
+        let (area, page, bay) = (bay().0, bay().1, bay().2);
+        assert!(bay.yard.x < page.left() && bay.launched.x < page.left(), "the yard is on the left of the page");
+        assert!(bay.places.len() >= 12, "{}", bay.places.len());
+        let ships = bay.ships("a", &(0..bay.places.len()).collect::<Vec<_>>(), None, None, 0.0);
+        for s in &ships {
+            let r = s.bounds();
+            assert!(r.right() < page.left() || r.left() > page.right(), "{}: beside the page: {r:?}", s.k);
+            assert!(r.left() >= area.left() - 1.0 && r.right() <= area.right() + 1.0 && s.at.y > bay.horizon, "{}: in the bay: {r:?}", s.k);
+            assert!(s.afloat && s.shown() == PARTS);
+        }
+        for (k, p) in bay.places.iter().enumerate() {
+            assert!(bay.places[..k].iter().all(|q| q.0.distance(p.0) > 2.0), "{k}: a place of its own");
+        }
+        // Nearer the page first, taking turns on its right and its left, and the farther ones
+        // smaller, nearer the horizon.
+        assert!(bay.places[0].2 && bay.places[0].0.x < bay.places[1].0.x.max(bay.places[2].0.x));
+        let last = bay.places.last().unwrap();
+        assert!(last.1 < bay.places[0].1 && last.0.y < bay.places[0].0.y);
+        assert!(ships.windows(2).all(|w| w[0].sea <= w[1].sea), "farther ones drawn first");
+    }
+
+    #[test]
+    fn a_ship_launched_is_finished_at_once_slides_into_the_water_and_sails_to_its_place() {
+        let (_, _, bay) = bay();
+        let at = |t: f32| bay.ships("a", &[0, 1], Some((2, 0.0)), Some((1, t, 3.0)), 0.0).into_iter().find(|s| s.k == 1).unwrap();
+        let lying = bay.ships("a", &[0, 1], None, None, 0.0)[1];
+        let start = at(0.05);
+        assert!(start.at == bay.yard && !start.afloat && start.parts == 3.0 && start.finish > 0.0, "in the yard, finishing: {start:?}");
+        assert_eq!(at(FINISH).shown(), PARTS, "whole before it moves");
+        assert!(at(FINISH + SLIDE * 0.5).at.y > bay.yard.y && at(FINISH + SLIDE * 0.5).at.x > bay.yard.x, "down the slipway");
+        let wet = at(FINISH + SLIDE);
+        assert!(wet.at.distance(bay.launched) < 0.5 && wet.afloat && wet.lean.abs() < 1e-3, "level in the water: {wet:?}");
+        let mid = at(FINISH + SLIDE + SAIL * 0.5);
+        assert!(mid.at.distance(bay.launched) > 10.0 && mid.at.distance(lying.at) > 10.0, "sailing out");
+        assert_eq!(at(LAUNCH), lying, "and lying in its place");
+        // No ship in the yard while one is launched, nor before its first page.
+        assert!(bay.ships("a", &[0, 1], Some((2, 0.0)), None, 0.0).iter().all(|s| s.k != 2));
+    }
 }
-
-
