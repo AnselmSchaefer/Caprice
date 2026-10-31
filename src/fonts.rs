@@ -156,10 +156,12 @@ impl FontBook {
         &self.defs
     }
 
-    pub fn activate_pending(&mut self) {
-        if !self.pending.is_empty() {
-            LOADED.lock().unwrap().append(&mut self.pending);
-        }
+    /// Make the fonts loaded last frame usable (egui has them from this frame on). Whether any
+    /// became usable: then the pages are worked out again, as they were measured without them.
+    pub fn activate_pending(&mut self) -> bool {
+        let any = !self.pending.is_empty();
+        LOADED.lock().unwrap().append(&mut self.pending);
+        any
     }
 }
 

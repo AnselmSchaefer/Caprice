@@ -524,7 +524,10 @@ impl App {
         self.themes.show(&ctx);
         theme::paint_desk(ui.painter(), area);
 
-        self.fonts.activate_pending();
+        // Pages measured before a font of theirs could be drawn are measured again with it (R21).
+        if self.fonts.activate_pending() {
+            self.doc.full_paginate(&ctx, &self.typing);
+        }
         if let Some(path) = self.startup_file.take() {
             self.open_path(&ctx, path);
         }
@@ -4480,6 +4483,55 @@ mod tests {
         let twin_pages = pages_in(twin);
         assert!(twin_pages.len() > 1);
         assert_eq!(pages_in(missing), twin_pages, "{missing} drawn with {twin}");
+    }
+
+    #[test]
+    fn a_story_opened_in_a_font_not_yet_loaded_has_the_pages_that_font_gives() {
+        let font = "Liberation Mono";
+        if !Harness::new().app.fonts.is_installed(font) {
+            eprintln!("{font} is not installed here");
+            return;
+        }
+        let mut h = Harness::new();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text(&"It was nearly midnight and the Prime Minister sat alone in his office. ".repeat(120));
+        for st in &mut h.app.doc.flow.styles {
+            st.font = font.into();
+        }
+        // Opened, the font is loaded then, and drawn from the next frame: the pages measured
+        // before it are measured again.
+        let mut h = h.reopened("font-later");
+        h.frames(3, vec![], Modifiers::NONE);
+        let shown: Vec<usize> = h.app.doc.spans.iter().map(|s| s.start).collect();
+        let (ctx, typing) = (h.ctx.clone(), h.app.typing.clone());
+        h.app.doc.full_paginate(&ctx, &typing);
+        assert_eq!(shown, h.app.doc.spans.iter().map(|s| s.start).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_story_just_saved_has_no_changes_to_lose() {
+        let mut h = Harness::new();
+        let dir = std::env::temp_dir().join(format!("caprice-no-changes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        h.frames(3, vec![], Modifiers::NONE);
+        h.type_text("Saved, and nothing since.");
+        h.app.save_to(dir.join("story.caprice"));
+        assert!(!h.app.unsaved());
+        h.wait(6.0);
+        assert!(!h.app.keep.has_changes(), "the garden {:?} is no change", h.app.doc.garden);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_fresh_story_nobody_wrote_in_keeps_no_version() {
+        let mut h = Harness::new();
+        let dir = std::env::temp_dir().join(format!("caprice-blank-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        h.app.keep.dir = Some(dir.clone());
+        h.frames(3, vec![], Modifiers::NONE);
+        h.wait(6.0);
+        h.wait(versions::KEEP_EVERY);
+        assert!(!dir.exists(), "nothing worth keeping, its garden {:?} or not", h.app.doc.garden);
     }
 
     impl Harness {

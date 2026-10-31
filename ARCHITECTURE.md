@@ -728,7 +728,12 @@ Liberation Serif, and prints the same (R20 embeds the twin, as drawn).
 - With neither the font nor a twin installed, it is drawn with egui's own font, and the pages
   break differently. Only add a twin that is truly metric-compatible: one that is merely alike
   moves page breaks without saying so.
-- Tests: `a_story_in_a_font_not_installed_takes_the_pages_it_takes_in_its_twin_and_keeps_its_name`
+- **A font loaded is drawn from the next frame**, so pages measured before then are measured with
+  egui's own font. The frame in which fonts become usable (`FontBook::activate_pending` says so)
+  works the pages out again (`full_paginate`). Opening a story in a font not loaded yet used to
+  keep the wrong pages (a third more text on each) until something else laid them out.
+- Tests: `a_story_opened_in_a_font_not_yet_loaded_has_the_pages_that_font_gives`,
+  `a_story_in_a_font_not_installed_takes_the_pages_it_takes_in_its_twin_and_keeps_its_name`
   (it finds a pair with only the twin installed, and passes quietly on a machine that has none),
   and in `fonts.rs` `a_missing_font_is_drawn_with_an_installed_twin_of_the_same_widths`.
 
@@ -748,6 +753,11 @@ must keep working: writers do it. A version (the whole `.caprice` file) is kept 
   `story.json` saying its name and file (none: never saved, listed under "Stories never saved").
   Anything that starts another story (open, going back to one never saved) sets `App::story_id`
   and calls `Keeper::opened`, or its versions mix with the last story's.
+- **Changed means as saving counts it** (`unsaved`: the file without the garden, R9), never a
+  hash of the whole file: `keep_safe` once compared the whole file, garden and all, with
+  `saved_hash`, so any story with a garden counted as changed for good (autosaving the same text
+  every half minute, and keeping a version of a blank story). Tests:
+  `a_story_just_saved_has_no_changes_to_lose`, `a_fresh_story_nobody_wrote_in_keeps_no_version`.
 - **The same state is not kept twice** (`kept_hash`), and a fresh story with nothing in it never.
   Two versions in one second get the next free second's name rather than writing over each other
   (dropping changes, then opening the list, did).

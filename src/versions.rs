@@ -108,6 +108,11 @@ impl Keeper {
         }
     }
 
+    /// Has the story changed since it was last saved, as last looked (every `CHECK_EVERY`)?
+    pub fn has_changes(&self) -> bool {
+        self.changed_since.is_some()
+    }
+
     pub fn now(&self) -> u64 {
         self.clock.unwrap_or_else(|| SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()))
     }
@@ -182,7 +187,10 @@ impl App {
         self.keep.checked_at = now;
         let json = serde_json::to_string(&self.doc_file()).unwrap_or_default();
         let hash = hash_of(&json);
-        if hash == self.saved_hash {
+        // Unsaved as saving counts it: the garden grown is no change (R9). The whole file, garden
+        // and all, is what a version keeps.
+        let unsaved = self.unsaved();
+        if !unsaved {
             self.keep.changed_since = None;
         } else {
             let since = *self.keep.changed_since.get_or_insert(now);
@@ -192,7 +200,7 @@ impl App {
             }
         }
         // A fresh story with nothing in it is not worth keeping.
-        let blank = self.path.is_none() && hash == self.saved_hash;
+        let blank = self.path.is_none() && !unsaved;
         let due = now - self.keep.kept_at >= KEEP_EVERY;
         if self.keep.dir.is_some() && hash != self.keep.kept_hash && !blank && due {
             self.keep_version(&json);
